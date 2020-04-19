@@ -1,13 +1,16 @@
-
 use std::fs::{File, Metadata};
+use std::hash::Hasher;
+use std::io::{BufRead, BufReader, Read};
 use std::path::PathBuf;
+use std::sync::mpsc::{channel, Receiver};
 
-use jwalk::{DirEntry, WalkDir, Parallelism};
+use jwalk::{DirEntry, Parallelism, WalkDir};
 use rayon::iter::ParallelBridge;
 use rayon::prelude::*;
 use structopt::StructOpt;
-use std::sync::mpsc::{channel, Receiver};
-use dff::group::GroupBy;
+
+use dff::group::*;
+use dff::files::*;
 
 #[derive(Debug, StructOpt)]
 #[structopt(name = "dff", about = "Find duplicate files")]
@@ -59,12 +62,6 @@ fn walk_dirs(config: &Config) -> Receiver<PathBuf> {
     rx
 }
 
-fn file_len(file: &PathBuf) -> u64 {
-    match std::fs::metadata(file) {
-        Ok(metadata) => metadata.len(),
-        Err(e) => { eprintln!("Failed to read size of {}: {}", file.display(), e); 0 }
-    }
-}
 
 fn main() {
     let config: Config = Config::from_args();
