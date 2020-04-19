@@ -1,6 +1,4 @@
 use chashmap::CHashMap;
-use either::Either;
-use either::Either::{Left, Right};
 use std::hash::Hash;
 use rayon::iter::ParallelIterator;
 
@@ -56,7 +54,7 @@ impl<K, V, F> GroupMap<K, V, F>
         // TODO: Find a better concurrent map implementation that provides atomic `get_or_insert`
         // We can't add the item directly in the `upsert` method, because we'd have to move it
         // to both arguments and it would have to implement Copy
-        self.groups.upsert(key, || vec![], |v| ());
+        self.groups.upsert(key, || vec![], |_| ());
         self.groups.get_mut(&key).unwrap().push(item)
     }
 }

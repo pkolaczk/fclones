@@ -7,6 +7,7 @@ use rayon::iter::ParallelBridge;
 use rayon::prelude::*;
 use structopt::StructOpt;
 use std::sync::mpsc::{channel, Receiver};
+use dff::group::GroupBy;
 
 #[derive(Debug, StructOpt)]
 #[structopt(name = "dff", about = "Find duplicate files")]
@@ -39,7 +40,7 @@ fn walk_dirs(config: &Config) -> Receiver<PathBuf> {
         for entry in walk {
             match entry {
                 Ok(e) =>
-                    if !e.file_type.is_dir() {
+                    if e.file_type.is_file() || e.file_type.is_symlink() {
                         tx.send(e.path()).unwrap();
                     },
                 Err(e) =>
@@ -61,9 +62,15 @@ fn main() {
     let config: Config = Config::from_args();
     rayon::ThreadPoolBuilder::new().num_threads(config.threads).build_global().unwrap();
     let files= walk_dirs(&config).into_iter().par_bridge();
-    let size_map = chashmap::CHashMap::<u64, PathBuf>::with_capacity(65536);
-    files.for_each(|path| {
-        size_map.insert(file_len(&path), path); () }
-    );
-    println!("Map size = {:?}", size_map.len());
+    let size_groups = files
+        .group_by_key(file_len)
+        .into_iter()
+        .filter(|(size, files)| *size > 0 && files.len() >= 2);
+
+    for (size, files) in size_groups {
+        println!("{}:", size);
+        for f in files {
+           println!("    {}", f.display());
+        }
+    }
 }
