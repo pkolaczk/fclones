@@ -1,3 +1,4 @@
+
 use std::fs::{File, Metadata};
 use std::path::PathBuf;
 
@@ -26,6 +27,7 @@ struct Config {
     #[structopt(parse(from_os_str), required = true)]
     pub paths: Vec<PathBuf>,
 }
+
 
 fn walk_dirs(config: &Config) -> Receiver<PathBuf> {
     let (tx, rx) = channel();
