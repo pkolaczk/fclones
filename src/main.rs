@@ -20,8 +20,16 @@ struct Config {
     #[structopt(long)]
     pub skip_hidden: bool,
 
+    /// Minimum file size. Inclusive.
+    #[structopt(long, default_value="1")]
+    pub min_size: u64,
+
+    /// Maximum file size. Inclusive.
+    #[structopt(long, default_value="18446744073709551615")]
+    pub max_size: u64,
+
     /// Parallelism level
-    #[structopt(short, long, default_value = "8")]
+    #[structopt(short, long, default_value="8")]
     pub threads: usize,
 
     /// Directory roots to scan
@@ -65,7 +73,10 @@ fn main() {
     let size_groups = files
         .group_by_key(file_len)
         .into_iter()
-        .filter(|(size, files)| *size > 0 && files.len() >= 2);
+        .filter(|(size, files)|
+            *size >= config.min_size &&
+                *size <= config.max_size &&
+                files.len() >= 2);
 
     for (size, files) in size_groups {
         println!("{}:", size);
