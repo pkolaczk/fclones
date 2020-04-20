@@ -88,7 +88,6 @@ impl<T, K, V, F> IntoIterator for GroupMap<T, K, V, F>
 /// let mut groups: Vec<(u32, Vec<u32>)> = vec![(1, 10), (2, 20), (1, 11), (2, 21)]
 ///     .into_par_iter()
 ///     .group_by_key(identity)
-///     .into_iter()
 ///     .collect();
 ///
 /// // The results may come in any order, so let's make them deterministic:
@@ -100,23 +99,26 @@ impl<T, K, V, F> IntoIterator for GroupMap<T, K, V, F>
 /// assert_eq!(groups[1], (2, vec![20, 21]));
 ///
 /// ```
-pub trait GroupBy<T> {
-    fn group_by_key<K, V, F>(self, f: F) -> GroupMap<T, K, V, F>
-        where K: PartialEq + Hash + Copy + Sized + Sync + Send,
-              V: Send + Sync,
-              F: (Fn(T) -> (K, V)) + Sync;
+pub trait GroupBy<T, K, V> {
+    type Out: Iterator<Item=(K, Vec<V>)>;
+
+    fn group_by_key<F>(self, f: F) -> Self::Out
+        where F: (Fn(T) -> (K, V)) + Sync;
 }
 
-impl<T, In> GroupBy<T> for In
-    where T: Sync + Send, In: ParallelIterator<Item=T>
+impl<T, K, V, In> GroupBy<T, K, V> for In
+    where T: Send + Sync,
+          K: PartialEq + Hash + Copy + Send + Sync,
+          V: Send + Sync,
+          In: ParallelIterator<Item=T>
 {
-    fn group_by_key<K, V, F>(self, f: F) -> GroupMap<T, K, V, F>
-        where K: PartialEq + Hash + Copy + Sized + Sync + Send,
-              V: Send + Sync,
-              F: (Fn(T) -> (K, V)) + Sync
+    type Out = chashmap::IntoIter<K, Vec<V>>;
+
+    fn group_by_key<F>(self, f: F) -> Self::Out
+        where F: (Fn(T) -> (K, V)) + Sync
     {
         let grouping_map = GroupMap::new(f);
         self.for_each(|item| grouping_map.add(item));
-        grouping_map
+        grouping_map.into_iter()
     }
 }
