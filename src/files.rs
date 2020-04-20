@@ -1,14 +1,14 @@
+use std::cmp::min;
 use std::fs::File;
 use std::hash::Hasher;
 use std::io::{BufRead, BufReader};
-use std::path::{PathBuf, Path};
+use std::path::PathBuf;
+use std::sync::mpsc::channel;
 
 use fasthash::{city::crc::Hasher128, FastHasher, HasherExt};
-use std::cmp::min;
-use rayon::prelude::*;
+use jwalk::{Parallelism, WalkDir};
 use rayon::iter::ParallelIterator;
-use std::sync::mpsc::channel;
-use jwalk::{WalkDir, Parallelism};
+use rayon::prelude::*;
 
 /// Returns file size in bytes
 pub fn file_len(file: &PathBuf) -> u64 {

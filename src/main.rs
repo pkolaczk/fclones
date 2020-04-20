@@ -1,16 +1,11 @@
-use std::fs::{File, Metadata};
-use std::hash::Hasher;
-use std::io::{BufRead, BufReader, Read};
+use std::convert::identity;
 use std::path::PathBuf;
-use std::sync::mpsc::{channel, Receiver};
 
-use jwalk::{DirEntry, Parallelism, WalkDir};
-use rayon::iter::ParallelBridge;
 use rayon::prelude::*;
 use structopt::StructOpt;
 
-use dff::group::*;
 use dff::files::*;
+use dff::group::*;
 
 #[derive(Debug, StructOpt)]
 #[structopt(name = "dff", about = "Find duplicate files")]
@@ -59,12 +54,13 @@ fn main() {
     let files= walk_dirs(&config.paths, &walk_opts);
 
     let size_groups = files
-        .group_by_key(file_len)
-        .into_iter()
-        .filter(|(size, files)|
+        .map(|path| (file_len(&path), path))
+        .filter(|(size, _)|
             *size >= config.min_size &&
-                *size <= config.max_size &&
-                files.len() >= 2);
+            *size <= config.max_size)
+        .group_by_key(identity)
+        .into_iter()
+        .filter(|(_, files)| files.len() >= 2);
 
     for (size, files) in size_groups {
         println!("{}:", size);

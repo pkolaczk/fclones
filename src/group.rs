@@ -1,5 +1,7 @@
-use chashmap::CHashMap;
 use std::hash::Hash;
+use std::marker::PhantomData;
+
+use chashmap::CHashMap;
 use rayon::iter::ParallelIterator;
 
 /// Groups items by key.
@@ -16,52 +18,55 @@ use rayon::iter::ParallelIterator;
 /// # Example
 /// ```
 /// use dff::group::GroupMap;
-/// let map = GroupMap::new(|item: &(u32, u32)| item.0);
+/// let map = GroupMap::new(|item: (u32, u32)| (item.0, item.1));
 /// map.add((1, 10));
 /// map.add((2, 20));
 /// map.add((1, 11));
 /// map.add((2, 21));
 ///
-/// let mut groups: Vec<(u32, Vec<(u32, u32)>)> = map.into_iter().collect();
+/// let mut groups: Vec<(u32, Vec<u32>)> = map.into_iter().collect();
 ///
 /// groups.sort_by_key(|item| item.0);
-/// assert_eq!(groups[0], (1, vec![(1, 10), (1, 11)]));
-/// assert_eq!(groups[1], (2, vec![(2, 20), (2, 21)]));
+/// assert_eq!(groups[0], (1, vec![10, 11]));
+/// assert_eq!(groups[1], (2, vec![20, 21]));
 /// ```
 ///
-pub struct GroupMap<K, V, F>
+pub struct GroupMap<T, K, V, F>
     where K: PartialEq + Hash + Copy,
-          F: Fn(&V) -> K
+          F: Fn(T) -> (K, V)
 {
+    item_type: PhantomData<T>,
     groups: CHashMap<K, Vec<V>>,
-    key_by: F,
+    split_fn: F,
 }
 
-impl<K, V, F> GroupMap<K, V, F>
+impl<T, K, V, F> GroupMap<T, K, V, F>
     where K: PartialEq + Hash + Copy,
-          F: Fn(&V) -> K
+          F: Fn(T) -> (K, V),
 {
     /// Creates a new empty map.
-    pub fn new(key_fn: F) -> GroupMap<K, V, F> {
-        GroupMap { groups: CHashMap::new(), key_by: key_fn }
+    ///
+    /// # Arguments
+    /// * `split_fn` - a function generating the key-value pair for each input item
+    pub fn new(split_fn: F) -> GroupMap<T, K, V, F> {
+        GroupMap { item_type: PhantomData, groups: CHashMap::new(), split_fn }
     }
 
     /// Adds an item to the map.
-    /// Note, this doesn't require `&mut self` so this can be called
-    /// from safely from many threads.
-    pub fn add(&self, item: V) {
-        let key = (self.key_by)(&item);
+    /// Note, this doesn't take `&mut self` so this can be called from safely from many threads.
+    pub fn add(&self, item: T) {
+        let (key, new_item) = (self.split_fn)(item);
         // TODO: Find a better concurrent map implementation that provides atomic `get_or_insert`
         // We can't add the item directly in the `upsert` method, because we'd have to move it
         // to both arguments and it would have to implement Copy
         self.groups.upsert(key, || vec![], |_| ());
-        self.groups.get_mut(&key).unwrap().push(item)
+        self.groups.get_mut(&key).unwrap().push(new_item)
     }
 }
 
-impl<K, V, F> IntoIterator for GroupMap<K, V, F>
+impl<T, K, V, F> IntoIterator for GroupMap<T, K, V, F>
     where K: PartialEq + Hash + Copy,
-          F: Fn(&V) -> K
+          F: Fn(T) -> (K, V),
 {
     type Item = (K, Vec<V>);
     type IntoIter = chashmap::IntoIter<K, Vec<V>>;
@@ -78,34 +83,37 @@ impl<K, V, F> IntoIterator for GroupMap<K, V, F>
 /// ```
 /// use rayon::prelude::*;
 /// use dff::group::*;
+/// use std::convert::identity;
 ///
-/// let mut groups: Vec<(u32, Vec<(u32, u32)>)> = vec![(1, 10), (2, 20), (1, 11), (2, 21)]
+/// let mut groups: Vec<(u32, Vec<u32>)> = vec![(1, 10), (2, 20), (1, 11), (2, 21)]
 ///     .into_par_iter()
-///     .group_by_key(|&item| item.0)
+///     .group_by_key(identity)
 ///     .into_iter()
 ///     .collect();
 ///
 /// // The results may come in any order, so let's make them deterministic:
 /// groups.sort_by_key(|item| item.0);
-/// groups[0].1.sort_by_key(|item| item.1);
-/// groups[1].1.sort_by_key(|item| item.1);
+/// groups[0].1.sort();
+/// groups[1].1.sort();
 ///
-/// assert_eq!(groups[0], (1, vec![(1, 10), (1, 11)]));
-/// assert_eq!(groups[1], (2, vec![(2, 20), (2, 21)]));
+/// assert_eq!(groups[0], (1, vec![10, 11]));
+/// assert_eq!(groups[1], (2, vec![20, 21]));
 ///
 /// ```
-pub trait GroupBy<V> {
-    fn group_by_key<K, F>(self, f: F) -> GroupMap<K, V, F>
+pub trait GroupBy<T> {
+    fn group_by_key<K, V, F>(self, f: F) -> GroupMap<T, K, V, F>
         where K: PartialEq + Hash + Copy + Sized + Sync + Send,
-              F: (Fn(&V) -> K) + Sync;
+              V: Send + Sync,
+              F: (Fn(T) -> (K, V)) + Sync;
 }
 
-impl<V, In> GroupBy<V> for In
-    where V: Sync + Send, In: ParallelIterator<Item=V>
+impl<T, In> GroupBy<T> for In
+    where T: Sync + Send, In: ParallelIterator<Item=T>
 {
-    fn group_by_key<K, F>(self, f: F) -> GroupMap<K, V, F>
+    fn group_by_key<K, V, F>(self, f: F) -> GroupMap<T, K, V, F>
         where K: PartialEq + Hash + Copy + Sized + Sync + Send,
-              F: (Fn(&V) -> K) + Sync
+              V: Send + Sync,
+              F: (Fn(T) -> (K, V)) + Sync
     {
         let grouping_map = GroupMap::new(f);
         self.for_each(|item| grouping_map.add(item));
