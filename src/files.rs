@@ -1,7 +1,7 @@
 use std::fs::File;
 use std::hash::Hasher;
 use std::io::{BufRead, BufReader};
-use std::path::PathBuf;
+use std::path::{PathBuf, Path};
 
 use fasthash::{city::crc::Hasher128, FastHasher, HasherExt};
 use std::cmp::min;
@@ -20,15 +20,25 @@ pub fn file_len(file: &PathBuf) -> u64 {
 
 /// Computes hash of initial `len` bytes of a file.
 /// If the file does not exist or is not readable, it prints an error to stderr and returns `None`.
+/// The returned hash is not cryptograhically secure.
 ///
 /// # Example
 /// ```
 /// use dff::files::file_hash;
 /// use std::path::PathBuf;
-/// // Assume test1.dat and test2.dat contents differ and are longer than 16 bytes
-/// let hash1 = file_hash(&PathBuf::from("test/test1.dat"), std::u64::MAX).unwrap();
-/// let hash2 = file_hash(&PathBuf::from("test/test2.dat"), std::u64::MAX).unwrap();
-/// let hash3 = file_hash(&PathBuf::from("test/test2.dat"), 16).unwrap();
+/// use std::fs::{File, create_dir_all};
+/// use std::io::Write;
+///
+/// let test_root = PathBuf::from("target/test/file_hash/");
+/// create_dir_all(&test_root).unwrap();
+/// let file1 = test_root.join("file1");
+/// File::create(&file1).unwrap().write_all(b"Test file 1");
+/// let file2 = test_root.join("file2");
+/// File::create(&file2).unwrap().write_all(b"Test file 2");
+///
+/// let hash1 = file_hash(&file1, std::u64::MAX).unwrap();
+/// let hash2 = file_hash(&file2, std::u64::MAX).unwrap();
+/// let hash3 = file_hash(&file2, 8).unwrap();
 /// assert_ne!(hash1, hash2);
 /// assert_ne!(hash2, hash3);
 /// ```
