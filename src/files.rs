@@ -5,6 +5,10 @@ use std::path::PathBuf;
 
 use fasthash::{city::crc::Hasher128, FastHasher, HasherExt};
 use std::cmp::min;
+use rayon::prelude::*;
+use rayon::iter::ParallelIterator;
+use std::sync::mpsc::channel;
+use jwalk::{WalkDir, Parallelism};
 
 /// Returns file size in bytes
 pub fn file_len(file: &PathBuf) -> u64 {
@@ -57,4 +61,65 @@ pub fn file_hash(path: &PathBuf, len: u64) -> Option<u128> {
         }
     }
     Some(hasher.finish_ext())
+}
+
+
+pub struct WalkOpts {
+    pub skip_hidden: bool,
+    pub follow_links: bool
+}
+
+/// Walks multiple directory trees in parallel.
+/// Inaccessible files are skipped, but errors are printed to stderr.
+/// Returns only regular files and symlinks in the output stream.
+/// Output order is unspecified.
+/// Uses the default global rayon pool to launch tasks.
+///
+/// # Example
+/// ```
+/// use std::fs::{File, create_dir_all, remove_dir_all, create_dir};
+/// use std::path::PathBuf;
+/// use rayon::iter::ParallelIterator;
+///
+/// use dff::files::{walk_dirs, WalkOpts};
+///
+/// let test_root = PathBuf::from("target/test/walk/");
+/// let dir1 = test_root.join("dir1");
+/// let dir2 = test_root.join("dir2");
+/// let dir3 = dir2.join("dir3");
+/// remove_dir_all(&test_root).unwrap();
+/// create_dir_all(&test_root).unwrap();
+/// create_dir(&dir1).unwrap();
+/// create_dir(&dir2).unwrap();
+/// create_dir(&dir3).unwrap();
+///
+/// File::create(dir1.join("file11.txt")).unwrap();
+/// File::create(dir1.join("file12.txt")).unwrap();
+/// File::create(dir2.join("file2.txt")).unwrap();
+/// File::create(dir3.join("file3.txt")).unwrap();
+///
+/// let files = walk_dirs(&vec![dir1, dir2], &WalkOpts { skip_hidden: false, follow_links: false });
+/// assert_eq!(files.count(), 4);
+/// ```
+pub fn walk_dirs(paths: &Vec<PathBuf>, opts: &WalkOpts)
+    -> impl ParallelIterator<Item=PathBuf>
+{
+    let (tx, rx) = channel();
+    paths.par_iter().for_each_with(tx, |tx, path| {
+        let walk = WalkDir::new(&path)
+            .skip_hidden(opts.skip_hidden)
+            .follow_links(opts.follow_links)
+            .parallelism(Parallelism::RayonDefaultPool);
+        for entry in walk {
+            match entry {
+                Ok(e) =>
+                    if e.file_type.is_file() || e.file_type.is_symlink() {
+                        tx.send(e.path()).unwrap();
+                    },
+                Err(e) =>
+                    eprintln!("Cannot access path {}: {}", path.display(), e)
+            }
+        }
+    });
+    rx.into_iter().par_bridge()
 }

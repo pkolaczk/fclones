@@ -17,7 +17,7 @@ use dff::files::*;
 struct Config {
     /// Follow symlinks
     #[structopt(long)]
-    pub follow: bool,
+    pub follow_links: bool,
 
     /// Skip hidden files
     #[structopt(long)]
@@ -40,33 +40,24 @@ struct Config {
     pub paths: Vec<PathBuf>,
 }
 
-
-fn walk_dirs(config: &Config) -> Receiver<PathBuf> {
-    let (tx, rx) = channel();
-    config.paths.par_iter().for_each_with(tx, |tx, path| {
-        let walk = WalkDir::new(&path)
-            .skip_hidden(config.skip_hidden)
-            .follow_links(config.follow)
-            .parallelism(Parallelism::RayonDefaultPool);
-        for entry in walk {
-            match entry {
-                Ok(e) =>
-                    if e.file_type.is_file() || e.file_type.is_symlink() {
-                        tx.send(e.path()).unwrap();
-                    },
-                Err(e) =>
-                    eprintln!("Cannot access path {}: {}", path.display(), e)
-            }
-        }
-    });
-    rx
+/// Configures global thread pool to use desired number of threads
+fn configure_thread_pool(parallelism: usize) {
+    rayon::ThreadPoolBuilder::new()
+        .num_threads(parallelism)
+        .build_global()
+        .unwrap();
 }
-
 
 fn main() {
     let config: Config = Config::from_args();
-    rayon::ThreadPoolBuilder::new().num_threads(config.threads).build_global().unwrap();
-    let files= walk_dirs(&config).into_iter().par_bridge();
+    configure_thread_pool(config.threads);
+
+    let walk_opts = WalkOpts {
+        skip_hidden: config.skip_hidden,
+        follow_links: config.follow_links
+    };
+    let files= walk_dirs(&config.paths, &walk_opts);
+
     let size_groups = files
         .group_by_key(file_len)
         .into_iter()
