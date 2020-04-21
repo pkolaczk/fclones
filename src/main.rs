@@ -55,6 +55,7 @@ fn main() {
 
     let size_groups = files
         .map(|path| (file_len(&path), path))
+        .filter_map(|(size_opt, path)| size_opt.map(|size| (size, path)))  // remove entries with unknown size
         .filter(|(size, _)|
             *size >= config.min_size &&
             *size <= config.max_size)

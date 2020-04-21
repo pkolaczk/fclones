@@ -10,16 +10,21 @@ use jwalk::{Parallelism, WalkDir};
 use rayon::iter::ParallelIterator;
 use rayon::prelude::*;
 
-/// Returns file size in bytes
-pub fn file_len(file: &PathBuf) -> u64 {
+/// Return file size in bytes.
+/// If file metadata cannot be accessed, print the error to stderr and return `None`.
+pub fn file_len(file: &PathBuf) -> Option<u64> {
     match std::fs::metadata(file) {
-        Ok(metadata) => metadata.len(),
-        Err(e) => { eprintln!("Failed to read size of {}: {}", file.display(), e); 0 }
+        Ok(metadata) =>
+            Some(metadata.len()),
+        Err(e) => {
+            eprintln!("Failed to read size of {}: {}", file.display(), e);
+            None
+        }
     }
 }
 
-/// Computes hash of initial `len` bytes of a file.
-/// If the file does not exist or is not readable, it prints an error to stderr and returns `None`.
+/// Compute hash of initial `len` bytes of a file.
+/// If the file does not exist or is not readable, print the error to stderr and return `None`.
 /// The returned hash is not cryptograhically secure.
 ///
 /// # Example
