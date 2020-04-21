@@ -59,6 +59,7 @@ fn main() {
             *size >= config.min_size &&
             *size <= config.max_size)
         .group_by_key(identity)
+        .into_iter()
         .filter(|(_, files)| files.len() >= 2);
 
     for (size, files) in size_groups {
