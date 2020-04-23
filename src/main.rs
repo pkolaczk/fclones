@@ -1,11 +1,15 @@
 use std::convert::identity;
 use std::path::PathBuf;
+use std::thread;
+use std::time::Duration;
 
+use indicatif::{ProgressBar, ProgressDrawTarget, ProgressStyle};
 use rayon::prelude::*;
 use structopt::StructOpt;
 
 use dff::files::*;
 use dff::group::*;
+use dff::progress::FastProgressBar;
 
 #[derive(Debug, StructOpt)]
 #[structopt(name = "dff", about = "Find duplicate files")]
@@ -43,6 +47,12 @@ fn configure_thread_pool(parallelism: usize) {
         .unwrap();
 }
 
+fn file_scan_progress_bar() -> FastProgressBar {
+    let file_scan_pb = ProgressBar::new_spinner();
+    file_scan_pb.set_style(ProgressStyle::default_spinner().template("Scanned files: {pos}"));
+    FastProgressBar::wrap(file_scan_pb, Duration::from_millis(100))
+}
+
 fn main() {
     let config: Config = Config::from_args();
     configure_thread_pool(config.threads);
@@ -52,8 +62,9 @@ fn main() {
         follow_links: config.follow_links
     };
     let files= walk_dirs(&config.paths, &walk_opts);
-
+    let file_scan_pb = file_scan_progress_bar();
     let size_groups = files
+        .inspect(move |path| file_scan_pb.tick())
         .map(|path| (file_len(&path), path))
         .filter_map(|(size_opt, path)| size_opt.map(|size| (size, path)))  // remove entries with unknown size
         .filter(|(size, _)|
