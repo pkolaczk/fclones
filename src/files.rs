@@ -1,14 +1,17 @@
 use std::cmp::min;
-use std::fs::File;
+use std::fs::{File, read_dir};
 use std::hash::Hasher;
 use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
-use std::sync::mpsc::channel;
+use std::sync::mpsc::{channel, sync_channel};
 
 use fasthash::{city::crc::Hasher128, FastHasher, HasherExt};
 use jwalk::{Parallelism, WalkDir};
 use rayon::iter::ParallelIterator;
 use rayon::prelude::*;
+use std::{fs, thread};
+use std::sync::Arc;
+use rayon::{ThreadPool, ThreadPoolBuilder};
 
 /// Return file size in bytes.
 /// If file metadata cannot be accessed, print the error to stderr and return `None`.
@@ -78,11 +81,19 @@ pub fn file_hash(path: &PathBuf, len: u64) -> Option<u128> {
     Some(hasher.finish_ext())
 }
 
-
+#[derive(Copy, Clone)]
 pub struct WalkOpts {
+    pub parallelism: usize,
     pub skip_hidden: bool,
     pub follow_links: bool
 }
+
+impl WalkOpts {
+    pub fn default() -> WalkOpts {
+        WalkOpts { parallelism: 8, skip_hidden: false, follow_links: false }
+    }
+}
+
 
 /// Walks multiple directory trees in parallel.
 /// Inaccessible files are skipped, but errors are printed to stderr.
@@ -113,28 +124,42 @@ pub struct WalkOpts {
 /// File::create(dir2.join("file2.txt")).unwrap();
 /// File::create(dir3.join("file3.txt")).unwrap();
 ///
-/// let files = walk_dirs(&vec![dir1, dir2], &WalkOpts { skip_hidden: false, follow_links: false });
+/// let dirs = vec![dir1, dir2];
+/// let files = walk_dirs(dirs, WalkOpts::default());
 /// assert_eq!(files.count(), 4);
 /// ```
-pub fn walk_dirs(paths: &Vec<PathBuf>, opts: &WalkOpts)
-    -> impl ParallelIterator<Item=PathBuf>
-{
-    let (tx, rx) = channel();
-    paths.par_iter().for_each_with(tx, |tx, path| {
-        let walk = WalkDir::new(&path)
-            .skip_hidden(opts.skip_hidden)
-            .follow_links(opts.follow_links)
-            .parallelism(Parallelism::RayonDefaultPool);
-        for entry in walk {
-            match entry {
-                Ok(e) =>
-                    if e.file_type.is_file() || e.file_type.is_symlink() {
-                        tx.send(e.path()).unwrap();
-                    },
-                Err(e) =>
-                    eprintln!("Cannot access path {}: {}", path.display(), e)
-            }
-        }
-    });
+///
+pub fn walk_dirs(paths: Vec<PathBuf>, opts: WalkOpts) -> impl ParallelIterator<Item=PathBuf> {
+
+    let (tx, rx) = sync_channel(65536);
+
+    // We need to use a separate rayon thread-pool for walking the directories, because
+    // otherwise we may get deadlocks caused by blocking on the channel.
+    let thread_pool = Arc::new(
+        ThreadPoolBuilder::new()
+            .num_threads(opts.parallelism)
+            .build()
+            .unwrap());
+
+    for path in paths {
+        let tx = tx.clone();
+        let thread_pool = thread_pool.clone();
+        thread::spawn(move || {
+            WalkDir::new(&path)
+                .skip_hidden(opts.skip_hidden)
+                .follow_links(opts.follow_links)
+                .parallelism(Parallelism::RayonExistingPool(thread_pool))
+                .into_iter()
+                .for_each(move |entry| match entry {
+                    Ok(e) if e.file_type.is_file() || e.file_type.is_symlink() =>
+                        tx.send(e.path()).unwrap(),
+                    Ok(_) =>
+                        (),
+                    Err(e) =>
+                        eprintln!("Cannot access path {}: {}", path.display(), e)
+                });
+        });
+    }
+
     rx.into_iter().par_bridge()
 }

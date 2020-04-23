@@ -30,8 +30,9 @@ struct Config {
     #[structopt(long, default_value="18446744073709551615")]
     pub max_size: u64,
 
-    /// Parallelism level
-    #[structopt(short, long, default_value="8")]
+    /// Parallelism level.
+    /// If set to 0, the number of CPU cores reported by the operating system is used.
+    #[structopt(short, long, default_value="0")]
     pub threads: usize,
 
     /// Directory roots to scan
@@ -50,7 +51,7 @@ fn configure_thread_pool(parallelism: usize) {
 fn file_scan_progress_bar() -> FastProgressBar {
     let file_scan_pb = ProgressBar::new_spinner();
     file_scan_pb.set_style(ProgressStyle::default_spinner().template("Scanned files: {pos}"));
-    FastProgressBar::wrap(file_scan_pb, Duration::from_millis(100))
+    FastProgressBar::wrap(file_scan_pb, Duration::from_millis(125))
 }
 
 fn main() {
@@ -59,9 +60,10 @@ fn main() {
 
     let walk_opts = WalkOpts {
         skip_hidden: config.skip_hidden,
-        follow_links: config.follow_links
+        follow_links: config.follow_links,
+        parallelism: config.threads
     };
-    let files= walk_dirs(&config.paths, &walk_opts);
+    let files= walk_dirs(config.paths.clone(), walk_opts);
     let file_scan_pb = file_scan_progress_bar();
     let size_groups = files
         .inspect(move |path| file_scan_pb.tick())
