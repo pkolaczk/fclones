@@ -1,9 +1,8 @@
 use std::convert::identity;
 use std::path::PathBuf;
-use std::thread;
 use std::time::Duration;
 
-use indicatif::{ProgressBar, ProgressDrawTarget, ProgressStyle};
+use indicatif::{ProgressBar, ProgressStyle};
 use rayon::prelude::*;
 use structopt::StructOpt;
 
@@ -65,8 +64,8 @@ fn main() {
     };
     let files= walk_dirs(config.paths.clone(), walk_opts);
     let file_scan_pb = file_scan_progress_bar();
-    let size_groups = files
-        .inspect(move |path| file_scan_pb.tick())
+    let size_groups: Vec<_> = files
+        .inspect(move |_| file_scan_pb.tick())
         .map(|path| (file_len(&path), path))
         .filter_map(|(size_opt, path)| size_opt.map(|size| (size, path)))  // remove entries with unknown size
         .filter(|(size, _)|
@@ -74,7 +73,8 @@ fn main() {
             *size <= config.max_size)
         .group_by_key(identity)
         .into_iter()
-        .filter(|(_, files)| files.len() >= 2);
+        .filter(|(_, files)| files.len() >= 2)
+        .collect();
 
     for (size, files) in size_groups {
         println!("{}:", size);

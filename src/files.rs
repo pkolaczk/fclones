@@ -1,17 +1,17 @@
 use std::cmp::min;
-use std::fs::{File, read_dir};
+use std::fs::File;
 use std::hash::Hasher;
 use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
-use std::sync::mpsc::{channel, sync_channel};
+use std::sync::Arc;
+use std::sync::mpsc::sync_channel;
+use std::thread;
 
 use fasthash::{city::crc::Hasher128, FastHasher, HasherExt};
 use jwalk::{Parallelism, WalkDir};
+use rayon::ThreadPoolBuilder;
 use rayon::iter::ParallelIterator;
 use rayon::prelude::*;
-use std::{fs, thread};
-use std::sync::Arc;
-use rayon::{ThreadPool, ThreadPoolBuilder};
 
 /// Return file size in bytes.
 /// If file metadata cannot be accessed, print the error to stderr and return `None`.
