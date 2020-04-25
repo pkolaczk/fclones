@@ -1,8 +1,6 @@
 use std::convert::identity;
 use std::path::PathBuf;
-use std::time::Duration;
 
-use indicatif::{ProgressBar, ProgressStyle};
 use rayon::prelude::*;
 use structopt::StructOpt;
 
@@ -48,17 +46,6 @@ fn configure_thread_pool(parallelism: usize) {
         .unwrap();
 }
 
-fn file_scan_progress_bar() -> FastProgressBar {
-    let file_scan_pb = ProgressBar::new_spinner();
-    file_scan_pb.set_style(ProgressStyle::default_spinner().template("Scanned files: {pos}"));
-    FastProgressBar::wrap(file_scan_pb, Duration::from_millis(125))
-}
-
-fn prefix_hash_progress_bar(len: u64) -> FastProgressBar {
-    let pb = ProgressBar::new(len);
-    FastProgressBar::wrap(pb, Duration::from_millis(125))
-}
-
 fn main() {
     let config: Config = Config::from_args();
     configure_thread_pool(config.threads);
@@ -71,7 +58,7 @@ fn main() {
 
     let matching_file_count = RelaxedCounter::new(0);
     let files= walk_dirs(config.paths.clone(), walk_opts);
-    let file_scan_pb = file_scan_progress_bar();
+    let file_scan_pb = FastProgressBar::new_spinner("Scanning files");
     let size_groups: Vec<_> = files
         .inspect(|_| file_scan_pb.tick())
         .map(|path| (file_len(&path), path))
@@ -90,14 +77,15 @@ fn main() {
     let file_count_1: usize = size_groups.iter().map(|(_, group)| group.len()).sum();
     let group_count_1 = size_groups.len();
 
-    let prefix_hash_pb = prefix_hash_progress_bar(file_count_1 as u64);
+    let prefix_hash_pb = FastProgressBar::new_progress_bar(
+        "Hashing by prefix", file_count_1 as u64);
     let prefix_groups: Vec<_> = size_groups
         .par_iter()
         .map(|(_, group)| group)
         .flat_map(|files| files
             .par_iter()
             .map(|path| (file_hash(&path, 4096), path))
-            .inspect(|_| prefix_hash_pb.inc(1))
+            .inspect(|_| prefix_hash_pb.tick())
             .filter_map(|(hash_opt, path)| hash_opt.map(|hash| (hash, path)))
             .group_by_key(identity)
             .into_iter()
@@ -109,16 +97,20 @@ fn main() {
     let file_count_2: usize = prefix_groups.iter().map(|(_, group)| group.len()).sum();
     let group_count_2 = prefix_groups.len();
 
+    let report_pb = FastProgressBar::new_progress_bar(
+        "Writing report", group_count_2 as u64);
 
     println!("# Total scanned files: {}", file_count_0);
     println!("# Selected files: {}", matching_file_count.get());
     println!("# Files matched by same size: {} in {} groups", file_count_1, group_count_1);
     println!("# Files matched by same prefix: {} in {} groups", file_count_2, group_count_2);
-
+    println!();
     for (hash, files) in prefix_groups {
+        report_pb.tick();
         println!("{:x}:", hash);
         for f in files {
            println!("    {}", f.display());
         }
     }
+    report_pb.finish_and_clear();
 }

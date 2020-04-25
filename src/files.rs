@@ -151,7 +151,7 @@ pub fn walk_dirs(paths: Vec<PathBuf>, opts: WalkOpts) -> impl ParallelIterator<I
                 .parallelism(Parallelism::RayonExistingPool(thread_pool))
                 .into_iter()
                 .for_each(move |entry| match entry {
-                    Ok(e) if e.file_type.is_file() || e.file_type.is_symlink() =>
+                    Ok(e) if e.file_type.is_file() =>
                         tx.send(e.path()).unwrap(),
                     Ok(_) =>
                         (),
