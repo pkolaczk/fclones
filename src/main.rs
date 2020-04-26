@@ -1,6 +1,8 @@
+use std::cmp::Reverse;
 use std::path::PathBuf;
 
 use atomic_counter::{AtomicCounter, RelaxedCounter};
+use bytesize::ByteSize;
 use structopt::StructOpt;
 
 use dff::files::*;
@@ -46,6 +48,8 @@ fn configure_thread_pool(parallelism: usize) {
 
 fn main() {
 
+    const PREFIX_LEN: u64 = 4096;
+
     let config: Config = Config::from_args();
     configure_thread_pool(config.threads);
 
@@ -57,7 +61,7 @@ fn main() {
 
     let matching_file_count = RelaxedCounter::new(0);
     let files= walk_dirs(config.paths.clone(), walk_opts);
-    let file_scan_pb = FastProgressBar::new_spinner("Scanning files");
+    let file_scan_pb = FastProgressBar::new_spinner("[1/4] Scanning files");
     let size_groups = split_groups(
         vec![((), files)], 2,|_, path| {
             file_scan_pb.tick();
@@ -71,10 +75,10 @@ fn main() {
     let group_count_1 = size_groups.len();
 
     let prefix_hash_pb = FastProgressBar::new_progress_bar(
-        "Hashing by prefix", file_count_1 as u64);
-    let prefix_groups = split_groups(size_groups, 2, |len, path | {
+        "[2/4] Hashing by prefix", file_count_1 as u64);
+    let prefix_groups = split_groups(size_groups, 2, |&len, path | {
         prefix_hash_pb.tick();
-        file_hash(&path, 4096) //.map(|h| (len, h))
+        file_hash(path, PREFIX_LEN).map(|h| (len, h))
     });
 
     prefix_hash_pb.finish_and_clear();
@@ -82,24 +86,29 @@ fn main() {
     let group_count_2 = prefix_groups.len();
 
     let contents_hash_pb = FastProgressBar::new_progress_bar(
-        "Hashing by contents", file_count_2 as u64);
-    let contents_groups = split_groups(prefix_groups, 2, |hash, path | {
+        "[3/4] Hashing by contents", file_count_2 as u64);
+    let mut contents_groups = split_groups(prefix_groups, 2, |&(len, hash), path | {
         contents_hash_pb.tick();
-        file_hash(&path, u64::MAX) //.map(|h| (len, h))
+        if len > PREFIX_LEN {
+            file_hash(path, u64::MAX).map(|h| (len, h))
+        } else {
+            Some((len, hash))
+        }
     });
+    contents_groups.sort_by_key(|&((len, _), _)| Reverse(len));
     contents_hash_pb.finish_and_clear();
 
     let report_pb = FastProgressBar::new_progress_bar(
-        "Writing report", group_count_2 as u64);
+        "[4/4] Writing report", group_count_2 as u64);
 
     println!("# Total scanned files: {}", file_count_0);
     println!("# Selected files: {}", matching_file_count.get());
     println!("# Files matched by same size: {} in {} groups", file_count_1, group_count_1);
     println!("# Files matched by same prefix: {} in {} groups", file_count_2, group_count_2);
     println!();
-    for (hash, files) in contents_groups {
+    for ((len, hash), files) in contents_groups {
         report_pb.tick();
-        println!("{:x}:", hash);
+        println!("{:x} {}:", hash, ByteSize(len));
         for f in files {
            println!("    {}", f.display());
         }

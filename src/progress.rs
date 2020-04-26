@@ -85,7 +85,7 @@ impl FastProgressBar {
         let tick_strings = Self::gen_tick_strings();
         let tick_strings: Vec<&str> = tick_strings.iter().map(|s| s as &str).collect();
         inner.set_style(ProgressStyle::default_spinner()
-            .template("{msg:>24.cyan.bold} [{spinner}] {pos:>10}")
+            .template("{msg:28.cyan.bold} [{spinner}] {pos:>10}")
             .tick_strings(tick_strings.as_slice())
         );
         inner.set_message(msg);
@@ -96,7 +96,7 @@ impl FastProgressBar {
     pub fn new_progress_bar(msg: &str, len: u64) -> FastProgressBar {
         let inner = ProgressBar::new(len);
         inner.set_style(ProgressStyle::default_bar()
-            .template("{msg:>24.cyan.bold} [{bar:WIDTH}] {pos:>10}/{len}"
+            .template("{msg:28.cyan.bold} [{bar:WIDTH}] {pos:>10}/{len}"
                 .replace("WIDTH", Self::WIDTH.to_string().as_str()).as_str())
             .progress_chars(Self::PROGRESS_CHARS));
         inner.set_message(msg);
