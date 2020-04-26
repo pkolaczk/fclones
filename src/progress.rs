@@ -152,7 +152,7 @@ impl FastProgressBar {
 impl Drop for FastProgressBar {
     fn drop(&mut self) {
         if !self.is_finished() {
-            self.abandon();
+            self.finish_and_clear();
         }
     }
 }
