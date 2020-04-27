@@ -1,4 +1,6 @@
+use core::fmt;
 use std::cmp::min;
+use std::fmt::Display;
 use std::fs::File;
 use std::hash::Hasher;
 use std::io::{BufRead, BufReader};
@@ -7,18 +9,86 @@ use std::sync::Arc;
 use std::sync::mpsc::sync_channel;
 use std::thread;
 
+use bytesize::ByteSize;
 use fasthash::{city::crc::Hasher128, FastHasher, HasherExt};
 use jwalk::{Parallelism, WalkDir};
-use rayon::ThreadPoolBuilder;
 use rayon::iter::ParallelIterator;
 use rayon::prelude::*;
+use rayon::ThreadPoolBuilder;
+use smallvec::alloc::fmt::Formatter;
+use smallvec::alloc::str::FromStr;
+
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
+pub struct FileLen(pub u64);
+
+impl FileLen {
+    pub const MAX: FileLen = FileLen(u64::MAX);
+}
+
+pub trait AsFileLen {
+    fn as_file_len(&self) -> &FileLen;
+}
+
+impl AsFileLen for FileLen {
+    fn as_file_len(&self) -> &FileLen {
+        self
+    }
+}
+
+impl<T> AsFileLen for (FileLen, T) {
+    fn as_file_len(&self) -> &FileLen {
+        &self.0
+    }
+}
+
+impl FromStr for FileLen {
+
+    type Err = <u64 as FromStr>::Err;
+
+    // TODO handle units
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Ok(FileLen(s.parse()?))
+    }
+}
+
+impl Display for FileLen {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+       write!(f, "{}", ByteSize(self.0))
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub struct FileHash(pub u128);
+
+pub trait AsFileHash {
+    fn as_file_hash(&self) -> &FileHash;
+}
+
+impl AsFileHash for FileHash {
+    fn as_file_hash(&self) -> &FileHash {
+        self
+    }
+}
+
+impl<T> AsFileHash for (T, FileHash) {
+    fn as_file_hash(&self) -> &FileHash {
+        &self.1
+    }
+}
+
+
+impl Display for FileHash {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        write!(f, "{:x}", self.0)
+    }
+}
 
 /// Return file size in bytes.
 /// If file metadata cannot be accessed, print the error to stderr and return `None`.
-pub fn file_len(file: &PathBuf) -> Option<u64> {
+pub fn file_len(file: &PathBuf) -> Option<FileLen> {
     match std::fs::metadata(file) {
         Ok(metadata) =>
-            Some(metadata.len()),
+            Some(FileLen(metadata.len())),
         Err(e) => {
             eprintln!("Failed to read size of {}: {}", file.display(), e);
             None
@@ -50,7 +120,7 @@ pub fn file_len(file: &PathBuf) -> Option<u64> {
 /// assert_ne!(hash1, hash2);
 /// assert_ne!(hash2, hash3);
 /// ```
-pub fn file_hash(path: &PathBuf, len: u64) -> Option<u128> {
+pub fn file_hash(path: &PathBuf, len: FileLen) -> Option<FileHash> {
     let file = match File::open(path) {
         Ok(file) => file,
         Err(e) => {
@@ -61,11 +131,11 @@ pub fn file_hash(path: &PathBuf, len: u64) -> Option<u128> {
     let mut count: u64 = 0;
     let mut reader = BufReader::with_capacity(4096, file);
     let mut hasher = Hasher128::new();
-    while count < len {
+    while count < len.0 {
         match reader.fill_buf() {
             Ok(&[]) => break,
             Ok(buf) => {
-                let to_read = len - count;
+                let to_read = len.0 - count;
                 let length = buf.len() as u64;
                 let actual_read = min(length, to_read) as usize;
                 count += actual_read as u64;
@@ -78,7 +148,7 @@ pub fn file_hash(path: &PathBuf, len: u64) -> Option<u128> {
             }
         }
     }
-    Some(hasher.finish_ext())
+    Some(FileHash(hasher.finish_ext()))
 }
 
 #[derive(Copy, Clone)]
