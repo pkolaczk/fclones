@@ -172,3 +172,14 @@ pub fn split_groups<K1, K2, V, F, I>(input: Vec<(K1, I)>, min_group_size: usize,
         })
         .collect::<Vec<_>>()
 }
+
+/// Counts values in a grouped vector
+///
+/// # Example
+/// ```
+/// use dff::group::count_values;
+/// assert_eq!(count_values(&vec![("a", vec![1, 2]), ("b", vec![3, 4])]), 4)
+/// ```
+pub fn count_values<K, V>(input: &Vec<(K, Vec<V>)>) -> usize {
+    input.iter().map(|(_, values)| values.len()).sum()
+}

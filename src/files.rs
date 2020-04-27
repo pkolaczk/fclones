@@ -102,7 +102,7 @@ pub fn file_len(file: &PathBuf) -> Option<FileLen> {
 ///
 /// # Example
 /// ```
-/// use dff::files::file_hash;
+/// use dff::files::{file_hash, FileLen};
 /// use std::path::PathBuf;
 /// use std::fs::{File, create_dir_all};
 /// use std::io::Write;
@@ -114,9 +114,9 @@ pub fn file_len(file: &PathBuf) -> Option<FileLen> {
 /// let file2 = test_root.join("file2");
 /// File::create(&file2).unwrap().write_all(b"Test file 2");
 ///
-/// let hash1 = file_hash(&file1, std::u64::MAX).unwrap();
-/// let hash2 = file_hash(&file2, std::u64::MAX).unwrap();
-/// let hash3 = file_hash(&file2, 8).unwrap();
+/// let hash1 = file_hash(&file1, FileLen::MAX).unwrap();
+/// let hash2 = file_hash(&file2, FileLen::MAX).unwrap();
+/// let hash3 = file_hash(&file2, FileLen(8)).unwrap();
 /// assert_ne!(hash1, hash2);
 /// assert_ne!(hash2, hash3);
 /// ```

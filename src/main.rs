@@ -8,6 +8,8 @@ use dff::group::*;
 use dff::progress::FastProgressBar;
 use dff::report::Report;
 
+const PREFIX_LEN: FileLen = FileLen(4096);
+
 #[derive(Debug, StructOpt)]
 #[structopt(name = "dff", about = "Find duplicate files")]
 struct Config {
@@ -45,67 +47,81 @@ fn configure_thread_pool(parallelism: usize) {
         .unwrap();
 }
 
-fn main() {
-
-    const PREFIX_LEN: FileLen = FileLen(4096);
-
-    let config: Config = Config::from_args();
-    configure_thread_pool(config.threads);
-
+fn scan_files(report: &mut Report, config: &Config) -> Vec<(FileLen, Vec<PathBuf>)> {
     let walk_opts = WalkOpts {
         skip_hidden: config.skip_hidden,
         follow_links: config.follow_links,
         parallelism: config.threads
     };
-
-    let mut report = Report::new();
-
-    let files= walk_dirs(config.paths.clone(), walk_opts);
-    let file_scan_pb = FastProgressBar::new_spinner("[1/4] Scanning files");
-    let size_groups = split_groups(
-        vec![((), files)], 2,|_, path| {
-            file_scan_pb.tick();
+    let files = walk_dirs(config.paths.clone(), walk_opts);
+    let spinner = FastProgressBar::new_spinner("[1/4] Scanning files");
+    let groups = split_groups(
+        vec![((), files)], 2, |_, path| {
+            spinner.tick();
             file_len(path)
                 .filter(|len| *len >= config.min_size && *len <= config.max_size)
-    });
-    report.scanned_files(file_scan_pb.position());
-    let remaining_files = report.stage_finished("Group by paths", &size_groups);
-    file_scan_pb.finish_and_clear();
+        });
+    report.scanned_files(spinner.position());
+    report.stage_finished("Group by paths", &groups);
+    groups
+}
 
-    let prefix_hash_pb = FastProgressBar::new_progress_bar(
+fn group_by_prefix(report: &mut Report, groups: Vec<(FileLen, Vec<PathBuf>)>)
+                   -> Vec<((FileLen, FileHash), Vec<PathBuf>)>
+{
+    let remaining_files = count_values(&groups);
+    let progress = FastProgressBar::new_progress_bar(
         "[2/4] Hashing by prefix", remaining_files as u64);
-    let prefix_groups = split_groups(size_groups, 2, |&len, path | {
-        prefix_hash_pb.tick();
+    let groups = split_groups(groups, 2, |&len, path| {
+        progress.tick();
         file_hash(path, PREFIX_LEN).map(|h| (len, h))
     });
+    report.stage_finished("Group by prefix", &groups);
+    groups
+}
 
-    let remaining_files = report.stage_finished("Group by prefix", &prefix_groups);
-    prefix_hash_pb.finish_and_clear();
-
-    let contents_hash_pb = FastProgressBar::new_progress_bar(
+fn group_by_contents(report: &mut Report, groups: Vec<((FileLen, FileHash), Vec<PathBuf>)>)
+                     -> Vec<((FileLen, FileHash), Vec<PathBuf>)>
+{
+    let remaining_files = count_values(&groups);
+    let progress = FastProgressBar::new_progress_bar(
         "[3/4] Hashing by contents", remaining_files as u64);
-    let mut contents_groups = split_groups(prefix_groups, 2, |&(len, hash), path | {
-        contents_hash_pb.tick();
+    let groups = split_groups(groups, 2, |&(len, hash), path| {
+        progress.tick();
         if len > PREFIX_LEN {
             file_hash(path, FileLen::MAX).map(|h| (len, h))
         } else {
             Some((len, hash))
         }
     });
+    report.stage_finished("Group by contents", &groups);
+    groups
+}
 
-    let remaining_files = report.stage_finished("Group by contents", &contents_groups);
-    contents_hash_pb.finish_and_clear();
-
-    let report_pb = FastProgressBar::new_progress_bar(
+fn write_report(report: &mut Report, groups: &mut Vec<((FileLen, FileHash), Vec<PathBuf>)>) {
+    let remaining_files = count_values(&groups);
+    let progress = FastProgressBar::new_progress_bar(
         "[4/4] Writing report", remaining_files as u64);
-    contents_groups.sort_by_key(|&((len, _), _)| Reverse(len));
+    groups.sort_by_key(|&((len, _), _)| Reverse(len));
     report.write(&mut std::io::stdout()).expect("Failed to write report");
     println!();
-    for ((len, hash), files) in contents_groups {
+    for ((len, hash), files) in groups {
         println!("{} {}:", hash, len);
         for f in files {
-            report_pb.tick();
+            progress.tick();
             println!("    {}", f.display());
         }
     }
+}
+
+fn main() {
+    let config: Config = Config::from_args();
+    let mut report = Report::new();
+
+    configure_thread_pool(config.threads);
+
+    let size_groups = scan_files(&mut report, &config);
+    let prefix_groups = group_by_prefix(&mut report, size_groups);
+    let mut contents_groups= group_by_contents(&mut report, prefix_groups);
+    write_report(&mut report, &mut contents_groups)
 }
