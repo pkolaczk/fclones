@@ -1,6 +1,7 @@
 use std::cmp::Reverse;
 use std::path::PathBuf;
 
+use rayon::iter::ParallelIterator;
 use structopt::StructOpt;
 
 use dff::files::*;
@@ -60,7 +61,8 @@ fn scan_files(report: &mut Report, config: &Config) -> Vec<(FileLen, Vec<PathBuf
             spinner.tick();
             file_len(path)
                 .filter(|len| *len >= config.min_size && *len <= config.max_size)
-        });
+        }
+    ).collect();
     report.scanned_files(spinner.position());
     report.stage_finished("Group by paths", &groups);
     groups
@@ -75,7 +77,7 @@ fn group_by_prefix(report: &mut Report, groups: Vec<(FileLen, Vec<PathBuf>)>)
     let groups = split_groups(groups, 2, |&len, path| {
         progress.tick();
         file_hash(path, PREFIX_LEN).map(|h| (len, h))
-    });
+    }).collect();
     report.stage_finished("Group by prefix", &groups);
     groups
 }
@@ -93,7 +95,7 @@ fn group_by_contents(report: &mut Report, groups: Vec<((FileLen, FileHash), Vec<
         } else {
             Some((len, hash))
         }
-    });
+    }).collect();
     report.stage_finished("Group by contents", &groups);
     groups
 }

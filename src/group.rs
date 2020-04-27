@@ -151,17 +151,18 @@ impl<T, In> GroupByKey<T> for In
 ///     (("b", true),  vec![3]),
 /// ]);
 /// ```
-pub fn split_groups<K1, K2, V, F, I>(input: Vec<(K1, I)>, min_group_size: usize, group_by: F)
-    -> Vec<(K2, Vec<V>)>
+pub fn split_groups<K1, K2, V, F, I1, I2>(input: I1, min_group_size: usize, group_by: F)
+                                          -> impl ParallelIterator<Item=(K2, Vec<V>)>
     where K1: Eq + Hash + Sync + Send,
           K2: Eq + Hash + Sync + Send,
           V: Sync + Send,
-          F: Fn(&K1, &V) -> Option<K2> + Sync + Send,
-          I: IntoParallelIterator<Item=V> + Send
+          F: (Fn(&K1, &V) -> Option<K2>) + Sync + Send,
+          I1: IntoParallelIterator<Item=(K1, I2)>,
+          I2: IntoParallelIterator<Item=V> + Send,
 {
     input
         .into_par_iter()
-        .flat_map(|(k1, values)| {
+        .flat_map(move |(k1, values)| {
             values
                 .into_par_iter()
                 .filter_map(|v| (group_by)(&k1, &v).map(|k2| (k2, v)))
@@ -170,7 +171,6 @@ pub fn split_groups<K1, K2, V, F, I>(input: Vec<(K1, I)>, min_group_size: usize,
                 .filter(|(_, values)| values.len() >= min_group_size)
                 .collect::<Vec<_>>()
         })
-        .collect::<Vec<_>>()
 }
 
 /// Counts values in a grouped vector
