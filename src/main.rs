@@ -55,7 +55,8 @@ fn configure_thread_pool(parallelism: usize) {
         .unwrap();
 }
 
-/// Removes
+/// Unless `duplicate_links` is set to true,
+/// remove duplicated `FileInfo` entries with the same inode and device id from the list.
 fn remove_duplicate_links_if_needed(config: &Config, files: Vec<FileInfo>) -> Vec<FileInfo> {
     if config.duplicate_links {
         files
