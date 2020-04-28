@@ -3,7 +3,7 @@ use std::cmp::min;
 use std::fmt::Display;
 use std::fs::{File, Metadata};
 use std::hash::{Hash, Hasher};
-use std::io::{BufRead, BufReader};
+use std::io::{BufRead, BufReader, ErrorKind};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::mpsc::sync_channel;
@@ -100,9 +100,15 @@ pub fn file_info(file: PathBuf) -> Option<FileInfo> {
     match std::fs::metadata(&file) {
         Ok(metadata) =>
             Some(FileInfo::for_file(file, &metadata)),
-        Err(e) => {
-            eprintln!("Failed to read metadata of {}: {}", file.display(), e);
-            None
+        Err(e) => match e.kind() {
+            ErrorKind::NotFound =>
+                // file was probably removed while we were scanning, so we don't care -
+                // let's pretend we never found it in the first place
+                None,
+            _ => {
+                eprintln!("Failed to read metadata of {}: {}", file.display(), e);
+                None
+            }
         }
     }
 }
@@ -160,9 +166,15 @@ impl Display for FileHash {
 pub fn file_hash(path: &PathBuf, len: FileLen) -> Option<FileHash> {
     let file = match File::open(path) {
         Ok(file) => file,
-        Err(e) => {
-            eprintln!("Failed to open file {}: {}", path.display(), e);
-            return None;
+        Err(e) => return match e.kind() {
+            ErrorKind::NotFound =>
+                // the file was probably removed while we were scanning, so we don't care -
+                // let's pretend we never found it in the first place
+                None,
+            _ => {
+                eprintln!("Failed to open file {}: {}", path.display(), e);
+                None
+            }
         }
     };
     let mut count: u64 = 0;
