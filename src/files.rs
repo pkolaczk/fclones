@@ -1,9 +1,10 @@
 use core::fmt;
+use std::cell::RefCell;
 use std::cmp::min;
 use std::fmt::Display;
 use std::fs::{File, Metadata};
 use std::hash::{Hash, Hasher};
-use std::io::{BufRead, BufReader, ErrorKind};
+use std::io::{ErrorKind, Read};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::mpsc::sync_channel;
@@ -139,6 +140,15 @@ impl Display for FileHash {
     }
 }
 
+// Size of the temporary buffer used for calculating file hash.
+// There is one such buffer per thread.
+const FILE_HASH_BUF_LEN: usize = 4096;
+
+thread_local! {
+    static FILE_HASH_BUF: RefCell<[u8; FILE_HASH_BUF_LEN]> =
+        RefCell::new([0; FILE_HASH_BUF_LEN]);
+}
+
 /// Compute hash of initial `len` bytes of a file.
 /// If the file does not exist or is not readable, print the error to stderr and return `None`.
 /// The returned hash is not cryptograhically secure.
@@ -164,7 +174,7 @@ impl Display for FileHash {
 /// assert_ne!(hash2, hash3);
 /// ```
 pub fn file_hash(path: &PathBuf, len: FileLen) -> Option<FileHash> {
-    let file = match File::open(path) {
+    let mut file = match File::open(path) {
         Ok(file) => file,
         Err(e) => return match e.kind() {
             ErrorKind::NotFound =>
@@ -177,27 +187,29 @@ pub fn file_hash(path: &PathBuf, len: FileLen) -> Option<FileHash> {
             }
         }
     };
-    let mut count: u64 = 0;
-    let mut reader = BufReader::with_capacity(4096, file);
-    let mut hasher = Hasher128::new();
-    while count < len.0 {
-        match reader.fill_buf() {
-            Ok(&[]) => break,
-            Ok(buf) => {
-                let to_read = len.0 - count;
-                let length = buf.len() as u64;
-                let actual_read = min(length, to_read) as usize;
-                count += actual_read as u64;
-                hasher.write(&buf[0..actual_read]);
-                reader.consume(actual_read);
-            },
-            Err(e) => {
-                eprintln!("Error reading file {}: {}", path.display(), e);
-                return None;
+
+    FILE_HASH_BUF.with(|buf| {
+        let mut buf = buf.borrow_mut();
+        let mut remaining: u64 = len.0;
+        let mut hasher = Hasher128::new();
+        while remaining > 0 {
+            let to_read = min(remaining, buf.len() as u64) as usize;
+            let buf = &mut buf[..to_read];
+            match file.read(buf) {
+                Ok(0) =>
+                    break,
+                Ok(actual_read) => {
+                    remaining -= actual_read as u64;
+                    hasher.write(buf);
+                },
+                Err(e) => {
+                    eprintln!("Error reading file {}: {}", path.display(), e);
+                    return None;
+                }
             }
         }
-    }
-    Some(FileHash(hasher.finish_ext()))
+        Some(FileHash(hasher.finish_ext()))
+    })
 }
 
 #[derive(Copy, Clone)]
