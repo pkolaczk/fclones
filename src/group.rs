@@ -135,12 +135,13 @@ impl<T, In> GroupByKey<T> for In
 /// # Example
 /// ```
 /// use dff::group::split_groups;
+/// use rayon::iter::ParallelIterator;
 ///
 /// let input = vec![
 ///     ("a", vec![1, -5, 12, 9]),
 ///     ("b", vec![-2, -5, 3])
 /// ];
-/// let mut output = split_groups(input, 1, |&k, &v| Some((k, v >= 0)));
+/// let mut output = split_groups(input, 1, |&k, &v| Some((k, v >= 0))).collect::<Vec<_>>();
 /// output.sort_by_key(|g| g.0);
 /// output.iter_mut().for_each(|x| x.1.sort());
 ///
