@@ -2,7 +2,7 @@
 name = "dff"
 description = "Duplicate File Finder"
 version = "0.1.0"
-authors = ["Piotr Kołaczkowski <pkolaczk@datastax.com>"]
+authors = ["Piotr Kołaczkowski <pkolaczk@gmail.com>"]
 edition = "2018"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
@@ -13,6 +13,7 @@ bytesize = "1.0.0"
 dashmap = "3.11.1"
 fasthash = "0.4.0"
 indicatif = { version = "0.14.0", features = ["with_rayon"] }
+itertools = "0.9.0"
 jwalk = "0.5.1"
 rayon = "1.3.0"
 smallvec = "1.4.0"

@@ -1,6 +1,7 @@
 use std::cmp::Reverse;
 use std::path::PathBuf;
 
+use itertools::Itertools;
 use rayon::iter::ParallelIterator;
 use structopt::StructOpt;
 
@@ -12,22 +13,28 @@ use dff::report::Report;
 const PREFIX_LEN: FileLen = FileLen(4096);
 
 #[derive(Debug, StructOpt)]
-#[structopt(name = "dff", about = "Find duplicate files")]
+#[structopt(name = "dff", about = "Find duplicate files", author)]
 struct Config {
-    /// Follow symlinks
-    #[structopt(long)]
-    pub follow_links: bool,
 
     /// Skip hidden files
-    #[structopt(long)]
+    #[structopt(short="A", long)]
     pub skip_hidden: bool,
 
+    /// Follow symbolic links
+    #[structopt(short="L", long)]
+    pub follow_links: bool,
+
+    /// Treat files reachable from multiple paths through
+    /// symbolic or hard links as duplicates
+    #[structopt(short="H", long)]
+    pub duplicate_links: bool,
+
     /// Minimum file size. Inclusive.
-    #[structopt(long, default_value="1")]
+    #[structopt(short="s", long, default_value="1")]
     pub min_size: FileLen,
 
     /// Maximum file size. Inclusive.
-    #[structopt(long, default_value="18446744073709551615")]
+    #[structopt(short="x", long, default_value="18446744073709551615")]
     pub max_size: FileLen,
 
     /// Parallelism level.
@@ -48,23 +55,40 @@ fn configure_thread_pool(parallelism: usize) {
         .unwrap();
 }
 
+/// Removes
+fn remove_duplicate_links_if_needed(config: &Config, files: Vec<FileInfo>) -> Vec<FileInfo> {
+    if config.duplicate_links {
+        files
+    } else {
+        files
+            .into_iter()
+            .unique_by(|info| (info.dev_id, info.file_id))
+            .collect()
+    }
+}
+
+
 fn scan_files(report: &mut Report, config: &Config) -> Vec<(FileLen, Vec<PathBuf>)> {
+    let spinner = FastProgressBar::new_spinner("[1/4] Grouping by size");
     let walk_opts = WalkOpts {
         skip_hidden: config.skip_hidden,
         follow_links: config.follow_links,
         parallelism: config.threads
     };
     let files = walk_dirs(config.paths.clone(), walk_opts);
-    let spinner = FastProgressBar::new_spinner("[1/4] Scanning files");
-    let groups = split_groups(
-        vec![((), files)], 2, |_, path| {
-            spinner.tick();
-            file_len(path)
-                .filter(|len| *len >= config.min_size && *len <= config.max_size)
-        }
-    ).collect();
+    let groups = files
+        .inspect(|_| spinner.tick())
+        .filter_map(|path| file_info(path))
+        .filter(|info| info.len >= config.min_size && info.len <= config.max_size)
+        .group_by_key(|info| (info.len, info))
+        .into_iter()
+        .filter(|(_, files)| files.len() >= 2)
+        .map(|(l, files)| (l, remove_duplicate_links_if_needed(&config, files)))
+        .map(|(l, files)| (l, files.into_iter().map(|info| info.path).collect()))
+        .collect();
+
     report.scanned_files(spinner.position());
-    report.stage_finished("Group by paths", &groups);
+    report.stage_finished("Group by size", &groups);
     groups
 }
 
@@ -73,7 +97,7 @@ fn group_by_prefix(report: &mut Report, groups: Vec<(FileLen, Vec<PathBuf>)>)
 {
     let remaining_files = count_values(&groups);
     let progress = FastProgressBar::new_progress_bar(
-        "[2/4] Hashing by prefix", remaining_files as u64);
+        "[2/4] Grouping by prefix", remaining_files as u64);
     let groups = split_groups(groups, 2, |&len, path| {
         progress.tick();
         file_hash(path, PREFIX_LEN).map(|h| (len, h))
@@ -87,7 +111,7 @@ fn group_by_contents(report: &mut Report, groups: Vec<((FileLen, FileHash), Vec<
 {
     let remaining_files = count_values(&groups);
     let progress = FastProgressBar::new_progress_bar(
-        "[3/4] Hashing by contents", remaining_files as u64);
+        "[3/4] Grouping by contents", remaining_files as u64);
     let groups = split_groups(groups, 2, |&(len, hash), path| {
         progress.tick();
         if len > PREFIX_LEN {

@@ -1,8 +1,8 @@
 use core::fmt;
 use std::cmp::min;
 use std::fmt::Display;
-use std::fs::File;
-use std::hash::Hasher;
+use std::fs::{File, Metadata};
+use std::hash::{Hash, Hasher};
 use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -18,6 +18,8 @@ use rayon::ThreadPoolBuilder;
 use smallvec::alloc::fmt::Formatter;
 use smallvec::alloc::str::FromStr;
 
+/// Represents length of a file.
+/// Provides more type safety and nicer formatting over using a raw u64.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub struct FileLen(pub u64);
 
@@ -57,6 +59,55 @@ impl Display for FileLen {
     }
 }
 
+/// Keeps metadata of the file that we are interested in.
+/// We don't want to keep unused metadata in memory.
+pub struct FileInfo {
+    pub path: PathBuf,
+    pub file_id: u64,
+    pub dev_id: u64,
+    pub len: FileLen,
+}
+
+impl FileInfo {
+
+    #[cfg(unix)]
+    fn for_file(path: PathBuf, metadata: &Metadata) -> FileInfo {
+        use std::os::unix::fs::MetadataExt;
+        FileInfo {
+            path,
+            file_id: metadata.ino(),
+            dev_id: metadata.dev(),
+            len: FileLen(metadata.len())
+        }
+    }
+
+    #[cfg(windows)]
+    fn from_metadata(path: PathBuf, metadata: &Metadata) -> FileInfo {
+        use std::os::windows::fs::MetadataExt;
+        let hasher = DefaultHasher::new();
+        FileInfo {
+            path,
+            file_id: metadata.file_index().expect(fmt!("Not a file: {}", path)),
+            dev_id: metadata.volume_serial_number().expect(fmt!("Not a file: {}", path)),
+            len: FileLen(metadata.len())
+        }
+    }
+}
+
+/// Return file information.
+/// If file metadata cannot be accessed, print the error to stderr and return `None`.
+pub fn file_info(file: PathBuf) -> Option<FileInfo> {
+    match std::fs::metadata(&file) {
+        Ok(metadata) =>
+            Some(FileInfo::for_file(file, &metadata)),
+        Err(e) => {
+            eprintln!("Failed to read metadata of {}: {}", file.display(), e);
+            None
+        }
+    }
+}
+
+
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct FileHash(pub u128);
 
@@ -76,23 +127,9 @@ impl<T> AsFileHash for (T, FileHash) {
     }
 }
 
-
 impl Display for FileHash {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         write!(f, "{:x}", self.0)
-    }
-}
-
-/// Return file size in bytes.
-/// If file metadata cannot be accessed, print the error to stderr and return `None`.
-pub fn file_len(file: &PathBuf) -> Option<FileLen> {
-    match std::fs::metadata(file) {
-        Ok(metadata) =>
-            Some(FileLen(metadata.len())),
-        Err(e) => {
-            eprintln!("Failed to read size of {}: {}", file.display(), e);
-            None
-        }
     }
 }
 
