@@ -4,11 +4,11 @@ use std::cmp::min;
 use std::fmt::Display;
 use std::fs::{File, Metadata};
 use std::hash::{Hash, Hasher};
-use std::io::{ErrorKind, Read};
+use std::io::{ErrorKind, Read, Seek, SeekFrom};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::mpsc::sync_channel;
-use std::thread;
+use std::{thread, io};
 
 use bytesize::ByteSize;
 use fasthash::{city::crc::Hasher128, FastHasher, HasherExt};
@@ -18,6 +18,15 @@ use rayon::prelude::*;
 use rayon::ThreadPoolBuilder;
 use smallvec::alloc::fmt::Formatter;
 use smallvec::alloc::str::FromStr;
+
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
+pub struct FilePos(pub u64);
+
+impl Display for FilePos {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
 
 /// Represents length of a file.
 /// Provides more type safety and nicer formatting over using a raw u64.
@@ -95,25 +104,24 @@ impl FileInfo {
     }
 }
 
-/// Return file information.
-/// If file metadata cannot be accessed, print the error to stderr and return `None`.
-pub fn file_info(file: PathBuf) -> Option<FileInfo> {
+/// Returns file information for the given path.
+pub fn file_info(file: PathBuf) -> io::Result<FileInfo> {
+    let metadata = std::fs::metadata(&file)?;
+    Ok(FileInfo::for_file(file, &metadata))
+}
+
+/// Returns file information for the given path.
+/// On failure, logs an error to stderr and returns `None`.
+pub fn file_info_or_log_err(file: PathBuf) -> Option<FileInfo> {
     match std::fs::metadata(&file) {
-        Ok(metadata) =>
-            Some(FileInfo::for_file(file, &metadata)),
-        Err(e) => match e.kind() {
-            ErrorKind::NotFound =>
-                // file was probably removed while we were scanning, so we don't care -
-                // let's pretend we never found it in the first place
-                None,
-            _ => {
-                eprintln!("Failed to read metadata of {}: {}", file.display(), e);
-                None
-            }
+        Ok(metadata) => Some(FileInfo::for_file(file, &metadata)),
+        Err(e) if e.kind() == ErrorKind::NotFound => None,
+        Err(e) => {
+            eprintln!("Failed to read metadata of {}: {}", file.display(), e);
+            None
         }
     }
 }
-
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct FileHash(pub u128);
@@ -140,22 +148,86 @@ impl Display for FileHash {
     }
 }
 
-// Size of the temporary buffer used for calculating file hash.
-// There is one such buffer per thread.
-const FILE_HASH_BUF_LEN: usize = 4096;
+/// Size of the temporary buffer used for file read operations.
+/// There is one such buffer per thread.
+pub const BUF_LEN: usize = 4 * 4096;
 
 thread_local! {
-    static FILE_HASH_BUF: RefCell<[u8; FILE_HASH_BUF_LEN]> =
-        RefCell::new([0; FILE_HASH_BUF_LEN]);
+    static BUF: RefCell<[u8; BUF_LEN]> =
+        RefCell::new([0; BUF_LEN]);
 }
 
-/// Compute hash of initial `len` bytes of a file.
+/// Optimizes file read performance based on how many bytes we are planning to read.
+/// If we know we'll be reading just one buffer, non zero read-ahead would be a cache waste.
+/// On non-Unix systems, does nothing.
+fn configure_readahead(file: &File, offset: FilePos, len: FileLen) {
+    if cfg!(unix) {
+        use nix::fcntl::*;
+        use std::os::unix::io::*;
+
+        fn to_off_t(offset: u64) -> i64 {
+            min(i64::MAX as u64, offset) as i64
+        }
+        let advise = |advice: PosixFadviseAdvice| {
+            let ret = posix_fadvise(file.as_raw_fd(),
+                                    to_off_t(offset.0),
+                                    to_off_t(len.0),
+                                    advice);
+            if ret.is_err() {
+                eprintln!("WARN: posix_fadvise failed: {} ", ret.err().unwrap());
+            }
+        };
+        if len.0 <= BUF_LEN as u64 {
+            advise(PosixFadviseAdvice::POSIX_FADV_RANDOM)
+        } else {
+            advise(PosixFadviseAdvice::POSIX_FADV_SEQUENTIAL)
+        };
+    }
+}
+
+
+/// Opens a file and positions it at the given offset.
+/// Additionally, sends the advice to the operating system about how many bytes will be read.
+fn open(path: &PathBuf, offset: FilePos, len: FileLen) -> io::Result<File> {
+    let mut file = File::open(path)?;
+    configure_readahead(&file, offset, len);
+    if offset.0 > 0 {
+        file.seek(SeekFrom::Start(offset.0))?;
+    }
+    Ok(file)
+}
+
+/// Scans up to `len` bytes in a file and sends data to the given consumer.
+/// Returns the number of bytes successfully read.
+fn scan<F: FnMut(&[u8]) -> ()>(file: &mut File, len: FileLen, mut consumer: F) -> io::Result<u64> {
+    BUF.with(|buf| {
+        let mut buf = buf.borrow_mut();
+        let mut read = 0;
+        while read < len.0 {
+            let remaining = len.0 - read;
+            let to_read = min(remaining, buf.len() as u64) as usize;
+            let buf = &mut buf[..to_read];
+            match file.read(buf) {
+                Ok(0) =>
+                    break,
+                Ok(actual_read) => {
+                    read += actual_read as u64;
+                    (consumer)(buf);
+                },
+                Err(e) => return Err(e)
+            }
+        }
+        Ok(read)
+    })
+}
+
+/// Computes hash of initial `len` bytes of a file.
 /// If the file does not exist or is not readable, print the error to stderr and return `None`.
 /// The returned hash is not cryptograhically secure.
 ///
 /// # Example
 /// ```
-/// use dff::files::{file_hash, FileLen};
+/// use dff::files::{file_hash, FileLen, FilePos};
 /// use std::path::PathBuf;
 /// use std::fs::{File, create_dir_all};
 /// use std::io::Write;
@@ -167,49 +239,31 @@ thread_local! {
 /// let file2 = test_root.join("file2");
 /// File::create(&file2).unwrap().write_all(b"Test file 2");
 ///
-/// let hash1 = file_hash(&file1, FileLen::MAX).unwrap();
-/// let hash2 = file_hash(&file2, FileLen::MAX).unwrap();
-/// let hash3 = file_hash(&file2, FileLen(8)).unwrap();
+/// let hash1 = file_hash(&file1, FilePos(0), FileLen::MAX).unwrap();
+/// let hash2 = file_hash(&file2, FilePos(0), FileLen::MAX).unwrap();
+/// let hash3 = file_hash(&file2, FilePos(0), FileLen(8)).unwrap();
 /// assert_ne!(hash1, hash2);
 /// assert_ne!(hash2, hash3);
 /// ```
-pub fn file_hash(path: &PathBuf, len: FileLen) -> Option<FileHash> {
-    let mut file = match File::open(path) {
-        Ok(file) => file,
-        Err(e) => return match e.kind() {
-            ErrorKind::NotFound =>
-                // the file was probably removed while we were scanning, so we don't care -
-                // let's pretend we never found it in the first place
-                None,
-            _ => {
-                eprintln!("Failed to open file {}: {}", path.display(), e);
-                None
-            }
-        }
-    };
+pub fn file_hash(path: &PathBuf, offset: FilePos, len: FileLen) -> io::Result<FileHash> {
+    let mut hasher = Hasher128::new();
+    let mut file = open(path, offset, len)?;
+    scan(&mut file, len, |buf| hasher.write(buf))?;
+    Ok(FileHash(hasher.finish_ext()))
+}
 
-    FILE_HASH_BUF.with(|buf| {
-        let mut buf = buf.borrow_mut();
-        let mut remaining: u64 = len.0;
-        let mut hasher = Hasher128::new();
-        while remaining > 0 {
-            let to_read = min(remaining, buf.len() as u64) as usize;
-            let buf = &mut buf[..to_read];
-            match file.read(buf) {
-                Ok(0) =>
-                    break,
-                Ok(actual_read) => {
-                    remaining -= actual_read as u64;
-                    hasher.write(buf);
-                },
-                Err(e) => {
-                    eprintln!("Error reading file {}: {}", path.display(), e);
-                    return None;
-                }
-            }
+/// Computes the file hash or logs an error and returns none if failed.
+/// If file is not found, no error is logged and `None` is returned.
+pub fn file_hash_or_log_err(path: &PathBuf, offset: FilePos, len: FileLen) -> Option<FileHash> {
+    match file_hash(path, offset, len) {
+        Ok(hash) => Some(hash),
+        Err(e) if e.kind() == ErrorKind::NotFound =>
+            None,
+        Err(e) => {
+            eprintln!("Failed to compute hash of file {}: {}", path.display(), e);
+            None
         }
-        Some(FileHash(hasher.finish_ext()))
-    })
+    }
 }
 
 #[derive(Copy, Clone)]

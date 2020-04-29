@@ -10,7 +10,8 @@ use dff::group::*;
 use dff::progress::FastProgressBar;
 use dff::report::Report;
 
-const PREFIX_LEN: FileLen = FileLen(4096);
+const MIN_PREFIX_LEN: FileLen = FileLen(4096);
+const MAX_PREFIX_LEN: FileLen = FileLen(2 * MIN_PREFIX_LEN.0);
 
 #[derive(Debug, StructOpt)]
 #[structopt(name = "dff", about = "Find duplicate files", author)]
@@ -79,7 +80,7 @@ fn scan_files(report: &mut Report, config: &Config) -> Vec<(FileLen, Vec<PathBuf
     let files = walk_dirs(config.paths.clone(), walk_opts);
     let groups = files
         .inspect(|_| spinner.tick())
-        .filter_map(|path| file_info(path))
+        .filter_map(|path| file_info_or_log_err(path))
         .filter(|info| info.len >= config.min_size && info.len <= config.max_size)
         .group_by_key(|info| (info.len, info))
         .into_iter()
@@ -101,8 +102,10 @@ fn group_by_prefix(report: &mut Report, groups: Vec<(FileLen, Vec<PathBuf>)>)
         "[2/4] Grouping by prefix", remaining_files as u64);
     let groups = split_groups(groups, 2, |&len, path| {
         progress.tick();
-        file_hash(path, PREFIX_LEN).map(|h| (len, h))
+        let prefix_len = if len <= MAX_PREFIX_LEN { len } else { MIN_PREFIX_LEN };
+        file_hash_or_log_err(path, FilePos(0), prefix_len).map(|h| (len, h))
     }).collect();
+
     report.stage_finished("Group by prefix", &groups);
     groups
 }
@@ -115,12 +118,13 @@ fn group_by_contents(report: &mut Report, groups: Vec<((FileLen, FileHash), Vec<
         "[3/4] Grouping by contents", remaining_files as u64);
     let groups = split_groups(groups, 2, |&(len, hash), path| {
         progress.tick();
-        if len > PREFIX_LEN {
-            file_hash(path, FileLen::MAX).map(|h| (len, h))
+        if len > MAX_PREFIX_LEN {
+            file_hash_or_log_err(path, FilePos(0), FileLen::MAX).map(|h| (len, h))
         } else {
             Some((len, hash))
         }
     }).collect();
+
     report.stage_finished("Group by contents", &groups);
     groups
 }
@@ -143,10 +147,9 @@ fn write_report(report: &mut Report, groups: &mut Vec<((FileLen, FileHash), Vec<
 
 fn main() {
     let config: Config = Config::from_args();
-    let mut report = Report::new();
-
     configure_thread_pool(config.threads);
 
+    let mut report = Report::new();
     let size_groups = scan_files(&mut report, &config);
     let prefix_groups = group_by_prefix(&mut report, size_groups);
     let mut contents_groups= group_by_contents(&mut report, prefix_groups);
