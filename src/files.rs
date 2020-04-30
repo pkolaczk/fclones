@@ -18,6 +18,7 @@ use rayon::prelude::*;
 use rayon::ThreadPoolBuilder;
 use smallvec::alloc::fmt::Formatter;
 use smallvec::alloc::str::FromStr;
+use std::ops::{Add, Sub};
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub struct FilePos(pub u64);
@@ -35,6 +36,9 @@ pub struct FileLen(pub u64);
 
 impl FileLen {
     pub const MAX: FileLen = FileLen(u64::MAX);
+    pub fn as_pos(&self) -> FilePos {
+        FilePos(self.0)
+    }
 }
 
 pub trait AsFileLen {
@@ -52,6 +56,23 @@ impl<T> AsFileLen for (FileLen, T) {
         &self.0
     }
 }
+
+impl Add for FileLen {
+    type Output = FileLen;
+
+    fn add(self, rhs: Self) -> Self::Output {
+        FileLen(self.0 + rhs.0)
+    }
+}
+
+impl Sub for FileLen {
+    type Output = FileLen;
+
+    fn sub(self, rhs: Self) -> Self::Output {
+        FileLen(self.0 - rhs.0)
+    }
+}
+
 
 impl FromStr for FileLen {
 

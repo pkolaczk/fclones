@@ -12,6 +12,7 @@ use dff::report::Report;
 
 const MIN_PREFIX_LEN: FileLen = FileLen(4096);
 const MAX_PREFIX_LEN: FileLen = FileLen(2 * MIN_PREFIX_LEN.0);
+const SUFFIX_LEN: FileLen = FileLen(4096);
 
 #[derive(Debug, StructOpt)]
 #[structopt(name = "dff", about = "Find duplicate files", author)]
@@ -71,7 +72,7 @@ fn remove_duplicate_links_if_needed(config: &Config, files: Vec<FileInfo>) -> Ve
 
 
 fn scan_files(report: &mut Report, config: &Config) -> Vec<(FileLen, Vec<PathBuf>)> {
-    let spinner = FastProgressBar::new_spinner("[1/4] Grouping by size");
+    let spinner = FastProgressBar::new_spinner("[1/5] Grouping by size");
     let walk_opts = WalkOpts {
         skip_hidden: config.skip_hidden,
         follow_links: config.follow_links,
@@ -99,7 +100,7 @@ fn group_by_prefix(report: &mut Report, groups: Vec<(FileLen, Vec<PathBuf>)>)
 {
     let remaining_files = count_values(&groups);
     let progress = FastProgressBar::new_progress_bar(
-        "[2/4] Grouping by prefix", remaining_files as u64);
+        "[2/5] Grouping by prefix", remaining_files as u64);
     let groups = split_groups(groups, 2, |&len, path| {
         progress.tick();
         let prefix_len = if len <= MAX_PREFIX_LEN { len } else { MIN_PREFIX_LEN };
@@ -110,12 +111,32 @@ fn group_by_prefix(report: &mut Report, groups: Vec<(FileLen, Vec<PathBuf>)>)
     groups
 }
 
+fn group_by_suffix(report: &mut Report, groups: Vec<((FileLen, FileHash), Vec<PathBuf>)>)
+                   -> Vec<((FileLen, FileHash), Vec<PathBuf>)>
+{
+    let remaining_files = count_values(&groups);
+    let progress = FastProgressBar::new_progress_bar(
+        "[3/5] Grouping by suffix", remaining_files as u64);
+    let groups = split_groups(groups, 2, |&(len, hash), path| {
+        progress.tick();
+        if len >= MAX_PREFIX_LEN + SUFFIX_LEN {
+            file_hash_or_log_err(path, (len - SUFFIX_LEN).as_pos(), FileLen::MAX)
+                .map(|h| (len, h))
+        } else {
+            Some((len, hash))
+        }
+    }).collect();
+
+    report.stage_finished("Group by suffix", &groups);
+    groups
+}
+
 fn group_by_contents(report: &mut Report, groups: Vec<((FileLen, FileHash), Vec<PathBuf>)>)
                      -> Vec<((FileLen, FileHash), Vec<PathBuf>)>
 {
     let remaining_files = count_values(&groups);
     let progress = FastProgressBar::new_progress_bar(
-        "[3/4] Grouping by contents", remaining_files as u64);
+        "[4/5] Grouping by contents", remaining_files as u64);
     let groups = split_groups(groups, 2, |&(len, hash), path| {
         progress.tick();
         if len > MAX_PREFIX_LEN {
@@ -132,7 +153,7 @@ fn group_by_contents(report: &mut Report, groups: Vec<((FileLen, FileHash), Vec<
 fn write_report(report: &mut Report, groups: &mut Vec<((FileLen, FileHash), Vec<PathBuf>)>) {
     let remaining_files = count_values(&groups);
     let progress = FastProgressBar::new_progress_bar(
-        "[4/4] Writing report", remaining_files as u64);
+        "[5/5] Writing report", remaining_files as u64);
     groups.sort_by_key(|&((len, _), _)| Reverse(len));
     report.write(&mut std::io::stdout()).expect("Failed to write report");
     println!();
@@ -152,6 +173,7 @@ fn main() {
     let mut report = Report::new();
     let size_groups = scan_files(&mut report, &config);
     let prefix_groups = group_by_prefix(&mut report, size_groups);
-    let mut contents_groups= group_by_contents(&mut report, prefix_groups);
+    let suffix_groups = group_by_suffix(&mut report, prefix_groups);
+    let mut contents_groups= group_by_contents(&mut report, suffix_groups);
     write_report(&mut report, &mut contents_groups)
 }
