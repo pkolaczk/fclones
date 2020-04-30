@@ -21,3 +21,4 @@ structopt = "0.3"
 
 [target.'cfg(unix)'.dependencies]
 nix = "0.17.0"
+libc = "0.2.69"

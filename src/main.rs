@@ -120,7 +120,7 @@ fn group_by_suffix(report: &mut Report, groups: Vec<((FileLen, FileHash), Vec<Pa
     let groups = split_groups(groups, 2, |&(len, hash), path| {
         progress.tick();
         if len >= MAX_PREFIX_LEN + SUFFIX_LEN {
-            file_hash_or_log_err(path, (len - SUFFIX_LEN).as_pos(), FileLen::MAX)
+            file_hash_or_log_err(path, (len - SUFFIX_LEN).as_pos(), SUFFIX_LEN)
                 .map(|h| (len, h))
         } else {
             Some((len, hash))
@@ -140,7 +140,7 @@ fn group_by_contents(report: &mut Report, groups: Vec<((FileLen, FileHash), Vec<
     let groups = split_groups(groups, 2, |&(len, hash), path| {
         progress.tick();
         if len > MAX_PREFIX_LEN {
-            file_hash_or_log_err(path, FilePos(0), FileLen::MAX).map(|h| (len, h))
+            file_hash_or_log_err(path, FilePos(0), len).map(|h| (len, h))
         } else {
             Some((len, hash))
         }

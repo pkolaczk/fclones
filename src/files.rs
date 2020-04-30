@@ -1,24 +1,30 @@
 use core::fmt;
+use std::{io, thread};
 use std::cell::RefCell;
 use std::cmp::min;
 use std::fmt::Display;
-use std::fs::{File, Metadata};
+use std::fs::{File, Metadata, OpenOptions};
 use std::hash::{Hash, Hasher};
 use std::io::{ErrorKind, Read, Seek, SeekFrom};
+use std::ops::{Add, Sub};
+#[cfg(unix)]
+use std::os::unix::fs::OpenOptionsExt;
+#[cfg(unix)]
+use std::os::unix::io::*;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::mpsc::sync_channel;
-use std::{thread, io};
 
 use bytesize::ByteSize;
 use fasthash::{city::crc::Hasher128, FastHasher, HasherExt};
 use jwalk::{Parallelism, WalkDir};
+#[cfg(unix)]
+use nix::fcntl::*;
 use rayon::iter::ParallelIterator;
 use rayon::prelude::*;
 use rayon::ThreadPoolBuilder;
 use smallvec::alloc::fmt::Formatter;
 use smallvec::alloc::str::FromStr;
-use std::ops::{Add, Sub};
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub struct FilePos(pub u64);
@@ -171,32 +177,49 @@ impl Display for FileHash {
 
 /// Size of the temporary buffer used for file read operations.
 /// There is one such buffer per thread.
-pub const BUF_LEN: usize = 4 * 4096;
+pub const BUF_LEN: usize = 8192;
+
+#[repr(C, align(4096))]
+#[derive(Copy, Clone)]
+struct AlignedBuf([u8; BUF_LEN]);
+
+impl AlignedBuf {
+    pub fn as_mut(&mut self) -> &mut [u8] {
+        &mut self.0
+    }
+
+    pub fn len(&self) -> FileLen {
+        FileLen(BUF_LEN as u64)
+    }
+}
 
 thread_local! {
-    static BUF: RefCell<[u8; BUF_LEN]> =
-        RefCell::new([0; BUF_LEN]);
+    static BUF: RefCell<AlignedBuf> =
+        RefCell::new(AlignedBuf([0; BUF_LEN]));
+}
+
+fn to_off_t(offset: u64) -> i64 {
+    min(i64::MAX as u64, offset) as i64
+}
+
+fn fadvise(file: &File, offset: FilePos, len: FileLen, advice: PosixFadviseAdvice) {
+    let ret = posix_fadvise(file.as_raw_fd(),
+                            to_off_t(offset.0),
+                            to_off_t(len.0),
+                            advice);
+    if ret.is_err() {
+        eprintln!("[W] posix_fadvise failed: {} ", ret.err().unwrap());
+    }
 }
 
 /// Optimizes file read performance based on how many bytes we are planning to read.
 /// If we know we'll be reading just one buffer, non zero read-ahead would be a cache waste.
 /// On non-Unix systems, does nothing.
+/// Failures are not signalled to the caller, but a warning is printed to stderr.
 fn configure_readahead(file: &File, offset: FilePos, len: FileLen) {
     if cfg!(unix) {
-        use nix::fcntl::*;
-        use std::os::unix::io::*;
-
-        fn to_off_t(offset: u64) -> i64 {
-            min(i64::MAX as u64, offset) as i64
-        }
         let advise = |advice: PosixFadviseAdvice| {
-            let ret = posix_fadvise(file.as_raw_fd(),
-                                    to_off_t(offset.0),
-                                    to_off_t(len.0),
-                                    advice);
-            if ret.is_err() {
-                eprintln!("WARN: posix_fadvise failed: {} ", ret.err().unwrap());
-            }
+            fadvise(file, offset, len, advice)
         };
         if len.0 <= BUF_LEN as u64 {
             advise(PosixFadviseAdvice::POSIX_FADV_RANDOM)
@@ -206,16 +229,39 @@ fn configure_readahead(file: &File, offset: FilePos, len: FileLen) {
     }
 }
 
+/// Tells the system to remove given file fragment from the page cache
+/// On non-Unix systems, does nothing.
+fn evict_page_cache(file: &File, offset: FilePos, len: FileLen) {
+    if cfg!(unix) {
+        fadvise(file, offset, len, PosixFadviseAdvice::POSIX_FADV_DONTNEED);
+    }
+}
 
 /// Opens a file and positions it at the given offset.
 /// Additionally, sends the advice to the operating system about how many bytes will be read.
 fn open(path: &PathBuf, offset: FilePos, len: FileLen) -> io::Result<File> {
-    let mut file = File::open(path)?;
+    let mut file = open_noatime(path)?;
     configure_readahead(&file, offset, len);
     if offset.0 > 0 {
         file.seek(SeekFrom::Start(offset.0))?;
     }
     Ok(file)
+}
+
+/// Opens a file for read. On unix systems passes O_NOATIME flag to drastically improve
+/// performance of reading small files.
+fn open_noatime(path: &PathBuf) -> io::Result<File> {
+    let mut options = OpenOptions::new();
+    options.read(true);
+    if cfg!(unix) {
+        let mut noatime_opts = options.clone();
+        noatime_opts.custom_flags(libc::O_NOATIME);
+        noatime_opts.open(path)
+            // opening with O_NOATIME may fail in some cases for security reasons
+            .or_else(|_| options.open(path))
+    } else {
+        options.open(path)
+    }
 }
 
 /// Scans up to `len` bytes in a file and sends data to the given consumer.
@@ -226,8 +272,8 @@ fn scan<F: FnMut(&[u8]) -> ()>(file: &mut File, len: FileLen, mut consumer: F) -
         let mut read = 0;
         while read < len.0 {
             let remaining = len.0 - read;
-            let to_read = min(remaining, buf.len() as u64) as usize;
-            let buf = &mut buf[..to_read];
+            let to_read = min(remaining, buf.len().0) as usize;
+            let buf = &mut buf.as_mut()[..to_read];
             match file.read(buf) {
                 Ok(0) =>
                     break,
@@ -235,7 +281,11 @@ fn scan<F: FnMut(&[u8]) -> ()>(file: &mut File, len: FileLen, mut consumer: F) -
                     read += actual_read as u64;
                     (consumer)(buf);
                 },
-                Err(e) => return Err(e)
+                Err(e) => {
+                    eprintln!("READ FAILED");
+                    eprintln!("ptr = {}, to_read = {}", buf.as_ptr() as u64, to_read as u64);
+                    return Err(e);
+                }
             }
         }
         Ok(read)
@@ -270,6 +320,9 @@ pub fn file_hash(path: &PathBuf, offset: FilePos, len: FileLen) -> io::Result<Fi
     let mut hasher = Hasher128::new();
     let mut file = open(path, offset, len)?;
     scan(&mut file, len, |buf| hasher.write(buf))?;
+    if len.0 > BUF_LEN as u64 * 2 {
+        evict_page_cache(&file, FilePos(BUF_LEN as u64), len - FileLen(2 * BUF_LEN as u64));
+    }
     Ok(FileHash(hasher.finish_ext()))
 }
 
