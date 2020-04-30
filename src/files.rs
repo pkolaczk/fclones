@@ -25,6 +25,7 @@ use rayon::prelude::*;
 use rayon::ThreadPoolBuilder;
 use smallvec::alloc::fmt::Formatter;
 use smallvec::alloc::str::FromStr;
+use sys_info::mem_info;
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub struct FilePos(pub u64);
@@ -202,14 +203,15 @@ fn to_off_t(offset: u64) -> i64 {
     min(i64::MAX as u64, offset) as i64
 }
 
+/// Wrapper for `posix_fadvise`. Ignores errors.
+/// This method is used to advise the system, so its failure is not critical to the result of
+/// the program. At worst, failure could hurt performance.
+#[cfg(unix)]
 fn fadvise(file: &File, offset: FilePos, len: FileLen, advice: PosixFadviseAdvice) {
-    let ret = posix_fadvise(file.as_raw_fd(),
-                            to_off_t(offset.0),
-                            to_off_t(len.0),
-                            advice);
-    if ret.is_err() {
-        eprintln!("[W] posix_fadvise failed: {} ", ret.err().unwrap());
-    }
+    let _ = posix_fadvise(file.as_raw_fd(),
+                          to_off_t(offset.0),
+                          to_off_t(len.0),
+                          advice);
 }
 
 /// Optimizes file read performance based on how many bytes we are planning to read.
@@ -229,11 +231,28 @@ fn configure_readahead(file: &File, offset: FilePos, len: FileLen) {
     }
 }
 
-/// Tells the system to remove given file fragment from the page cache
+/// Tells the system to remove given file fragment from the page cache.
 /// On non-Unix systems, does nothing.
 fn evict_page_cache(file: &File, offset: FilePos, len: FileLen) {
     if cfg!(unix) {
         fadvise(file, offset, len, PosixFadviseAdvice::POSIX_FADV_DONTNEED);
+    }
+}
+
+/// Evicts the middle of the file from cache if the system is low on free memory.
+/// The purpose of this method is to be nice to the data cached by other processes.
+/// This program is likely to be used only once, so there is little value in keeping its
+/// data cached for further use.
+fn evict_page_cache_if_low_mem(file: &mut File, len: FileLen) {
+    if len.0 > BUF_LEN as u64 * 2 {
+        let free_ratio = match mem_info() {
+            Ok(mem) => mem.free as f32 / mem.total as f32,
+            Err(_) => 0.0
+        };
+        if free_ratio < 0.05 {
+            evict_page_cache(
+                &file, FilePos(BUF_LEN as u64), len - FileLen(2 * BUF_LEN as u64));
+        }
     }
 }
 
@@ -282,8 +301,6 @@ fn scan<F: FnMut(&[u8]) -> ()>(file: &mut File, len: FileLen, mut consumer: F) -
                     (consumer)(buf);
                 },
                 Err(e) => {
-                    eprintln!("READ FAILED");
-                    eprintln!("ptr = {}, to_read = {}", buf.as_ptr() as u64, to_read as u64);
                     return Err(e);
                 }
             }
@@ -320,9 +337,7 @@ pub fn file_hash(path: &PathBuf, offset: FilePos, len: FileLen) -> io::Result<Fi
     let mut hasher = Hasher128::new();
     let mut file = open(path, offset, len)?;
     scan(&mut file, len, |buf| hasher.write(buf))?;
-    if len.0 > BUF_LEN as u64 * 2 {
-        evict_page_cache(&file, FilePos(BUF_LEN as u64), len - FileLen(2 * BUF_LEN as u64));
-    }
+    evict_page_cache_if_low_mem(&mut file, len);
     Ok(FileHash(hasher.finish_ext()))
 }
 
