@@ -1,4 +1,5 @@
 use std::cmp::Reverse;
+use std::io::{Write, BufWriter};
 use std::path::PathBuf;
 
 use itertools::Itertools;
@@ -9,6 +10,7 @@ use dff::files::*;
 use dff::group::*;
 use dff::progress::FastProgressBar;
 use dff::report::Report;
+use std::io::stdout;
 
 const MIN_PREFIX_LEN: FileLen = FileLen(4096);
 const MAX_PREFIX_LEN: FileLen = FileLen(2 * MIN_PREFIX_LEN.0);
@@ -156,12 +158,13 @@ fn write_report(report: &mut Report, groups: &mut Vec<((FileLen, FileHash), Vec<
         "[5/5] Writing report", remaining_files as u64);
     groups.sort_by_key(|&((len, _), _)| Reverse(len));
     report.write(&mut std::io::stdout()).expect("Failed to write report");
-    println!();
+    let mut out = BufWriter::new(stdout());
+    writeln!(out).unwrap();
     for ((len, hash), files) in groups {
-        println!("{} {}:", hash, len);
+        writeln!(out, "{} {}:", hash, len).unwrap();
         for f in files {
             progress.tick();
-            println!("    {}", f.display());
+            writeln!(out, "    {}", f.display()).unwrap();
         }
     }
 }
