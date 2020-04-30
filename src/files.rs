@@ -16,7 +16,8 @@ use std::sync::Arc;
 use std::sync::mpsc::sync_channel;
 
 use bytesize::ByteSize;
-use fasthash::{city::crc::Hasher128, FastHasher, HasherExt};
+use fasthash::{t1ha2::Hasher128, FastHasher, HasherExt};
+
 use jwalk::{Parallelism, WalkDir};
 #[cfg(unix)]
 use nix::fcntl::*;
