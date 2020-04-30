@@ -6,7 +6,7 @@ use std::fmt::Display;
 use std::fs::{File, Metadata, OpenOptions};
 use std::hash::{Hash, Hasher};
 use std::io::{ErrorKind, Read, Seek, SeekFrom};
-use std::ops::{Add, Sub};
+use std::ops::{Add, Sub, Mul};
 #[cfg(unix)]
 use std::os::unix::fs::OpenOptionsExt;
 #[cfg(unix)]
@@ -28,17 +28,85 @@ use smallvec::alloc::fmt::Formatter;
 use smallvec::alloc::str::FromStr;
 use sys_info::mem_info;
 
+/// Represents data position in the file, counted from the beginning of the file, in bytes.
+/// Provides more type safety and nicer formatting over using a raw u64.
+/// Offsets are formatted as hex.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub struct FilePos(pub u64);
 
-impl Display for FilePos {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.0)
+impl FilePos {
+    fn zero() -> FilePos {
+        FilePos(0)
     }
 }
 
-/// Represents length of a file.
+impl Display for FilePos {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        write!(f, "{:x}", self.0)
+    }
+}
+
+impl From<u64> for FilePos {
+    fn from(p: u64) -> Self {
+        FilePos(p)
+    }
+}
+
+impl From<usize> for FilePos {
+    fn from(p: usize) -> Self {
+        FilePos(p as u64)
+    }
+}
+
+impl Into<u64> for FilePos {
+    fn into(self) -> u64 {
+        self.0
+    }
+}
+
+impl Into<usize> for FilePos {
+    fn into(self) -> usize {
+        self.0 as usize
+    }
+}
+
+impl Into<SeekFrom> for FilePos {
+    fn into(self) -> SeekFrom {
+        SeekFrom::Start(self.0)
+    }
+}
+
+impl Add<FileLen> for FilePos {
+    type Output = FilePos;
+    fn add(self, rhs: FileLen) -> Self::Output {
+        FilePos(self.0 + rhs.0)
+    }
+}
+
+impl Sub<FileLen> for FilePos {
+    type Output = FilePos;
+    fn sub(self, rhs: FileLen) -> Self::Output {
+        FilePos(self.0 - rhs.0)
+    }
+}
+
+/// Represents length of data, in bytes.
 /// Provides more type safety and nicer formatting over using a raw u64.
+///
+/// # Examples
+/// Formatting file length as a human readable string:
+/// ```
+/// use dff::files::FileLen;
+/// let file_len = FileLen(16000);
+/// let human_readable = format!("{}", file_len);
+/// assert_eq!(human_readable, "16.0 KB");
+/// ```
+///
+/// `FileLen` can be added directly to `FilePos`:
+/// ```
+/// use dff::files::{FileLen, FilePos};
+/// assert_eq!(FilePos(1000) + FileLen(64), FilePos(1064));
+/// ```
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub struct FileLen(pub u64);
 
@@ -65,9 +133,32 @@ impl<T> AsFileLen for (FileLen, T) {
     }
 }
 
+impl From<u64> for FileLen {
+    fn from(l: u64) -> Self {
+        FileLen(l)
+    }
+}
+
+impl From<usize> for FileLen {
+    fn from(l: usize) -> Self {
+        FileLen(l as u64)
+    }
+}
+
+impl Into<u64> for FileLen {
+    fn into(self) -> u64 {
+        self.0
+    }
+}
+
+impl Into<usize> for FileLen {
+    fn into(self) -> usize {
+        self.0 as usize
+    }
+}
+
 impl Add for FileLen {
     type Output = FileLen;
-
     fn add(self, rhs: Self) -> Self::Output {
         FileLen(self.0 + rhs.0)
     }
@@ -75,12 +166,17 @@ impl Add for FileLen {
 
 impl Sub for FileLen {
     type Output = FileLen;
-
     fn sub(self, rhs: Self) -> Self::Output {
         FileLen(self.0 - rhs.0)
     }
 }
 
+impl Mul<u64> for FileLen {
+    type Output = FileLen;
+    fn mul(self, rhs: u64) -> Self::Output {
+        FileLen(self.0 * rhs)
+    }
+}
 
 impl FromStr for FileLen {
 
@@ -123,7 +219,6 @@ impl FileInfo {
     #[cfg(windows)]
     fn from_metadata(path: PathBuf, metadata: &Metadata) -> FileInfo {
         use std::os::windows::fs::MetadataExt;
-        let hasher = DefaultHasher::new();
         FileInfo {
             path,
             file_id: metadata.file_index().expect(fmt!("Not a file: {}", path)),
@@ -210,8 +305,8 @@ fn to_off_t(offset: u64) -> i64 {
 #[cfg(unix)]
 fn fadvise(file: &File, offset: FilePos, len: FileLen, advice: PosixFadviseAdvice) {
     let _ = posix_fadvise(file.as_raw_fd(),
-                          to_off_t(offset.0),
-                          to_off_t(len.0),
+                          to_off_t(offset.into()),
+                          to_off_t(len.into()),
                           advice);
 }
 
@@ -245,14 +340,14 @@ fn evict_page_cache(file: &File, offset: FilePos, len: FileLen) {
 /// This program is likely to be used only once, so there is little value in keeping its
 /// data cached for further use.
 fn evict_page_cache_if_low_mem(file: &mut File, len: FileLen) {
-    if len.0 > BUF_LEN as u64 * 2 {
+    let buf_len: FileLen = BUF_LEN.into();
+    if len > buf_len * 2 {
         let free_ratio = match mem_info() {
             Ok(mem) => mem.free as f32 / mem.total as f32,
             Err(_) => 0.0
         };
         if free_ratio < 0.05 {
-            evict_page_cache(
-                &file, FilePos(BUF_LEN as u64), len - FileLen(2 * BUF_LEN as u64));
+            evict_page_cache(&file, FilePos::zero() + buf_len, len - buf_len * 2);
         }
     }
 }
@@ -262,8 +357,8 @@ fn evict_page_cache_if_low_mem(file: &mut File, len: FileLen) {
 fn open(path: &PathBuf, offset: FilePos, len: FileLen) -> io::Result<File> {
     let mut file = open_noatime(path)?;
     configure_readahead(&file, offset, len);
-    if offset.0 > 0 {
-        file.seek(SeekFrom::Start(offset.0))?;
+    if offset > FilePos::zero() {
+        file.seek(offset.into())?;
     }
     Ok(file)
 }
@@ -290,9 +385,10 @@ fn scan<F: FnMut(&[u8]) -> ()>(file: &mut File, len: FileLen, mut consumer: F) -
     BUF.with(|buf| {
         let mut buf = buf.borrow_mut();
         let mut read = 0;
-        while read < len.0 {
-            let remaining = len.0 - read;
-            let to_read = min(remaining, buf.len().0) as usize;
+        let len = len.into();
+        while read < len {
+            let remaining = len - read;
+            let to_read = min(remaining, buf.len().into()) as usize;
             let buf = &mut buf.as_mut()[..to_read];
             match file.read(buf) {
                 Ok(0) =>
