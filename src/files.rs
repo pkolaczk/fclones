@@ -1,29 +1,22 @@
 use core::fmt;
-use std::{io, thread};
 use std::cell::RefCell;
 use std::cmp::min;
 use std::fmt::Display;
 use std::fs::{File, Metadata, OpenOptions};
 use std::hash::{Hash, Hasher};
+use std::io;
 use std::io::{ErrorKind, Read, Seek, SeekFrom};
-use std::ops::{Add, Sub, Mul};
+use std::ops::{Add, Mul, Sub};
 #[cfg(unix)]
 use std::os::unix::fs::OpenOptionsExt;
 #[cfg(unix)]
 use std::os::unix::io::*;
 use std::path::PathBuf;
-use std::sync::Arc;
-use std::sync::mpsc::sync_channel;
 
 use bytesize::ByteSize;
-use fasthash::{t1ha2::Hasher128, FastHasher, HasherExt};
-
-use jwalk::{Parallelism, WalkDir};
+use fasthash::{FastHasher, HasherExt, t1ha2::Hasher128};
 #[cfg(unix)]
 use nix::fcntl::*;
-use rayon::iter::ParallelIterator;
-use rayon::prelude::*;
-use rayon::ThreadPoolBuilder;
 use smallvec::alloc::fmt::Formatter;
 use smallvec::alloc::str::FromStr;
 use sys_info::mem_info;
@@ -450,87 +443,4 @@ pub fn file_hash_or_log_err(path: &PathBuf, offset: FilePos, len: FileLen) -> Op
             None
         }
     }
-}
-
-#[derive(Copy, Clone)]
-pub struct WalkOpts {
-    pub parallelism: usize,
-    pub skip_hidden: bool,
-    pub follow_links: bool
-}
-
-impl WalkOpts {
-    pub fn default() -> WalkOpts {
-        WalkOpts { parallelism: 8, skip_hidden: false, follow_links: false }
-    }
-}
-
-
-/// Walks multiple directory trees in parallel.
-/// Inaccessible files are skipped, but errors are printed to stderr.
-/// Returns only regular files and symlinks in the output stream.
-/// Output order is unspecified.
-/// Uses the default global rayon pool to launch tasks.
-///
-/// # Example
-/// ```
-/// use std::fs::{File, create_dir_all, remove_dir_all, create_dir};
-/// use std::path::PathBuf;
-/// use rayon::iter::ParallelIterator;
-///
-/// use dff::files::{walk_dirs, WalkOpts};
-///
-/// let test_root = PathBuf::from("target/test/walk/");
-/// let dir1 = test_root.join("dir1");
-/// let dir2 = test_root.join("dir2");
-/// let dir3 = dir2.join("dir3");
-/// remove_dir_all(&test_root).unwrap();
-/// create_dir_all(&test_root).unwrap();
-/// create_dir(&dir1).unwrap();
-/// create_dir(&dir2).unwrap();
-/// create_dir(&dir3).unwrap();
-///
-/// File::create(dir1.join("file11.txt")).unwrap();
-/// File::create(dir1.join("file12.txt")).unwrap();
-/// File::create(dir2.join("file2.txt")).unwrap();
-/// File::create(dir3.join("file3.txt")).unwrap();
-///
-/// let dirs = vec![dir1, dir2];
-/// let files = walk_dirs(dirs, WalkOpts::default());
-/// assert_eq!(files.count(), 4);
-/// ```
-///
-pub fn walk_dirs(paths: Vec<PathBuf>, opts: WalkOpts) -> impl ParallelIterator<Item=PathBuf> {
-
-    let (tx, rx) = sync_channel(65536);
-
-    // We need to use a separate rayon thread-pool for walking the directories, because
-    // otherwise we may get deadlocks caused by blocking on the channel.
-    let thread_pool = Arc::new(
-        ThreadPoolBuilder::new()
-            .num_threads(opts.parallelism)
-            .build()
-            .unwrap());
-
-    for path in paths {
-        let tx = tx.clone();
-        let thread_pool = thread_pool.clone();
-        thread::spawn(move || {
-            WalkDir::new(&path)
-                .skip_hidden(opts.skip_hidden)
-                .follow_links(opts.follow_links)
-                .parallelism(Parallelism::RayonExistingPool(thread_pool))
-                .into_iter()
-                .for_each(move |entry| match entry {
-                    Ok(e) if e.file_type.is_file() =>
-                        tx.send(e.path()).unwrap(),
-                    Ok(_) =>
-                        (),
-                    Err(e) =>
-                        eprintln!("Cannot access path {}: {}", path.display(), e)
-                });
-        });
-    }
-
-    rx.into_iter().par_bridge()
 }

@@ -11,6 +11,7 @@ use dff::group::*;
 use dff::progress::FastProgressBar;
 use dff::report::Report;
 use std::io::stdout;
+use dff::dirwalk::{WalkOpts, walk};
 
 const MIN_PREFIX_LEN: FileLen = FileLen(4096);
 const MAX_PREFIX_LEN: FileLen = FileLen(2 * MIN_PREFIX_LEN.0);
@@ -72,20 +73,21 @@ fn remove_duplicate_links_if_needed(config: &Config, files: Vec<FileInfo>) -> Ve
     }
 }
 
-
 fn scan_files(report: &mut Report, config: &Config) -> Vec<(FileLen, Vec<PathBuf>)> {
     let spinner = FastProgressBar::new_spinner("[1/5] Grouping by size");
     let walk_opts = WalkOpts {
         skip_hidden: config.skip_hidden,
         follow_links: config.follow_links,
-        parallelism: config.threads
     };
-    let files = walk_dirs(config.paths.clone(), walk_opts);
-    let groups = files
-        .inspect(|_| spinner.tick())
-        .filter_map(|path| file_info_or_log_err(path))
-        .filter(|info| info.len >= config.min_size && info.len <= config.max_size)
-        .group_by_key(|info| (info.len, info))
+    let groups = GroupMap::new(|info: FileInfo| (info.len, info));
+    walk(config.paths.clone(), &walk_opts, |path| {
+        spinner.tick();
+        file_info_or_log_err(path)
+            .into_iter()
+            .filter(|info| info.len >= config.min_size && info.len <= config.max_size)
+            .for_each(|info| groups.add(info));
+    });
+    let groups = groups
         .into_iter()
         .filter(|(_, files)| files.len() >= 2)
         .map(|(l, files)| (l, remove_duplicate_links_if_needed(&config, files)))

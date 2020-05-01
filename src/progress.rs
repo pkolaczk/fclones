@@ -42,7 +42,7 @@ impl FastProgressBar {
     /// Progress bar looks like this:
     const PROGRESS_CHARS: &'static str = "=> ";
     /// How much time to wait between refreshes, in milliseconds
-    const REFRESH_PERIOD_MS: u64 = 40;
+    const REFRESH_PERIOD_MS: u64 = 50;
 
     /// Wrap an existing `ProgressBar` and start the background updater-thread.
     /// The thread periodically copies the `FastProgressBar` position into the wrapped
