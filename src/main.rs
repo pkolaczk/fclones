@@ -11,7 +11,7 @@ use dff::group::*;
 use dff::progress::FastProgressBar;
 use dff::report::Report;
 use std::io::stdout;
-use dff::dirwalk::{WalkOpts, walk};
+use dff::walk::Walk;
 
 const MIN_PREFIX_LEN: FileLen = FileLen(4096);
 const MAX_PREFIX_LEN: FileLen = FileLen(2 * MIN_PREFIX_LEN.0);
@@ -75,14 +75,16 @@ fn remove_duplicate_links_if_needed(config: &Config, files: Vec<FileInfo>) -> Ve
 
 fn scan_files(report: &mut Report, config: &Config) -> Vec<(FileLen, Vec<PathBuf>)> {
     let spinner = FastProgressBar::new_spinner("[1/5] Grouping by size");
-    let walk_opts = WalkOpts {
-        skip_hidden: config.skip_hidden,
-        follow_links: config.follow_links,
-    };
+    let logger = spinner.logger();
+    let mut walk = Walk::new();
+    walk.skip_hidden = config.skip_hidden;
+    walk.follow_links =  config.follow_links;
+    walk.logger = &logger;
     let groups = GroupMap::new(|info: FileInfo| (info.len, info));
-    walk(config.paths.clone(), &walk_opts, |path| {
+
+    walk.run(config.paths.clone(), |path| {
         spinner.tick();
-        file_info_or_log_err(path)
+        file_info_or_log_err(path, &logger)
             .into_iter()
             .filter(|info| info.len >= config.min_size && info.len <= config.max_size)
             .for_each(|info| groups.add(info));
@@ -105,10 +107,13 @@ fn group_by_prefix(report: &mut Report, groups: Vec<(FileLen, Vec<PathBuf>)>)
     let remaining_files = count_values(&groups);
     let progress = FastProgressBar::new_progress_bar(
         "[2/5] Grouping by prefix", remaining_files as u64);
+    let log = progress.logger();
+
     let groups = split_groups(groups, 2, |&len, path| {
         progress.tick();
         let prefix_len = if len <= MAX_PREFIX_LEN { len } else { MIN_PREFIX_LEN };
-        file_hash_or_log_err(path, FilePos(0), prefix_len).map(|h| (len, h))
+        file_hash_or_log_err(path, FilePos(0), prefix_len, &log)
+            .map(|h| (len, h))
     }).collect();
 
     report.stage_finished("Group by prefix", &groups);
@@ -121,10 +126,12 @@ fn group_by_suffix(report: &mut Report, groups: Vec<((FileLen, FileHash), Vec<Pa
     let remaining_files = count_values(&groups);
     let progress = FastProgressBar::new_progress_bar(
         "[3/5] Grouping by suffix", remaining_files as u64);
+    let log = progress.logger();
+
     let groups = split_groups(groups, 2, |&(len, hash), path| {
         progress.tick();
         if len >= MAX_PREFIX_LEN + SUFFIX_LEN {
-            file_hash_or_log_err(path, (len - SUFFIX_LEN).as_pos(), SUFFIX_LEN)
+            file_hash_or_log_err(path, (len - SUFFIX_LEN).as_pos(), SUFFIX_LEN, &log)
                 .map(|h| (len, h))
         } else {
             Some((len, hash))
@@ -141,10 +148,12 @@ fn group_by_contents(report: &mut Report, groups: Vec<((FileLen, FileHash), Vec<
     let remaining_files = count_values(&groups);
     let progress = FastProgressBar::new_progress_bar(
         "[4/5] Grouping by contents", remaining_files as u64);
+    let log = progress.logger();
+
     let groups = split_groups(groups, 2, |&(len, hash), path| {
         progress.tick();
         if len > MAX_PREFIX_LEN {
-            file_hash_or_log_err(path, FilePos(0), len).map(|h| (len, h))
+            file_hash_or_log_err(path, FilePos(0), len, &log).map(|h| (len, h))
         } else {
             Some((len, hash))
         }

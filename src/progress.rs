@@ -108,6 +108,14 @@ impl FastProgressBar {
         self.progress_bar.set_position(value);
     }
 
+    pub fn println<I: Into<String>>(&self, msg: I) {
+        self.progress_bar.println(msg);
+    }
+
+    pub fn logger<'a>(&'a self) -> Box<dyn Fn(String) + Send + Sync + 'a> {
+        Box::new(move |msg| self.println(msg))
+    }
+
     pub fn tick(&self) {
         self.counter.inc();
     }

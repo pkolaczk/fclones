@@ -1,4 +1,4 @@
-pub mod dirwalk;
+pub mod walk;
 pub mod files;
 pub mod group;
 pub mod progress;

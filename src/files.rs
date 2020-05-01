@@ -229,12 +229,12 @@ pub fn file_info(file: PathBuf) -> io::Result<FileInfo> {
 
 /// Returns file information for the given path.
 /// On failure, logs an error to stderr and returns `None`.
-pub fn file_info_or_log_err(file: PathBuf) -> Option<FileInfo> {
+pub fn file_info_or_log_err(file: PathBuf, logger: impl Fn(String)) -> Option<FileInfo> {
     match std::fs::metadata(&file) {
         Ok(metadata) => Some(FileInfo::for_file(file, &metadata)),
         Err(e) if e.kind() == ErrorKind::NotFound => None,
         Err(e) => {
-            eprintln!("Failed to read metadata of {}: {}", file.display(), e);
+            (logger)(format!("Failed to read metadata of {}: {}", file.display(), e));
             None
         }
     }
@@ -433,13 +433,15 @@ pub fn file_hash(path: &PathBuf, offset: FilePos, len: FileLen) -> io::Result<Fi
 
 /// Computes the file hash or logs an error and returns none if failed.
 /// If file is not found, no error is logged and `None` is returned.
-pub fn file_hash_or_log_err(path: &PathBuf, offset: FilePos, len: FileLen) -> Option<FileHash> {
+pub fn file_hash_or_log_err(path: &PathBuf, offset: FilePos, len: FileLen, log: &dyn Fn(String))
+                            -> Option<FileHash>
+{
     match file_hash(path, offset, len) {
         Ok(hash) => Some(hash),
         Err(e) if e.kind() == ErrorKind::NotFound =>
             None,
         Err(e) => {
-            eprintln!("Failed to compute hash of file {}: {}", path.display(), e);
+            (log)(format!("Failed to compute hash of file {}: {}", path.display(), e));
             None
         }
     }
