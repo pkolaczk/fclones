@@ -5,6 +5,7 @@ use std::path::PathBuf;
 use itertools::Itertools;
 use rayon::iter::ParallelIterator;
 use structopt::StructOpt;
+use thread_local::ThreadLocal;
 
 use dff::files::*;
 use dff::group::*;
@@ -12,6 +13,7 @@ use dff::progress::FastProgressBar;
 use dff::report::Report;
 use std::io::stdout;
 use dff::walk::Walk;
+use std::cell::RefCell;
 
 const MIN_PREFIX_LEN: FileLen = FileLen(4096);
 const MAX_PREFIX_LEN: FileLen = FileLen(2 * MIN_PREFIX_LEN.0);
@@ -76,19 +78,33 @@ fn remove_duplicate_links_if_needed(config: &Config, files: Vec<FileInfo>) -> Ve
 fn scan_files(report: &mut Report, config: &Config) -> Vec<(FileLen, Vec<PathBuf>)> {
     let spinner = FastProgressBar::new_spinner("[1/5] Grouping by size");
     let logger = spinner.logger();
+
+    // Walk the tree and collect matching files in parallel:
+    let file_collector = ThreadLocal::new();
     let mut walk = Walk::new();
     walk.skip_hidden = config.skip_hidden;
     walk.follow_links =  config.follow_links;
     walk.logger = &logger;
-    let groups = GroupMap::new(|info: FileInfo| (info.len, info));
-
     walk.run(config.paths.clone(), |path| {
         spinner.tick();
         file_info_or_log_err(path, &logger)
             .into_iter()
             .filter(|info| info.len >= config.min_size && info.len <= config.max_size)
-            .for_each(|info| groups.add(info));
+            .for_each(|info| {
+                let vec = file_collector.get_or(|| RefCell::new(Vec::new()));
+                vec.borrow_mut().push(info);
+            });
     });
+
+    // Group files by sizes, single threaded, but no I/O here:
+    let groups = GroupMap::new(|info: FileInfo| (info.len, info));
+    for files in file_collector.into_iter() {
+        for file in files.into_inner().into_iter() {
+            groups.add(file);
+        }
+    }
+
+    // Post filter the groups
     let groups = groups
         .into_iter()
         .filter(|(_, files)| files.len() >= 2)

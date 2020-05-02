@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
 use rayon::Scope;
-use std::fs::{FileType, DirEntry};
+use std::fs::{FileType, DirEntry, ReadDir};
 use std::io;
 
 /// Provides an abstraction over `PathBuf` and `DirEntry` that allows
@@ -107,14 +107,14 @@ impl<'a> Walk<'a> {
                     self.handle_err(Entry::from_path(p))
                         .into_iter()
                         .for_each(|entry| {
-                            self.walk_dir(s, entry, consumer)
+                            self.visit(s, entry, consumer)
                         })
                 })
             }
         });
     }
 
-    fn walk_dir<'s, 'w, F>(&'w self, s: &'s Scope<'w>, entry: Entry, consumer: &'w F)
+    fn visit<'s, 'w, F>(&'w self, s: &'s Scope<'w>, entry: Entry, consumer: &'w F)
         where F: Fn(PathBuf) + Sync + Send {
 
         match entry {
@@ -122,10 +122,15 @@ impl<'a> Walk<'a> {
                 (consumer)(path)
             },
             Entry::Dir(path) => match std::fs::read_dir(&path) {
-                Ok(rd) => for entry in rd {
-                    let entry = entry.unwrap();
-                    let entry = Entry::from_dir_entry(entry).unwrap();
-                    s.spawn(move |s| self.walk_dir(s, entry, consumer))
+                Ok(rd) => {
+                    let mut entries = Walk::sorted_entries(rd);
+                    if !entries.is_empty() {
+                        let last = entries.remove(entries.len() - 1);
+                        for entry in entries {
+                            s.spawn(move |s| self.visit(s, entry, consumer))
+                        }
+                        self.visit(s, last, consumer)
+                    }
                 },
                 Err(e) =>
                     (self.logger)(format!("Failed to read dir {}: {}", path.display(), e))
@@ -133,5 +138,26 @@ impl<'a> Walk<'a> {
             Entry::SymLink(_) => {}, // TODO
             Entry::Other(_) => {}
         }
+    }
+
+    fn sorted_entries(rd: ReadDir) -> Vec<Entry> {
+        let mut files = vec![];
+        let mut links = vec![];
+        let mut dirs = vec![];
+        rd.into_iter()
+            .filter_map(|e| e.ok())
+            .filter_map(|e| Entry::from_dir_entry(e).ok())
+            .for_each(|e| match e {
+                Entry::File(_) => files.push(e),
+                Entry::SymLink(_) => links.push(e),
+                Entry::Dir(_) => dirs.push(e),
+                Entry::Other(_) => {}
+            });
+        let mut entries = Vec::with_capacity(
+            dirs.len() + links.len() + files.len());
+        entries.extend(dirs.into_iter());
+        entries.extend(links.into_iter());
+        entries.extend(files.into_iter());
+        entries
     }
 }
