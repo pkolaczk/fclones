@@ -75,8 +75,8 @@ fn remove_duplicate_links_if_needed(config: &Config, files: Vec<FileInfo>) -> Ve
     }
 }
 
-fn scan_files(report: &mut Report, config: &Config) -> Vec<(FileLen, Vec<PathBuf>)> {
-    let spinner = FastProgressBar::new_spinner("[1/5] Grouping by size");
+fn scan_files(report: &mut Report, config: &Config) -> Vec<Vec<FileInfo>> {
+    let spinner = FastProgressBar::new_spinner("[1/6] Scanning files");
     let logger = spinner.logger();
 
     // Walk the tree and collect matching files in parallel:
@@ -96,23 +96,31 @@ fn scan_files(report: &mut Report, config: &Config) -> Vec<(FileLen, Vec<PathBuf
             });
     });
 
-    // Group files by sizes, single threaded, but no I/O here:
+    report.scanned_files(spinner.position());
+    file_collector.into_iter().map(|r| r.into_inner()).collect()
+}
+
+fn group_by_size(report: &mut Report, config: &Config, files: Vec<Vec<FileInfo>>)
+                 -> Vec<(FileLen, Vec<PathBuf>)>
+{
+    let file_count: usize = files.iter().map(|v| v.len()).sum();
+    let progress = FastProgressBar::new_progress_bar(
+        "[2/6] Grouping by size", file_count as u64);
+
     let groups = GroupMap::new(|info: FileInfo| (info.len, info));
-    for files in file_collector.into_iter() {
-        for file in files.into_inner().into_iter() {
+    for files in files.into_iter() {
+        for file in files.into_iter() {
+            progress.tick();
             groups.add(file);
         }
     }
-
-    // Post filter the groups
-    let groups = groups
+   let groups = groups
         .into_iter()
         .filter(|(_, files)| files.len() >= 2)
         .map(|(l, files)| (l, remove_duplicate_links_if_needed(&config, files)))
         .map(|(l, files)| (l, files.into_iter().map(|info| info.path).collect()))
         .collect();
 
-    report.scanned_files(spinner.position());
     report.stage_finished("Group by size", &groups);
     groups
 }
@@ -122,7 +130,7 @@ fn group_by_prefix(report: &mut Report, groups: Vec<(FileLen, Vec<PathBuf>)>)
 {
     let remaining_files = count_values(&groups);
     let progress = FastProgressBar::new_progress_bar(
-        "[2/5] Grouping by prefix", remaining_files as u64);
+        "[3/6] Grouping by prefix", remaining_files as u64);
     let log = progress.logger();
 
     let groups = split_groups(groups, 2, |&len, path| {
@@ -141,7 +149,7 @@ fn group_by_suffix(report: &mut Report, groups: Vec<((FileLen, FileHash), Vec<Pa
 {
     let remaining_files = count_values(&groups);
     let progress = FastProgressBar::new_progress_bar(
-        "[3/5] Grouping by suffix", remaining_files as u64);
+        "[4/6] Grouping by suffix", remaining_files as u64);
     let log = progress.logger();
 
     let groups = split_groups(groups, 2, |&(len, hash), path| {
@@ -163,7 +171,7 @@ fn group_by_contents(report: &mut Report, groups: Vec<((FileLen, FileHash), Vec<
 {
     let remaining_files = count_values(&groups);
     let progress = FastProgressBar::new_progress_bar(
-        "[4/5] Grouping by contents", remaining_files as u64);
+        "[5/6] Grouping by contents", remaining_files as u64);
     let log = progress.logger();
 
     let groups = split_groups(groups, 2, |&(len, hash), path| {
@@ -182,7 +190,7 @@ fn group_by_contents(report: &mut Report, groups: Vec<((FileLen, FileHash), Vec<
 fn write_report(report: &mut Report, groups: &mut Vec<((FileLen, FileHash), Vec<PathBuf>)>) {
     let remaining_files = count_values(&groups);
     let progress = FastProgressBar::new_progress_bar(
-        "[5/5] Writing report", remaining_files as u64);
+        "[6/6] Writing report", remaining_files as u64);
     groups.sort_by_key(|&((len, _), _)| Reverse(len));
     report.write(&mut std::io::stdout()).expect("Failed to write report");
     let mut out = BufWriter::new(stdout());
@@ -201,7 +209,8 @@ fn main() {
     configure_thread_pool(config.threads);
 
     let mut report = Report::new();
-    let size_groups = scan_files(&mut report, &config);
+    let matching_files = scan_files(&mut report, &config);
+    let size_groups = group_by_size(&mut report, &config, matching_files);
     let prefix_groups = group_by_prefix(&mut report, size_groups);
     let suffix_groups = group_by_suffix(&mut report, prefix_groups);
     let mut contents_groups= group_by_contents(&mut report, suffix_groups);
