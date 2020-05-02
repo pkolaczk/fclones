@@ -1,6 +1,36 @@
 use std::path::PathBuf;
 
 use rayon::Scope;
+use std::fs::{FileType, DirEntry};
+use std::io;
+
+/// Provides an abstraction over `PathBuf` and `DirEntry` that allows
+/// to distinguish file type and wrap its path.
+enum Entry {
+    File(PathBuf),
+    Dir(PathBuf),
+    SymLink(PathBuf),
+    Other(PathBuf)
+}
+
+impl Entry {
+
+    pub fn new(file_type: FileType, path: PathBuf) -> Entry {
+        if file_type.is_file() { Entry::File(path) }
+        else if file_type.is_dir() { Entry::Dir(path) }
+        else if file_type.is_symlink() { Entry::SymLink(path) }
+        else { Entry::Other(path) }
+    }
+
+    pub fn from_path(path: PathBuf) -> io::Result<Entry> {
+        path.metadata().map(|meta| Entry::new(meta.file_type(), path))
+    }
+
+    pub fn from_dir_entry(dir_entry: DirEntry) -> io::Result<Entry> {
+        let path = dir_entry.path();
+        dir_entry.file_type().map(|ft| Entry::new(ft, path))
+    }
+}
 
 pub struct Walk<'a> {
     pub skip_hidden: bool,
@@ -16,6 +46,13 @@ impl<'a> Walk<'a> {
             skip_hidden: false,
             follow_links: false,
             logger: &|s| eprintln!("{}", s),
+        }
+    }
+
+    fn handle_err<T>(&self, value: io::Result<T>) -> Option<T> {
+        match value {
+            Ok(value) => Some(value),
+            Err(e) => { (self.logger)(format!("{}", e)); None }
         }
     }
 
@@ -52,7 +89,7 @@ impl<'a> Walk<'a> {
     ///
     /// let receiver = Mutex::new(Vec::<PathBuf>::new());
     /// let mut walk = Walk::new();
-    /// walk.run(vec![dir1, dir2], |path| {
+    /// walk.run(vec![test_root], |path| {
     ///     receiver.lock().unwrap().push(path)
     /// });
     ///
@@ -66,27 +103,35 @@ impl<'a> Walk<'a> {
         let consumer = &consumer;
         rayon::scope( move |s| {
             for p in roots {
-                s.spawn( move |s| self.walk_dir(s, p, consumer))
+                s.spawn( move |s| {
+                    self.handle_err(Entry::from_path(p))
+                        .into_iter()
+                        .for_each(|entry| {
+                            self.walk_dir(s, entry, consumer)
+                        })
+                })
             }
         });
     }
 
-    fn walk_dir<'s, 'w, F>(&'w self, s: &'s Scope<'w>, path: PathBuf, consumer: &'w F)
+    fn walk_dir<'s, 'w, F>(&'w self, s: &'s Scope<'w>, entry: Entry, consumer: &'w F)
         where F: Fn(PathBuf) + Sync + Send {
 
-        match std::fs::read_dir(&path) {
-            Ok(rd) => for entry in rd {
-                let entry = entry.unwrap();
-                let file_type = entry.file_type().unwrap();
-                if file_type.is_file() {
-                    (consumer)(entry.path())
-                } else if file_type.is_dir() && (!file_type.is_symlink() || self.follow_links) {
-                    s.spawn(move |s| self.walk_dir(s, entry.path(), consumer))
-                }
+        match entry {
+            Entry::File(path) => {
+                (consumer)(path)
             },
-            Err(e) =>
-                (self.logger)(format!("Failed to read dir {}: {}", path.display(), e))
+            Entry::Dir(path) => match std::fs::read_dir(&path) {
+                Ok(rd) => for entry in rd {
+                    let entry = entry.unwrap();
+                    let entry = Entry::from_dir_entry(entry).unwrap();
+                    s.spawn(move |s| self.walk_dir(s, entry, consumer))
+                },
+                Err(e) =>
+                    (self.logger)(format!("Failed to read dir {}: {}", path.display(), e))
+            },
+            Entry::SymLink(_) => {}, // TODO
+            Entry::Other(_) => {}
         }
     }
-
 }
