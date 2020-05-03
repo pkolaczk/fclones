@@ -116,13 +116,8 @@ impl<'a> Walk<'a> {
             },
             Entry::Dir(path) => match std::fs::read_dir(&path) {
                 Ok(rd) => {
-                    let mut entries = Walk::sorted_entries(rd);
-                    if !entries.is_empty() {
-                        let last = entries.remove(entries.len() - 1);
-                        for entry in entries {
-                            s.spawn(move |s| self.visit(s, entry, consumer))
-                        }
-                        self.visit(s, last, consumer)
+                    for entry in Walk::sorted_entries(rd) {
+                        s.spawn(move |s| self.visit(s, entry, consumer))
                     }
                 },
                 Err(e) =>
@@ -133,7 +128,10 @@ impl<'a> Walk<'a> {
         }
     }
 
-    fn sorted_entries(rd: ReadDir) -> Vec<Entry> {
+    /// Sort dir entries so that regular files are at the end.
+    /// Because each worker's queue is a LIFO, the files would be picked up first and the
+    /// dirs would be on the other side, amenable for stealing by other workers.
+    fn sorted_entries(rd: ReadDir) -> impl Iterator<Item = Entry> {
         let mut files = vec![];
         let mut links = vec![];
         let mut dirs = vec![];
@@ -146,11 +144,6 @@ impl<'a> Walk<'a> {
                 Entry::Dir(_) => dirs.push(e),
                 Entry::Other(_) => {}
             });
-        let mut entries = Vec::with_capacity(
-            dirs.len() + links.len() + files.len());
-        entries.extend(dirs.into_iter());
-        entries.extend(links.into_iter());
-        entries.extend(files.into_iter());
-        entries
+        dirs.into_iter().chain(links).chain(files)
     }
 }
