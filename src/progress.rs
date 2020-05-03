@@ -1,3 +1,4 @@
+use ansi_term::Colour::*;
 use indicatif::{ProgressBar, ProgressStyle};
 use atomic_counter::{RelaxedCounter, AtomicCounter};
 use std::sync::Arc;
@@ -108,12 +109,22 @@ impl FastProgressBar {
         self.progress_bar.set_position(value);
     }
 
-    pub fn println<I: Into<String>>(&self, msg: I) {
+    pub fn err<I: Into<String>>(&self, msg: I) {
+        let msg = Red.paint("[E] ").to_string() + &msg.into();
         self.progress_bar.println(msg);
     }
 
+    pub fn warn<I: Into<String>>(&self, msg: I) {
+        let msg = Yellow.paint("[W] ").to_string() + &msg.into();
+        self.progress_bar.println(msg);
+    }
+
+    pub fn info<I: Into<String>>(&self, msg: I) {
+        self.progress_bar.println("[I] ".to_owned() + &msg.into());
+    }
+
     pub fn logger<'a>(&'a self) -> Box<dyn Fn(String) + Send + Sync + 'a> {
-        Box::new(move |msg| self.println(msg))
+        Box::new(move |msg| self.err(msg))
     }
 
     pub fn tick(&self) {

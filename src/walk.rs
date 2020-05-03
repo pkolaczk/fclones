@@ -49,13 +49,6 @@ impl<'a> Walk<'a> {
         }
     }
 
-    fn handle_err<T>(&self, value: io::Result<T>) -> Option<T> {
-        match value {
-            Ok(value) => Some(value),
-            Err(e) => { (self.logger)(format!("{}", e)); None }
-        }
-    }
-
     /// Walks multiple directories recursively in parallel and sends found files to `consumer`.
     /// The `consumer` must be able to receive items from many threads.
     /// Inaccessible files are skipped, but errors are printed to stderr.
@@ -104,11 +97,11 @@ impl<'a> Walk<'a> {
         rayon::scope( move |s| {
             for p in roots {
                 s.spawn( move |s| {
-                    self.handle_err(Entry::from_path(p))
+                    Entry::from_path(p.clone())
+                        .map_err(|e|
+                            (self.logger)(format!("Failed to stat {}: {}", p.display(), e)))
                         .into_iter()
-                        .for_each(|entry| {
-                            self.visit(s, entry, consumer)
-                        })
+                        .for_each(|entry| self.visit(s, entry, consumer))
                 })
             }
         });
