@@ -144,16 +144,29 @@ impl<'a> Walk<'a> {
     fn visit_entry<'s, 'w, F>(&'s self, entry: Entry, scope: &Scope<'w>, state: &'w WalkState<F>)
         where F: Fn(PathBuf) + Sync + Send, 's: 'w
     {
-        if !self.follow_links || state.visited.insert(Self::path_hash(&entry.path)) {
-            match entry.tpe {
-                EntryType::File =>
-                    (state.consumer)(self.relative(entry.path)),
-                EntryType::Dir =>
-                    self.visit_dir(&entry.path, scope, state),
-                EntryType::SymLink =>
-                    self.visit_link(&entry.path, scope, state),
-                EntryType::Other => {}
+        // Skip hidden files
+        if self.skip_hidden {
+            if let Some(name) = entry.path.file_name() {
+                if name.to_string_lossy().starts_with(".") {
+                    return
+                }
             }
+        }
+
+        // Skip already visited paths. We're checking only when follow_links is true,
+        // because inserting into a shared hash set is costly.
+        if self.follow_links && !state.visited.insert(Self::path_hash(&entry.path)) {
+            return
+        }
+
+        match entry.tpe {
+            EntryType::File =>
+                (state.consumer)(self.relative(entry.path)),
+            EntryType::Dir =>
+                self.visit_dir(&entry.path, scope, state),
+            EntryType::SymLink =>
+                self.visit_link(&entry.path, scope, state),
+            EntryType::Other => {}
         }
     }
 
@@ -339,6 +352,21 @@ mod test {
             let mut walk = Walk::new();
             walk.follow_links = true;
             assert_eq!(run_walk(walk, test_root.clone()), vec![file]);
+        });
+    }
+
+    #[test]
+    fn skip_hidden() {
+        with_dir("target/test/walk/7/", |test_root| {
+            let hidden_dir = test_root.join(".dir");
+            create_dir(&hidden_dir).unwrap();
+            let hidden_file_1 = hidden_dir.join("file.txt");
+            let hidden_file_2 = test_root.join(".file.txt");
+            File::create(&hidden_file_1).unwrap();
+            File::create(&hidden_file_2).unwrap();
+            let mut walk = Walk::new();
+            walk.skip_hidden = true;
+            assert_eq!(run_walk(walk, test_root.clone()), Vec::<PathBuf>::new());
         });
     }
 
