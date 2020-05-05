@@ -7,6 +7,7 @@ use std::path::PathBuf;
 use dashmap::DashSet;
 use fasthash::{FastHasher, HasherExt, t1ha2::Hasher128};
 use rayon::Scope;
+use crate::glob::PathSelector;
 
 #[derive(Debug)]
 enum EntryType {
@@ -43,8 +44,10 @@ impl Entry {
 /// Many walks can be initiated from the same instance.
 pub struct Walk<'a> {
     pub base_dir: PathBuf,
+    pub recursive: bool,
     pub skip_hidden: bool,
     pub follow_links: bool,
+    pub path_selector: PathSelector,
     pub logger: &'a (dyn Fn(String) + Sync + Send),
 }
 
@@ -59,10 +62,12 @@ impl<'a> Walk<'a> {
     /// Creates a default walk with empty root dirs, no link following and logger set to sdterr
     pub fn new() -> Walk<'a> {
         Walk {
+            base_dir: current_dir().unwrap_or_default(),
+            recursive: true,
             skip_hidden: false,
             follow_links: false,
+            path_selector: PathSelector::match_all(),
             logger: &|s| eprintln!("{}", s),
-            base_dir: current_dir().unwrap_or_default()
         }
     }
 
@@ -133,6 +138,9 @@ impl<'a> Walk<'a> {
     }
 
     /// Computes a 128-bit hash of a full path.
+    /// We need 128-bits so that collisions are not a problem.
+    /// Thanks to using a long hash we can be sure that if a path hash has been recorded
+    /// we can
     fn path_hash(path: &PathBuf) -> u128 {
         let mut h = Hasher128::new();
         path.hash(&mut h);
@@ -161,12 +169,21 @@ impl<'a> Walk<'a> {
 
         match entry.tpe {
             EntryType::File =>
-                (state.consumer)(self.relative(entry.path)),
+                self.visit_file(entry.path, state),
             EntryType::Dir =>
                 self.visit_dir(&entry.path, scope, state),
             EntryType::SymLink =>
                 self.visit_link(&entry.path, scope, state),
             EntryType::Other => {}
+        }
+    }
+
+    /// If file matches selection criteria, sends it to the consumer
+    fn visit_file<F>(&self, path: PathBuf, state: &WalkState<F>)
+        where F: Fn(PathBuf) + Sync + Send
+    {
+        if self.path_selector.matches_fully(&path) {
+            (state.consumer)(self.relative(path))
         }
     }
 
@@ -190,14 +207,16 @@ impl<'a> Walk<'a> {
     fn visit_dir<'s, 'w, F>(&'s self, path: &PathBuf, scope: &Scope<'w>, state: &'w WalkState<F>)
         where F: Fn(PathBuf) + Sync + Send, 's: 'w
     {
-        match std::fs::read_dir(&path) {
-            Ok(rd) => {
-                for entry in Self::sorted_entries(rd) {
-                    scope.spawn(move |s| self.visit_entry(entry, s, state))
-                }
-            },
-            Err(e) =>
-                (self.logger)(format!("Failed to read dir {}: {}", path.display(), e))
+        if self.recursive {
+            match std::fs::read_dir(&path) {
+                Ok(rd) => {
+                    for entry in Self::sorted_entries(rd) {
+                        scope.spawn(move |s| self.visit_entry(entry, s, state))
+                    }
+                },
+                Err(e) =>
+                    (self.logger)(format!("Failed to read dir {}: {}", path.display(), e))
+            }
         }
     }
 

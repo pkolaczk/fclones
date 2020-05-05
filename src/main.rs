@@ -1,7 +1,10 @@
+use std::cell::RefCell;
 use std::cmp::Reverse;
-use std::io::{Write, BufWriter};
+use std::io::{BufWriter, Write};
+use std::io::stdout;
 use std::path::PathBuf;
 
+use glob::Pattern;
 use itertools::Itertools;
 use rayon::iter::ParallelIterator;
 use structopt::StructOpt;
@@ -11,9 +14,8 @@ use dff::files::*;
 use dff::group::*;
 use dff::progress::FastProgressBar;
 use dff::report::Report;
-use std::io::stdout;
 use dff::walk::Walk;
-use std::cell::RefCell;
+use dff::glob::PathSelector;
 
 const MIN_PREFIX_LEN: FileLen = FileLen(4096);
 const MAX_PREFIX_LEN: FileLen = FileLen(2 * MIN_PREFIX_LEN.0);
@@ -22,6 +24,10 @@ const SUFFIX_LEN: FileLen = FileLen(4096);
 #[derive(Debug, StructOpt)]
 #[structopt(name = "dff", about = "Find duplicate files", author)]
 struct Config {
+
+    /// Descend into directories recursively
+    #[structopt(short="R", long)]
+    pub recursive: bool,
 
     /// Skip hidden files
     #[structopt(short="A", long)]
@@ -48,6 +54,14 @@ struct Config {
     /// If set to 0, the number of CPU cores reported by the operating system is used.
     #[structopt(short, long, default_value="0")]
     pub threads: usize,
+
+    /// Include only paths matched by this pattern.
+    #[structopt(short="I", long, parse(try_from_str=Pattern::new))]
+    pub include: Vec<Pattern>,
+
+    /// Exclude paths matched by this pattern; applied after `include`.
+    #[structopt(short="E", long, parse(try_from_str=Pattern::new))]
+    pub exclude: Vec<Pattern>,
 
     /// Directory roots to scan
     #[structopt(parse(from_os_str), required = true)]
@@ -82,8 +96,13 @@ fn scan_files(report: &mut Report, config: &Config) -> Vec<Vec<FileInfo>> {
     // Walk the tree and collect matching files in parallel:
     let file_collector = ThreadLocal::new();
     let mut walk = Walk::new();
+    walk.recursive = config.recursive;
     walk.skip_hidden = config.skip_hidden;
     walk.follow_links =  config.follow_links;
+    walk.path_selector = PathSelector::new(
+        walk.base_dir.clone(),
+        config.include.clone(),
+        config.exclude.clone());
     walk.logger = &logger;
     walk.run(config.paths.clone(), |path| {
         spinner.tick();
