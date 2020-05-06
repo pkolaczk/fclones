@@ -8,25 +8,32 @@ use std::path::{PathBuf, MAIN_SEPARATOR};
 /// An empty include pattern vector matches all paths.
 pub struct PathSelector {
     base_dir: PathBuf,
-    include_pat: Vec<Pattern>,
-    exclude_pat: Vec<Pattern>,
-    excluded_prefixes: Vec<PathBuf>
+    included_files: Vec<Pattern>,
+    excluded_files: Vec<Pattern>,
+    included_dirs: Vec<Vec<Pattern>>,
+    excluded_dirs: Vec<Pattern>,
 }
 
 impl PathSelector {
 
     /// Creates a new selector with given include and exclude patterns.
     pub fn new(base_dir: PathBuf, includes: Vec<Pattern>, excludes: Vec<Pattern>) -> PathSelector {
-        let includes = includes.into_iter().map(|pat|
+        let includes: Vec<Pattern> = includes.into_iter().map(|pat|
             Self::abs_pattern(&base_dir, pat)).collect();
-        let excludes = excludes.into_iter().map(|pat|
+        let excludes: Vec<Pattern> = excludes.into_iter().map(|pat|
             Self::abs_pattern(&base_dir, pat)).collect();
 
         PathSelector {
             base_dir,
-            include_pat: includes,
-            exclude_pat: excludes,
-            excluded_prefixes: vec![]
+            included_dirs: includes.iter()
+                .map(Self::split_non_recursive_prefix)
+                .collect(),
+            excluded_dirs: excludes.iter()
+                .filter(|&p| Self::has_match_all_suffix(p))
+                .flat_map(|p| vec![p.clone(), Self::strip_match_all_suffix(&p)])
+                .collect(),
+            included_files: includes,
+            excluded_files: excludes,
         }
     }
 
@@ -34,19 +41,33 @@ impl PathSelector {
     pub fn match_all() -> PathSelector {
         PathSelector {
             base_dir: "/".into(),
-            include_pat: vec![],
-            exclude_pat: vec![],
-            excluded_prefixes: vec![]
+            included_files: vec![],
+            excluded_files: vec![],
+            included_dirs: vec![],
+            excluded_dirs: vec![]
         }
     }
 
     /// Returns true if the given path fully matches this selector.
     /// The path must be absolute.
-    pub fn matches_fully(&self, path: &PathBuf) -> bool {
+    pub fn matches_full_path(&self, path: &PathBuf) -> bool {
         self.with_absolute_path(path, |path| {
-            (self.include_pat.is_empty()
-                || self.include_pat.iter().any(|p| p.matches_path(path)))
-                && self.exclude_pat.iter().all(|p| !p.matches_path(path))
+            (self.included_files.is_empty()
+                || self.included_files.iter().any(|p| p.matches_path(path)))
+                && self.excluded_files.iter().all(|p| !p.matches_path(path))
+        })
+    }
+
+    /// Returns true if the given directory may contain matching paths.
+    /// Used to decide whether the directory walk should descend to that directory.
+    /// The directory should be allowed only if:
+    /// 1. all its components match a prefix of at least one include filter,
+    /// 2. it doesn't match any of the exclude filters ending with `**` pattern.
+    pub fn matches_dir(&self, path: &PathBuf) -> bool {
+        self.with_absolute_path(path, |path| {
+            (self.included_dirs.is_empty()
+                || self.included_dirs.iter().any(|v| Self::prefix_matches_path(v, path)))
+                && self.excluded_dirs.iter().all(|p| !p.matches_path(path))
         })
     }
 
@@ -78,13 +99,46 @@ impl PathSelector {
         }
     }
 
+    /// Appends path separator if the string doesn't end with one already
     fn append_sep(s: String) -> String {
         if s.ends_with(MAIN_SEPARATOR) { s } else { s + MAIN_SEPARATOR.to_string().as_str() }
     }
 
+    ///  Returns true if pattern can match absolute paths
     fn is_absolute(pattern: &Pattern) -> bool {
         let s = pattern.as_str();
         PathBuf::from(s).is_absolute()
+    }
+
+    /// Finds the longest prefix of the `pattern` that doesn't contain recursive wildcard `**`.
+    /// Then splits the prefix into separate patterns, one per each path component.
+    fn split_non_recursive_prefix(pattern: &Pattern) -> Vec<Pattern> {
+        let path = PathBuf::from(pattern.as_str());
+        path.components()
+            .into_iter()
+            .take_while(|c| c.as_os_str() != "**")
+            .map(|c| Pattern::new(c.as_os_str().to_str().unwrap()).unwrap())
+            .collect()
+    }
+
+    /// Returns true if pattern has a "match all" wildcard (`**`) at the end
+    fn has_match_all_suffix(pattern: &Pattern) -> bool {
+        let s = pattern.as_str();
+        s.ends_with("/**") || s.ends_with("/**/*")
+    }
+
+    /// Drops the "match all" wildcard (`**`) from the end of the pattern
+    fn strip_match_all_suffix(pattern: &Pattern) -> Pattern {
+        Pattern::new(pattern.as_str()
+            .trim_end_matches("/**/*")
+            .trim_end_matches("/**")).unwrap()
+    }
+
+    /// Returns true if all components of the path match corresponding initial patterns in
+    /// the `pattern` vector.
+    fn prefix_matches_path(pattern: &Vec<Pattern>, path: &PathBuf) -> bool {
+        pattern.iter().zip(path.iter())
+            .all(|(p, c)| p.matches(c.to_string_lossy().as_ref()))
     }
 }
 
@@ -104,10 +158,10 @@ mod test {
         let excludes = vec![];
         let selector = PathSelector::new(base_dir, includes, excludes);
 
-        assert!(selector.matches_fully(&PathBuf::from("/test/foo/")));
-        assert!(selector.matches_fully(&PathBuf::from("/test/foo/bar")));
-        assert!(selector.matches_fully(&PathBuf::from("/test/foo/bar/baz")));
-        assert!(!selector.matches_fully(&PathBuf::from("/test/bar")));
+        assert!(selector.matches_full_path(&PathBuf::from("/test/foo/")));
+        assert!(selector.matches_full_path(&PathBuf::from("/test/foo/bar")));
+        assert!(selector.matches_full_path(&PathBuf::from("/test/foo/bar/baz")));
+        assert!(!selector.matches_full_path(&PathBuf::from("/test/bar")));
     }
 
     #[test]
@@ -118,17 +172,17 @@ mod test {
         let selector = PathSelector::new(base_dir, includes, excludes);
 
         // matching:
-        assert!(selector.matches_fully(&PathBuf::from("/test/foo/")));
-        assert!(selector.matches_fully(&PathBuf::from("/test/foo/bar")));
-        assert!(selector.matches_fully(&PathBuf::from("/test/foo/bar/baz")));
-        assert!(selector.matches_fully(&PathBuf::from("foo/")));
-        assert!(selector.matches_fully(&PathBuf::from("foo/bar")));
-        assert!(selector.matches_fully(&PathBuf::from("foo/bar/baz")));
+        assert!(selector.matches_full_path(&PathBuf::from("/test/foo/")));
+        assert!(selector.matches_full_path(&PathBuf::from("/test/foo/bar")));
+        assert!(selector.matches_full_path(&PathBuf::from("/test/foo/bar/baz")));
+        assert!(selector.matches_full_path(&PathBuf::from("foo/")));
+        assert!(selector.matches_full_path(&PathBuf::from("foo/bar")));
+        assert!(selector.matches_full_path(&PathBuf::from("foo/bar/baz")));
 
         // not matching:
-        assert!(!selector.matches_fully(&PathBuf::from("bar")));
-        assert!(!selector.matches_fully(&PathBuf::from("/bar")));
-        assert!(!selector.matches_fully(&PathBuf::from("/test/bar")));
+        assert!(!selector.matches_full_path(&PathBuf::from("bar")));
+        assert!(!selector.matches_full_path(&PathBuf::from("/bar")));
+        assert!(!selector.matches_full_path(&PathBuf::from("/test/bar")));
     }
 
     #[test]
@@ -139,17 +193,17 @@ mod test {
         let selector = PathSelector::new(base_dir, includes, excludes);
 
         // matching:
-        assert!(selector.matches_fully(&PathBuf::from("/foo/")));
-        assert!(selector.matches_fully(&PathBuf::from("/foo/bar")));
-        assert!(selector.matches_fully(&PathBuf::from("/foo/bar/baz")));
-        assert!(selector.matches_fully(&PathBuf::from("foo/")));
-        assert!(selector.matches_fully(&PathBuf::from("foo/bar")));
-        assert!(selector.matches_fully(&PathBuf::from("foo/bar/baz")));
+        assert!(selector.matches_full_path(&PathBuf::from("/foo/")));
+        assert!(selector.matches_full_path(&PathBuf::from("/foo/bar")));
+        assert!(selector.matches_full_path(&PathBuf::from("/foo/bar/baz")));
+        assert!(selector.matches_full_path(&PathBuf::from("foo/")));
+        assert!(selector.matches_full_path(&PathBuf::from("foo/bar")));
+        assert!(selector.matches_full_path(&PathBuf::from("foo/bar/baz")));
 
         // not matching:
-        assert!(!selector.matches_fully(&PathBuf::from("bar")));
-        assert!(!selector.matches_fully(&PathBuf::from("/bar")));
-        assert!(!selector.matches_fully(&PathBuf::from("/test/bar")));
+        assert!(!selector.matches_full_path(&PathBuf::from("bar")));
+        assert!(!selector.matches_full_path(&PathBuf::from("/bar")));
+        assert!(!selector.matches_full_path(&PathBuf::from("/test/bar")));
     }
 
     #[test]
@@ -160,14 +214,14 @@ mod test {
         let selector = PathSelector::new(base_dir, includes, excludes);
 
         // matching:
-        assert!(selector.matches_fully(&PathBuf::from("/foo/")));
-        assert!(selector.matches_fully(&PathBuf::from("/foo/foo")));
-        assert!(selector.matches_fully(&PathBuf::from("/foo/foo/foo")));
+        assert!(selector.matches_full_path(&PathBuf::from("/foo/")));
+        assert!(selector.matches_full_path(&PathBuf::from("/foo/foo")));
+        assert!(selector.matches_full_path(&PathBuf::from("/foo/foo/foo")));
 
         // not matching:
-        assert!(!selector.matches_fully(&PathBuf::from("/foo/bar/")));
-        assert!(!selector.matches_fully(&PathBuf::from("/foo/bar/baz")));
-        assert!(!selector.matches_fully(&PathBuf::from("/test/bar")));
+        assert!(!selector.matches_full_path(&PathBuf::from("/foo/bar/")));
+        assert!(!selector.matches_full_path(&PathBuf::from("/foo/bar/baz")));
+        assert!(!selector.matches_full_path(&PathBuf::from("/test/bar")));
     }
 
     #[test]
@@ -178,26 +232,43 @@ mod test {
         let selector = PathSelector::new(base_dir, includes, excludes);
 
         // matching absolute:
-        assert!(selector.matches_fully(&PathBuf::from("/public-1.jpg")));
-        assert!(selector.matches_fully(&PathBuf::from("/foo/public-2.jpg")));
-        assert!(selector.matches_fully(&PathBuf::from("/foo/foo/public-3.jpg")));
+        assert!(selector.matches_full_path(&PathBuf::from("/public-1.jpg")));
+        assert!(selector.matches_full_path(&PathBuf::from("/foo/public-2.jpg")));
+        assert!(selector.matches_full_path(&PathBuf::from("/foo/foo/public-3.jpg")));
 
         // matching relative:
-        assert!(selector.matches_fully(&PathBuf::from("public-1.jpg")));
-        assert!(selector.matches_fully(&PathBuf::from("foo/public-2.jpg")));
-        assert!(selector.matches_fully(&PathBuf::from("foo/foo/public-3.jpg")));
+        assert!(selector.matches_full_path(&PathBuf::from("public-1.jpg")));
+        assert!(selector.matches_full_path(&PathBuf::from("foo/public-2.jpg")));
+        assert!(selector.matches_full_path(&PathBuf::from("foo/foo/public-3.jpg")));
 
         // not matching absolute:
-        assert!(!selector.matches_fully(&PathBuf::from("/something-else.jpg")));
-        assert!(!selector.matches_fully(&PathBuf::from("/private-1.jpg")));
-        assert!(!selector.matches_fully(&PathBuf::from("/foo/private-2.jpg")));
-        assert!(!selector.matches_fully(&PathBuf::from("/foo/foo/private-3.jpg")));
+        assert!(!selector.matches_full_path(&PathBuf::from("/something-else.jpg")));
+        assert!(!selector.matches_full_path(&PathBuf::from("/private-1.jpg")));
+        assert!(!selector.matches_full_path(&PathBuf::from("/foo/private-2.jpg")));
+        assert!(!selector.matches_full_path(&PathBuf::from("/foo/foo/private-3.jpg")));
 
         // not matching relative:
-        assert!(!selector.matches_fully(&PathBuf::from("something-else.jpg")));
-        assert!(!selector.matches_fully(&PathBuf::from("private-1.jpg")));
-        assert!(!selector.matches_fully(&PathBuf::from("foo/private-2.jpg")));
-        assert!(!selector.matches_fully(&PathBuf::from("foo/foo/private-3.jpg")));
+        assert!(!selector.matches_full_path(&PathBuf::from("something-else.jpg")));
+        assert!(!selector.matches_full_path(&PathBuf::from("private-1.jpg")));
+        assert!(!selector.matches_full_path(&PathBuf::from("foo/private-2.jpg")));
+        assert!(!selector.matches_full_path(&PathBuf::from("foo/foo/private-3.jpg")));
+    }
+
+    #[test]
+    fn matches_dir() {
+        let base_dir = PathBuf::from("/");
+        let includes = vec![Pattern::new("/test[1-9]/**").unwrap()];
+        let excludes = vec![Pattern::new("/test[1-9]/foo/**").unwrap()];
+        let selector = PathSelector::new(base_dir, includes, excludes);
+
+        assert!(selector.matches_dir(&PathBuf::from("/")));
+        assert!(selector.matches_dir(&PathBuf::from("/test1")));
+        assert!(selector.matches_dir(&PathBuf::from("/test2/bar")));
+
+        assert!(!selector.matches_dir(&PathBuf::from("/test999")));
+        assert!(!selector.matches_dir(&PathBuf::from("/test999/bar")));
+        assert!(!selector.matches_dir(&PathBuf::from("/test3/foo")));
+        assert!(!selector.matches_dir(&PathBuf::from("/test3/foo/bar/baz")));
     }
 
 }

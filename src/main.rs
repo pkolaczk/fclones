@@ -55,15 +55,15 @@ struct Config {
     #[structopt(short, long, default_value="0")]
     pub threads: usize,
 
-    /// Include only paths matched by this pattern.
-    #[structopt(short="I", long, parse(try_from_str=Pattern::new))]
-    pub include: Vec<Pattern>,
+    /// Include only paths matched fully by these patterns.
+    #[structopt(short="p", long="paths", parse(try_from_str=Pattern::new))]
+    pub path_include_patterns: Vec<Pattern>,
 
-    /// Exclude paths matched by this pattern; applied after `include`.
-    #[structopt(short="E", long, parse(try_from_str=Pattern::new))]
-    pub exclude: Vec<Pattern>,
+    /// Exclude paths matched fully by these patterns.
+    #[structopt(short="e", long="exclude", parse(try_from_str=Pattern::new))]
+    pub path_exclude_patterns: Vec<Pattern>,
 
-    /// Directory roots to scan
+    /// A list of input paths
     #[structopt(parse(from_os_str), required = true)]
     pub paths: Vec<PathBuf>,
 }
@@ -101,8 +101,8 @@ fn scan_files(report: &mut Report, config: &Config) -> Vec<Vec<FileInfo>> {
     walk.follow_links =  config.follow_links;
     walk.path_selector = PathSelector::new(
         walk.base_dir.clone(),
-        config.include.clone(),
-        config.exclude.clone());
+        config.path_include_patterns.clone(),
+        config.path_exclude_patterns.clone());
     walk.logger = &logger;
     walk.run(config.paths.clone(), |path| {
         spinner.tick();

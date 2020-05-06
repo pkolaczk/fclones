@@ -130,11 +130,13 @@ impl<'a> Walk<'a> {
     fn visit_path<'s, 'w, F>(&'s self, path: PathBuf, scope: &Scope<'w>, state: &'w WalkState<F>)
         where F: Fn(PathBuf) + Sync + Send, 's: 'w
     {
-        Entry::from_path(path.clone())
-            .map_err(|e|
-                (self.logger)(format!("Failed to stat {}: {}", path.display(), e)))
-            .into_iter()
-            .for_each(|entry| self.visit_entry(entry, scope, state))
+        if self.path_selector.matches_dir(&path) {
+            Entry::from_path(path.clone())
+                .map_err(|e|
+                    (self.logger)(format!("Failed to stat {}: {}", path.display(), e)))
+                .into_iter()
+                .for_each(|entry| self.visit_entry(entry, scope, state))
+        }
     }
 
     /// Computes a 128-bit hash of a full path.
@@ -182,7 +184,7 @@ impl<'a> Walk<'a> {
     fn visit_file<F>(&self, path: PathBuf, state: &WalkState<F>)
         where F: Fn(PathBuf) + Sync + Send
     {
-        if self.path_selector.matches_fully(&path) {
+        if self.path_selector.matches_full_path(&path) {
             (state.consumer)(self.relative(path))
         }
     }
@@ -207,7 +209,7 @@ impl<'a> Walk<'a> {
     fn visit_dir<'s, 'w, F>(&'s self, path: &PathBuf, scope: &Scope<'w>, state: &'w WalkState<F>)
         where F: Fn(PathBuf) + Sync + Send, 's: 'w
     {
-        if self.recursive {
+        if self.recursive && self.path_selector.matches_dir(path) {
             match std::fs::read_dir(&path) {
                 Ok(rd) => {
                     for entry in Self::sorted_entries(rd) {
