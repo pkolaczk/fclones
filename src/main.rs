@@ -4,6 +4,7 @@ use std::io::{BufWriter, Write};
 use std::io::stdout;
 use std::path::PathBuf;
 
+use clap::AppSettings;
 use glob::Pattern;
 use itertools::Itertools;
 use rayon::iter::ParallelIterator;
@@ -22,22 +23,27 @@ const MAX_PREFIX_LEN: FileLen = FileLen(2 * MIN_PREFIX_LEN.0);
 const SUFFIX_LEN: FileLen = FileLen(4096);
 
 #[derive(Debug, StructOpt)]
-#[structopt(name = "dff", about = "Find duplicate files", author)]
+#[structopt(
+    name = "Duplicate File Finder",
+    author,
+    setting(AppSettings::ColoredHelp),
+    setting(AppSettings::DeriveDisplayOrder)
+)]
 struct Config {
 
-    /// Descend into directories recursively
+    /// Descends into directories recursively
     #[structopt(short="R", long)]
     pub recursive: bool,
 
-    /// Skip hidden files
+    /// Skips hidden files
     #[structopt(short="A", long)]
     pub skip_hidden: bool,
 
-    /// Follow symbolic links
+    /// Follows symbolic links
     #[structopt(short="L", long)]
     pub follow_links: bool,
 
-    /// Treat files reachable from multiple paths through
+    /// Treats files reachable from multiple paths through
     /// symbolic or hard links as duplicates
     #[structopt(short="H", long)]
     pub duplicate_links: bool,
@@ -50,18 +56,24 @@ struct Config {
     #[structopt(short="x", long, default_value="18446744073709551615")]
     pub max_size: FileLen,
 
+    /// Includes only paths matched fully by any of the given patterns.
+    /// Accepted wildcards:
+    ///   - `?` matches any single character
+    ///   - `*` matches any (possibly empty) sequence of characters
+    ///   - `**` matches arbitrary number of path components
+    ///   - `[...]` matches any character inside the brackets
+    #[structopt(short="p", long="paths", parse(try_from_str=Pattern::new), verbatim_doc_comment)]
+    pub path_include_patterns: Vec<Pattern>,
+
+    /// Excludes paths matched fully by any of the given patterns.
+    /// Accepts the same pattern syntax as -p.
+    #[structopt(short="e", long="exclude", parse(try_from_str=Pattern::new))]
+    pub path_exclude_patterns: Vec<Pattern>,
+
     /// Parallelism level.
     /// If set to 0, the number of CPU cores reported by the operating system is used.
     #[structopt(short, long, default_value="0")]
     pub threads: usize,
-
-    /// Include only paths matched fully by these patterns.
-    #[structopt(short="p", long="paths", parse(try_from_str=Pattern::new))]
-    pub path_include_patterns: Vec<Pattern>,
-
-    /// Exclude paths matched fully by these patterns.
-    #[structopt(short="e", long="exclude", parse(try_from_str=Pattern::new))]
-    pub path_exclude_patterns: Vec<Pattern>,
 
     /// A list of input paths
     #[structopt(parse(from_os_str), required = true)]
