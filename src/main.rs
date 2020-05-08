@@ -59,8 +59,8 @@ struct Config {
     /// Includes only paths matched fully by any of the given patterns.
     /// Accepted wildcards:
     ///   - `?` matches any single character
-    ///   - `*` matches any (possibly empty) sequence of characters
-    ///   - `**` matches arbitrary number of path components
+    ///   - `*` matches any (possibly empty) sequence of characters, except the directory separator
+    ///   - `**` matches any (possibly empty) sequence of characters
     ///   - `[...]` matches any character inside the brackets
     #[structopt(short="p", long="paths", parse(try_from_str=Pattern::new), verbatim_doc_comment)]
     pub path_include_patterns: Vec<Pattern>,

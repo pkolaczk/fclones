@@ -1,5 +1,9 @@
-use glob::Pattern;
+extern crate nom;
+
 use std::path::{PathBuf, MAIN_SEPARATOR};
+
+use glob::Pattern;
+
 
 /// Stores glob patterns working together as a path selector.
 ///
