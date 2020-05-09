@@ -9,7 +9,7 @@ use nom::combinator::{cond, map};
 use nom::IResult;
 use nom::multi::{many0, separated_list0};
 use nom::sequence::tuple;
-use pcre2::bytes::Regex;
+use pcre2::bytes::{Regex, RegexBuilder};
 use regex::escape;
 
 #[derive(Debug)]
@@ -29,19 +29,33 @@ impl Display for PatternError {
 #[derive(Clone, Debug)]
 pub struct Pattern {
     src: String,
-    regex: Regex
+    anchored_regex: Regex,
+    prefix_regex: Regex
 }
 
 impl Pattern {
 
     /// Creates `Pattern` instance from raw regular expression
-    pub fn regex(regex: &str) -> Result<Pattern, PatternError> {
-        let regex = regex.trim_start_matches("^");
-        let regex = regex.trim_end_matches("$");
-        match Regex::new(("^".to_string() + regex + "$").as_str()) {
-            Ok(compiled) => Ok(Pattern { regex: compiled, src: regex.to_owned() }),
+    pub fn regex(pattern: &str) -> Result<Pattern, PatternError> {
+        let pattern = pattern.trim_start_matches("^");
+        let pattern = pattern.trim_end_matches("$");
+        let mut builder = RegexBuilder::new();
+        builder.jit_if_available(true);
+
+        let anchored_regex = "^".to_string() + pattern + "$";
+        let anchored_regex = builder.build(anchored_regex.as_str());
+
+        let prefix_regex = "^".to_string() + pattern;
+        let prefix_regex = builder.build(prefix_regex.as_str());
+
+        match anchored_regex {
+            Ok(anchored_regex) => Ok(Pattern {
+                src: pattern.to_owned(),
+                anchored_regex,
+                prefix_regex: prefix_regex.unwrap(),
+            }),
             Err(e) => Err(PatternError {
-                input: regex.to_string(),
+                input: pattern.to_string(),
                 cause: e.to_string()
             })
         }
@@ -82,19 +96,24 @@ impl Pattern {
         }
     }
 
-    /// Returns true if this pattern fully matches given string
+    /// Returns true if this pattern fully matches the given path
     pub fn matches(&self, path: &str) -> bool {
-        self.regex.is_match(path.as_bytes()).unwrap_or(false)
+        self.anchored_regex.is_match(path.as_bytes()).unwrap_or(false)
     }
 
-    /// Returns true if a prefix of this pattern fully matches given string
+    /// Returns true if a prefix of this pattern fully matches the given path
     pub fn matches_partially(&self, path: &str) -> bool {
-        self.regex.is_partial_match(path.as_bytes()).unwrap_or(false)
+        self.anchored_regex.is_partial_match(path.as_bytes()).unwrap_or(false)
+    }
+
+    /// Returns true if this pattern fully matches a prefix of the given path
+    pub fn matches_prefix(&self, path: &str) -> bool {
+        self.prefix_regex.is_match(path.as_bytes()).unwrap_or(false)
     }
 
     /// Returns true if this pattern fully matches given file path
     pub fn matches_path(&self, path: &PathBuf) -> bool {
-        self.regex.is_match(path.to_string_lossy().as_bytes()).unwrap_or(false)
+        self.anchored_regex.is_match(path.to_string_lossy().as_bytes()).unwrap_or(false)
     }
 
     /// Parses a UNIX glob and converts it to a regular expression
@@ -309,5 +328,13 @@ mod test {
         assert!(g3.matches_partially("/a/b21/b22/c"));
         assert!(!g3.matches_partially("/a/b11/b21/c"));
         assert!(!g3.matches_partially("/a/b21/c"));
+    }
+
+    #[test]
+    fn matches_prefix() {
+        let g1 = Pattern::glob("/a/b/*").unwrap();
+        assert!(g1.matches_prefix("/a/b/c"));
+        assert!(g1.matches_prefix("/a/b/z/foo"));
+        assert!(!g1.matches_prefix("/a/c/z/foo"));
     }
 }
