@@ -87,6 +87,11 @@ impl Pattern {
         self.regex.is_match(path.as_bytes()).unwrap_or(false)
     }
 
+    /// Returns true if a prefix of this pattern fully matches given string
+    pub fn matches_partially(&self, path: &str) -> bool {
+        self.regex.is_partial_match(path.as_bytes()).unwrap_or(false)
+    }
+
     /// Returns true if this pattern fully matches given file path
     pub fn matches_path(&self, path: &PathBuf) -> bool {
         self.regex.is_match(path.to_string_lossy().as_bytes()).unwrap_or(false)
@@ -261,5 +266,48 @@ mod test {
             (Pattern::literal("/foo/bar/").unwrap() + Pattern::glob("*").unwrap()).to_string(),
             Pattern::glob("/foo/bar/*").unwrap().to_string()
         )
+    }
+
+    #[test]
+    fn matches_fully() {
+        let g1 = Pattern::glob("/a/b?/*").unwrap();
+        assert!(g1.matches("/a/b1/c"));
+        assert!(g1.matches("/a/b1/"));
+        assert!(!g1.matches("/a/b1"));
+        assert!(!g1.matches("/a/b/c"));
+
+        let g2 = Pattern::glob("/a/**/c").unwrap();
+        assert!(g2.matches("/a/b1/c"));
+        assert!(g2.matches("/a/b1/b2/c"));
+        assert!(g2.matches("/a/b1/b2/b3/c"));
+        assert!(!g2.matches("/a/c"));
+
+        let g3 = Pattern::glob("/a/**c").unwrap();
+        assert!(g3.matches("/a/c"));
+        assert!(g3.matches("/a/b1/c"));
+    }
+
+    #[test]
+    fn matches_partially() {
+        let g1 = Pattern::glob("/a/b/*").unwrap();
+        assert!(g1.matches_partially("/a"));
+        assert!(g1.matches_partially("/a/b"));
+        assert!(g1.matches_partially("/a/b/foo"));
+        assert!(!g1.matches_partially("/b/foo"));
+
+        let g2 = Pattern::glob("/a/{b1,b2}/c/*").unwrap();
+        assert!(g2.matches_partially("/a/b1"));
+        assert!(g2.matches_partially("/a/b2"));
+        assert!(g2.matches_partially("/a/b2/c"));
+        assert!(!g2.matches_partially("/b2/c"));
+
+        let g3 = Pattern::glob("/a/{b11,b21/b22}/c/*").unwrap();
+        assert!(g3.matches_partially("/a/b11"));
+        assert!(g3.matches_partially("/a/b11/c"));
+        assert!(g3.matches_partially("/a/b21"));
+        assert!(g3.matches_partially("/a/b21/b22"));
+        assert!(g3.matches_partially("/a/b21/b22/c"));
+        assert!(!g3.matches_partially("/a/b11/b21/c"));
+        assert!(!g3.matches_partially("/a/b21/c"));
     }
 }
