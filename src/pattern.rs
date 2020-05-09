@@ -1,15 +1,16 @@
 use std::fmt::{Display, Formatter};
+use std::ops::Add;
 use std::path::PathBuf;
 
-use nom::IResult;
+use nom::branch::alt;
 use nom::bytes::complete::tag;
 use nom::character::complete::{anychar, none_of};
-use nom::combinator::{map, cond};
+use nom::combinator::{cond, map};
+use nom::IResult;
 use nom::multi::{many0, separated_list0};
 use nom::sequence::tuple;
-use regex::{escape, Regex};
-use nom::branch::alt;
-use std::ops::Add;
+use pcre2::bytes::Regex;
+use regex::escape;
 
 #[derive(Debug)]
 pub struct PatternError {
@@ -27,6 +28,7 @@ impl Display for PatternError {
 /// Can be constructed from a glob pattern or a raw regular expression.
 #[derive(Clone, Debug)]
 pub struct Pattern {
+    src: String,
     regex: Regex
 }
 
@@ -37,7 +39,7 @@ impl Pattern {
         let regex = regex.trim_start_matches("^");
         let regex = regex.trim_end_matches("$");
         match Regex::new(("^".to_string() + regex + "$").as_str()) {
-            Ok(regex) => Ok(Pattern { regex }),
+            Ok(compiled) => Ok(Pattern { regex: compiled, src: regex.to_owned() }),
             Err(e) => Err(PatternError {
                 input: regex.to_string(),
                 cause: e.to_string()
@@ -82,12 +84,12 @@ impl Pattern {
 
     /// Returns true if this pattern fully matches given string
     pub fn matches(&self, path: &str) -> bool {
-        self.regex.is_match(path)
+        self.regex.is_match(path.as_bytes()).unwrap_or(false)
     }
 
     /// Returns true if this pattern fully matches given file path
     pub fn matches_path(&self, path: &PathBuf) -> bool {
-        self.regex.is_match(path.to_string_lossy().as_ref())
+        self.regex.is_match(path.to_string_lossy().as_bytes()).unwrap_or(false)
     }
 
     /// Parses a UNIX glob and converts it to a regular expression
@@ -161,17 +163,13 @@ impl Add<Pattern> for Pattern {
     type Output = Pattern;
 
     fn add(self, rhs: Pattern) -> Self::Output {
-        let left = self.to_string();
-        let left = left.trim_end_matches("$");
-        let right = rhs.to_string();
-        let right = right.trim_start_matches("^");
-        Pattern::regex((left.to_string() + &right).as_str()).unwrap()
+        Pattern::regex((self.to_string() + &rhs.to_string()).as_str()).unwrap()
     }
 }
 
 impl ToString for Pattern {
     fn to_string(&self) -> String {
-        self.regex.to_string()
+        self.src.clone()
     }
 }
 
@@ -181,80 +179,80 @@ mod test {
     use super::*;
 
     fn glob_to_regex_str(glob: &str) -> String {
-        Pattern::glob(glob).unwrap().regex.to_string()
+        Pattern::glob(glob).unwrap().to_string()
     }
 
     #[test]
     fn empty() {
-        assert_eq!(glob_to_regex_str(""), "^$");
+        assert_eq!(glob_to_regex_str(""), "");
     }
 
     #[test]
     fn output_escaping() {
-        assert_eq!(glob_to_regex_str("foo.jpg"), "^foo\\.jpg$");
-        assert_eq!(glob_to_regex_str("foo(bar)"), "^foo\\(bar\\)$");
+        assert_eq!(glob_to_regex_str("foo.jpg"), "foo\\.jpg");
+        assert_eq!(glob_to_regex_str("foo(bar)"), "foo\\(bar\\)");
     }
 
     #[test]
     fn input_escaping() {
-        assert_eq!(glob_to_regex_str("foo\\*"), "^foo\\*$");
-        assert_eq!(glob_to_regex_str("foo\\?"), "^foo\\?$");
-        assert_eq!(glob_to_regex_str("foo\\{"), "^foo\\{$");
-        assert_eq!(glob_to_regex_str("foo\\}"), "^foo\\}$");
+        assert_eq!(glob_to_regex_str("foo\\*"), "foo\\*");
+        assert_eq!(glob_to_regex_str("foo\\?"), "foo\\?");
+        assert_eq!(glob_to_regex_str("foo\\{"), "foo\\{");
+        assert_eq!(glob_to_regex_str("foo\\}"), "foo\\}");
     }
 
     #[test]
     fn question_mark() {
-        assert_eq!(glob_to_regex_str("foo???"), "^foo...$");
+        assert_eq!(glob_to_regex_str("foo???"), "foo...");
     }
 
     #[test]
     fn single_star() {
-        assert_eq!(glob_to_regex_str("*bar*"), "^[^/]*bar[^/]*$");
+        assert_eq!(glob_to_regex_str("*bar*"), "[^/]*bar[^/]*");
     }
 
     #[test]
     fn double_star() {
-        assert_eq!(glob_to_regex_str("foo/**/bar"), "^foo/.*/bar$");
+        assert_eq!(glob_to_regex_str("foo/**/bar"), "foo/.*/bar");
     }
 
     #[test]
     fn character_set() {
-        assert_eq!(glob_to_regex_str("[a-b.*?-]"), "^[a-b.*?-]$");
-        assert_eq!(glob_to_regex_str("[!a-b.*?-]"), "^[^a-b.*?-]$");
+        assert_eq!(glob_to_regex_str("[a-b.*?-]"), "[a-b.*?-]");
+        assert_eq!(glob_to_regex_str("[!a-b.*?-]"), "[^a-b.*?-]");
     }
 
     #[test]
     fn alternatives() {
-        assert_eq!(glob_to_regex_str("{a,b,c}"), "^(a|b|c)$");
-        assert_eq!(glob_to_regex_str("{?.jpg,*.JPG}"), "^(.\\.jpg|[^/]*\\.JPG)$");
+        assert_eq!(glob_to_regex_str("{a,b,c}"), "(a|b|c)");
+        assert_eq!(glob_to_regex_str("{?.jpg,*.JPG}"), "(.\\.jpg|[^/]*\\.JPG)");
     }
 
     #[test]
     fn nested_alternatives() {
-        assert_eq!(glob_to_regex_str("{a,{b,c}}"), "^(a|(b|c))$");
+        assert_eq!(glob_to_regex_str("{a,{b,c}}"), "(a|(b|c))");
     }
 
     #[test]
     fn naked_comma() {
-        assert_eq!(glob_to_regex_str("a,b,c"), "^a,b,c$");
+        assert_eq!(glob_to_regex_str("a,b,c"), "a,b,c");
     }
 
     #[test]
     fn unbalanced_paren() {
         // this is how bash interprets unbalanced paren
-        assert_eq!(glob_to_regex_str("{a,b,c"), "^\\{a,b,c$");
-        assert_eq!(glob_to_regex_str("a,b,c}"), "^a,b,c\\}$");
-        assert_eq!(glob_to_regex_str("{{a,b}"), "^\\{(a|b)$");
-        assert_eq!(glob_to_regex_str("{a,b}}"), "^(a|b)\\}$");
-        assert_eq!(glob_to_regex_str("{{{a,b}"), "^\\{\\{(a|b)$");
-        assert_eq!(glob_to_regex_str("{{{a,b}}"), "^\\{((a|b))$");
+        assert_eq!(glob_to_regex_str("{a,b,c"), "\\{a,b,c");
+        assert_eq!(glob_to_regex_str("a,b,c}"), "a,b,c\\}");
+        assert_eq!(glob_to_regex_str("{{a,b}"), "\\{(a|b)");
+        assert_eq!(glob_to_regex_str("{a,b}}"), "(a|b)\\}");
+        assert_eq!(glob_to_regex_str("{{{a,b}"), "\\{\\{(a|b)");
+        assert_eq!(glob_to_regex_str("{{{a,b}}"), "\\{((a|b))");
     }
 
     #[test]
     fn literal() {
         assert_eq!(Pattern::literal("test*?{}\\").unwrap().to_string(),
-                   "^test\\*\\?\\{\\}\\\\$")
+                   "test\\*\\?\\{\\}\\\\")
     }
 
     #[test]
