@@ -1,8 +1,7 @@
 extern crate nom;
 
 use std::path::{PathBuf, MAIN_SEPARATOR};
-
-use glob::Pattern;
+use crate::pattern::Pattern;
 
 
 /// Stores glob patterns working together as a path selector.
@@ -10,55 +9,59 @@ use glob::Pattern;
 /// A path is selected only if it matches at least one include pattern
 /// and doesn't match any exclude patterns.
 /// An empty include pattern vector matches all paths.
+#[derive(Debug)]
 pub struct PathSelector {
     base_dir: PathBuf,
-    included_files: Vec<Pattern>,
-    excluded_files: Vec<Pattern>,
-    included_dirs: Vec<Vec<Pattern>>,
-    excluded_dirs: Vec<Pattern>,
+    included_names: Vec<Pattern>,
+    included_paths: Vec<Pattern>,
+    excluded_paths: Vec<Pattern>,
 }
 
 impl PathSelector {
 
-    /// Creates a new selector with given include and exclude patterns.
-    pub fn new(base_dir: PathBuf, includes: Vec<Pattern>, excludes: Vec<Pattern>) -> PathSelector {
-        let includes: Vec<Pattern> = includes.into_iter().map(|pat|
-            Self::abs_pattern(&base_dir, pat)).collect();
-        let excludes: Vec<Pattern> = excludes.into_iter().map(|pat|
-            Self::abs_pattern(&base_dir, pat)).collect();
 
+    /// Creates a new selector that matches all paths.
+    pub fn new(base_dir: PathBuf) -> PathSelector {
         PathSelector {
             base_dir,
-            included_dirs: includes.iter()
-                .map(Self::split_non_recursive_prefix)
-                .collect(),
-            excluded_dirs: excludes.iter()
-                .filter(|&p| Self::has_match_all_suffix(p))
-                .flat_map(|p| vec![p.clone(), Self::strip_match_all_suffix(&p)])
-                .collect(),
-            included_files: includes,
-            excluded_files: excludes,
+            included_names: vec![],
+            included_paths: vec![],
+            excluded_paths: vec![],
         }
     }
 
-    /// Creates a new selector that matches all paths.
-    pub fn match_all() -> PathSelector {
-        PathSelector {
-            base_dir: "/".into(),
-            included_files: vec![],
-            excluded_files: vec![],
-            included_dirs: vec![],
-            excluded_dirs: vec![]
-        }
+    pub fn include_names(mut self, pat: Vec<Pattern>) -> PathSelector {
+        self.included_names = pat;
+        self
+    }
+
+    pub fn include_paths(mut self, pat: Vec<Pattern>) -> PathSelector {
+        self.included_paths = pat.into_iter()
+            .map(|p| Self::abs_pattern(&self.base_dir, p))
+            .collect();
+        self
+    }
+
+    pub fn exclude_paths(mut self, pat: Vec<Pattern>) -> PathSelector {
+        self.excluded_paths = pat.into_iter()
+            .map(|p| Self::abs_pattern(&self.base_dir, p))
+            .collect();
+        self
     }
 
     /// Returns true if the given path fully matches this selector.
     /// The path must be absolute.
     pub fn matches_full_path(&self, path: &PathBuf) -> bool {
         self.with_absolute_path(path, |path| {
-            (self.included_files.is_empty()
-                || self.included_files.iter().any(|p| p.matches_path(path)))
-                && self.excluded_files.iter().all(|p| !p.matches_path(path))
+            let name = path.file_name()
+                .map(|s| s.to_string_lossy()).unwrap_or_default();
+            let name = name.as_ref();
+            let path = path.to_string_lossy();
+            (self.included_names.is_empty()
+                    || self.included_names.iter().any(|p| p.matches(name)))
+                && (self.included_paths.is_empty()
+                    || self.included_paths.iter().any(|p| p.matches(&path)))
+                && self.excluded_paths.iter().all(|p| !p.matches(&path))
         })
     }
 
@@ -69,9 +72,13 @@ impl PathSelector {
     /// 2. it doesn't match any of the exclude filters ending with `**` pattern.
     pub fn matches_dir(&self, path: &PathBuf) -> bool {
         self.with_absolute_path(path, |path| {
-            (self.included_dirs.is_empty()
-                || self.included_dirs.iter().any(|v| Self::prefix_matches_path(v, path)))
-                && self.excluded_dirs.iter().all(|p| !p.matches_path(path))
+            let mut path = path.to_string_lossy().to_string();
+            if !path.ends_with(MAIN_SEPARATOR) {
+                path.push(MAIN_SEPARATOR);
+            }
+            (self.included_paths.is_empty()
+                || self.included_paths.iter().any(|p| p.matches_partially(&path)))
+                && self.excluded_paths.iter().all(|p| !p.matches_prefix(&path))
         })
     }
 
@@ -95,11 +102,10 @@ impl PathSelector {
         if Self::is_absolute(&pattern) {
             pattern
         } else {
-            let base_dir_pat = Pattern::escape(base_dir.to_string_lossy().as_ref());
+            let base_dir_pat = base_dir.to_string_lossy();
             let base_dir_pat = base_dir_pat.replace("\u{FFFD}", "?");
-            let new_pattern = Self::append_sep(base_dir_pat) + pattern.as_str();
-            Pattern::new(new_pattern.as_str())
-                .expect(format!("Failed to create glob pattern from {}", new_pattern).as_str())
+            let base_dir_pat = Pattern::literal(Self::append_sep(base_dir_pat).as_str());
+            base_dir_pat + pattern
         }
     }
 
@@ -110,39 +116,8 @@ impl PathSelector {
 
     ///  Returns true if pattern can match absolute paths
     fn is_absolute(pattern: &Pattern) -> bool {
-        let s = pattern.as_str();
-        PathBuf::from(s).is_absolute()
-    }
-
-    /// Finds the longest prefix of the `pattern` that doesn't contain recursive wildcard `**`.
-    /// Then splits the prefix into separate patterns, one per each path component.
-    fn split_non_recursive_prefix(pattern: &Pattern) -> Vec<Pattern> {
-        let path = PathBuf::from(pattern.as_str());
-        path.components()
-            .into_iter()
-            .take_while(|c| c.as_os_str() != "**")
-            .map(|c| Pattern::new(c.as_os_str().to_str().unwrap()).unwrap())
-            .collect()
-    }
-
-    /// Returns true if pattern has a "match all" wildcard (`**`) at the end
-    fn has_match_all_suffix(pattern: &Pattern) -> bool {
-        let s = pattern.as_str();
-        s.ends_with("/**") || s.ends_with("/**/*")
-    }
-
-    /// Drops the "match all" wildcard (`**`) from the end of the pattern
-    fn strip_match_all_suffix(pattern: &Pattern) -> Pattern {
-        Pattern::new(pattern.as_str()
-            .trim_end_matches("/**/*")
-            .trim_end_matches("/**")).unwrap()
-    }
-
-    /// Returns true if all components of the path match corresponding initial patterns in
-    /// the `pattern` vector.
-    fn prefix_matches_path(pattern: &Vec<Pattern>, path: &PathBuf) -> bool {
-        pattern.iter().zip(path.iter())
-            .all(|(p, c)| p.matches(c.to_string_lossy().as_ref()))
+        let s = pattern.to_string();
+        s.starts_with(".*") || PathBuf::from(s).is_absolute()
     }
 }
 
@@ -157,11 +132,8 @@ mod test {
 
     #[test]
     fn include_absolute() {
-        let base_dir = PathBuf::from("/test");
-        let includes = vec![Pattern::new("/test/foo/**").unwrap()];
-        let excludes = vec![];
-        let selector = PathSelector::new(base_dir, includes, excludes);
-
+        let selector = PathSelector::new(PathBuf::from("/test"))
+            .include_paths(vec![Pattern::glob("/test/foo/**").unwrap()]);
         assert!(selector.matches_full_path(&PathBuf::from("/test/foo/")));
         assert!(selector.matches_full_path(&PathBuf::from("/test/foo/bar")));
         assert!(selector.matches_full_path(&PathBuf::from("/test/foo/bar/baz")));
@@ -170,10 +142,8 @@ mod test {
 
     #[test]
     fn include_relative() {
-        let base_dir = PathBuf::from("/test");
-        let includes = vec![Pattern::new("foo/**").unwrap()];
-        let excludes = vec![];
-        let selector = PathSelector::new(base_dir, includes, excludes);
+        let selector = PathSelector::new(PathBuf::from("/test"))
+            .include_paths(vec![Pattern::glob("foo/**").unwrap()]);
 
         // matching:
         assert!(selector.matches_full_path(&PathBuf::from("/test/foo/")));
@@ -191,10 +161,8 @@ mod test {
 
     #[test]
     fn include_relative_root_base() {
-        let base_dir = PathBuf::from("/");
-        let includes = vec![Pattern::new("foo/**").unwrap()];
-        let excludes = vec![];
-        let selector = PathSelector::new(base_dir, includes, excludes);
+        let selector = PathSelector::new(PathBuf::from("/"))
+            .include_paths(vec![Pattern::glob("foo/**").unwrap()]);
 
         // matching:
         assert!(selector.matches_full_path(&PathBuf::from("/foo/")));
@@ -212,10 +180,9 @@ mod test {
 
     #[test]
     fn include_exclude() {
-        let base_dir = PathBuf::from("/");
-        let includes = vec![Pattern::new("foo/**").unwrap()];
-        let excludes = vec![Pattern::new("foo/b*/**").unwrap()];
-        let selector = PathSelector::new(base_dir, includes, excludes);
+        let selector = PathSelector::new(PathBuf::from("/"))
+            .include_paths(vec![Pattern::glob("/foo/**").unwrap()])
+            .exclude_paths(vec![Pattern::glob("/foo/b*/**").unwrap()]);
 
         // matching:
         assert!(selector.matches_full_path(&PathBuf::from("/foo/")));
@@ -230,10 +197,11 @@ mod test {
 
     #[test]
     fn prefix_wildcard() {
-        let base_dir = PathBuf::from("/");
-        let includes = vec![Pattern::new("**/public-?.jpg").unwrap()];
-        let excludes = vec![Pattern::new("**/private-?.jpg").unwrap()];
-        let selector = PathSelector::new(base_dir, includes, excludes);
+        let selector = PathSelector::new(PathBuf::from("/"))
+            .include_paths(vec![Pattern::glob("**/public-?.jpg").unwrap()])
+            .exclude_paths(vec![Pattern::glob("**/private-?.jpg").unwrap()]);
+
+        println!("{:?}", selector);
 
         // matching absolute:
         assert!(selector.matches_full_path(&PathBuf::from("/public-1.jpg")));
@@ -241,7 +209,6 @@ mod test {
         assert!(selector.matches_full_path(&PathBuf::from("/foo/foo/public-3.jpg")));
 
         // matching relative:
-        assert!(selector.matches_full_path(&PathBuf::from("public-1.jpg")));
         assert!(selector.matches_full_path(&PathBuf::from("foo/public-2.jpg")));
         assert!(selector.matches_full_path(&PathBuf::from("foo/foo/public-3.jpg")));
 
@@ -260,10 +227,9 @@ mod test {
 
     #[test]
     fn matches_dir() {
-        let base_dir = PathBuf::from("/");
-        let includes = vec![Pattern::new("/test[1-9]/**").unwrap()];
-        let excludes = vec![Pattern::new("/test[1-9]/foo/**").unwrap()];
-        let selector = PathSelector::new(base_dir, includes, excludes);
+        let selector = PathSelector::new(PathBuf::from("/"))
+            .include_paths(vec![Pattern::glob("/test[1-9]/**").unwrap()])
+            .exclude_paths(vec![Pattern::glob("/test[1-9]/foo/**").unwrap()]);
 
         assert!(selector.matches_dir(&PathBuf::from("/")));
         assert!(selector.matches_dir(&PathBuf::from("/test1")));

@@ -7,7 +7,7 @@ use nom::bytes::complete::tag;
 use nom::character::complete::{anychar, none_of};
 use nom::combinator::{cond, map};
 use nom::IResult;
-use nom::multi::{many0, separated_list0};
+use nom::multi::{many0, separated_list};
 use nom::sequence::tuple;
 use pcre2::bytes::{Regex, RegexBuilder};
 use regex::escape;
@@ -31,6 +31,13 @@ pub struct Pattern {
     src: String,
     anchored_regex: Regex,
     prefix_regex: Regex
+}
+
+#[derive(PartialEq, Debug)]
+enum Scope {
+    TopLevel,
+    CurlyBrackets,
+    RoundBrackets
 }
 
 impl Pattern {
@@ -63,8 +70,8 @@ impl Pattern {
 
     /// Creates a `Pattern` that matches literal string.
     /// Special characters in the string are escaped before creating the underlying regex.
-    pub fn literal(s: &str) -> Result<Pattern, PatternError> {
-        Self::regex(escape(s).as_str())
+    pub fn literal(s: &str) -> Pattern {
+        Self::regex(escape(s).as_str()).unwrap()
     }
 
     /// Creates `Pattern` instance from Unix glob.
@@ -72,16 +79,21 @@ impl Pattern {
     /// Glob patterns handle the following wildcards:
     /// - `?`: matches any character
     /// - `*`: matches any sequence of characters except the directory separator
-    /// - `**`: matches any sequence of characters including the directory separator
+    /// - `**`: matches any sequence of characters
     /// - `[a-z]`: matches one of the characters or character ranges given in the square brackets
     /// - `[!a-z]`: matches any character that is not given in the square brackets
-    /// - `{a,b}`: matches any pattern from the comma-separated patterns in the curly brackets
+    /// - `{a,b}`: matches exactly one pattern from the comma-separated patterns given inside the curly brackets
+    /// - `@(a|b)`: same as `{a,b}`
+    /// - `?(a|b)`: matches at most one occurrence of the pattern inside the brackets
+    /// - `+(a|b)`: matches at least occurrence of the patterns given inside the brackets
+    /// - `*(a|b)`: matches any number of occurrences of the patterns given inside the brackets
+    /// - `!(a|b)`: matches anything that doesn't match any of the patterns given inside the brackets
     ///
     /// Use `\` to escape the special symbols that need to be matched literally. E.g. `\*` matches
     /// a single `*` character.
     ///
     pub fn glob(glob: &str) -> Result<Pattern, PatternError> {
-        let result: IResult<&str, String> = Self::glob_to_regex(true, glob);
+        let result: IResult<&str, String> = Self::glob_to_regex(Scope::TopLevel, glob);
         match result {
             Ok((remaining, regex)) if remaining.is_empty() =>
                 Self::regex(regex.as_str()),
@@ -117,17 +129,45 @@ impl Pattern {
     }
 
     /// Parses a UNIX glob and converts it to a regular expression
-    fn glob_to_regex(top_level: bool, glob: &str) -> IResult<&str, String> {
+    fn glob_to_regex(scope: Scope, glob: &str) -> IResult<&str, String> {
         // pass escaped characters as-is:
         let p_escaped =
             map(tuple((tag("\\"), anychar)), |(_, c)|
                 escape(c.to_string().as_str()));
 
+        fn mk_string(contents: Vec<String>, prefix: &str, sep: &str, suffix: &str) -> String {
+            format!("{}{}{}", prefix, contents.join(sep), suffix)
+        }
+
         // { glob1, glob2, ..., globN } -> ( regex1, regex2, ..., regexN )
-        let p_alt = map(tuple((
-            tag("{"),
-            separated_list0(tag(","), |g| Self::glob_to_regex(false, g)),
-            tag("}"))), |(_, list, _)| "(".to_string() + &list.join("|") + ")");
+        let p_alt =
+            map(tuple((
+                tag("{"),
+                separated_list(tag(","), |g| Self::glob_to_regex(Scope::CurlyBrackets, g)),
+                tag("}"))),
+                |(_, list, _)| mk_string(list, "(", "|", ")"));
+
+        let p_ext_glob =
+            map(tuple((
+                tag("("),
+                separated_list(tag("|"), |g| Self::glob_to_regex(Scope::RoundBrackets, g)),
+                tag(")"))), |(_, list, _)| list);
+
+        let p_ext_optional =
+            map(tuple((tag("?"), |i| p_ext_glob(i))),
+                |(_, g)| mk_string(g, "(", "|", ")?"));
+        let p_ext_many =
+            map(tuple((tag("*"), |i| p_ext_glob(i))),
+                |(_, g)| mk_string(g, "(", "|", ")*"));
+        let p_ext_at_least_once =
+            map(tuple((tag("+"), |i| p_ext_glob(i))),
+                |(_, g)| mk_string(g, "(", "|", ")+"));
+        let p_ext_exactly_once =
+            map(tuple((tag("@"), |i| p_ext_glob(i))),
+                |(_, g)| mk_string(g, "(", "|", ")"));
+        let p_ext_never =
+            map(tuple((tag("!"), |i| p_ext_glob(i))),
+                |(_, g)| mk_string(g, "(?!", "|", ")"));
 
         // ** -> .*
         let p_double_star =
@@ -140,7 +180,6 @@ impl Pattern {
         // ? -> .
         let p_question_mark =
             map(tag("?"), |_| ".".to_string());
-
 
         // [ characters ] -> [ characters ]
         let p_neg_character_set =
@@ -163,14 +202,20 @@ impl Pattern {
         // if we are nested, we can't just pass these through without interpretation
         let p_any_char =
             map(tuple((
-                cond(top_level, anychar),
-                cond(!top_level, none_of("{,}"))
-            )), |(left, right)|
-                escape(left.or(right).unwrap().to_string().as_str()));
+                cond(scope == Scope::TopLevel, anychar),
+                cond(scope == Scope::CurlyBrackets, none_of("{,}")),
+                cond(scope == Scope::RoundBrackets, none_of("(|)"))
+            )), |(a, b, c)|
+                escape(a.or(b).or(c).unwrap().to_string().as_str()));
 
         let p_token = alt((
             p_escaped,
             p_alt,
+            p_ext_optional,
+            p_ext_many,
+            p_ext_at_least_once,
+            p_ext_exactly_once,
+            p_ext_never,
             p_double_star,
             p_single_star,
             p_question_mark,
@@ -178,7 +223,7 @@ impl Pattern {
             p_character_set,
             p_any_char));
 
-        let mut parse_all = map(many0(p_token), |s| s.join(""));
+        let parse_all = map(many0(p_token), |s| s.join(""));
         (parse_all)(glob)
     }
 }
@@ -263,6 +308,11 @@ mod test {
     }
 
     #[test]
+    fn naked_bar() {
+        assert_eq!(glob_to_regex_str("a|b|c"), "a\\|b\\|c");
+    }
+
+    #[test]
     fn unbalanced_paren() {
         // this is how bash interprets unbalanced paren
         assert_eq!(glob_to_regex_str("{a,b,c"), "\\{a,b,c");
@@ -275,16 +325,83 @@ mod test {
 
     #[test]
     fn literal() {
-        assert_eq!(Pattern::literal("test*?{}\\").unwrap().to_string(),
+        assert_eq!(Pattern::literal("test*?{}\\").to_string(),
                    "test\\*\\?\\{\\}\\\\")
     }
 
     #[test]
     fn add() {
         assert_eq!(
-            (Pattern::literal("/foo/bar/").unwrap() + Pattern::glob("*").unwrap()).to_string(),
+            (Pattern::literal("/foo/bar/") + Pattern::glob("*").unwrap()).to_string(),
             Pattern::glob("/foo/bar/*").unwrap().to_string()
         )
+    }
+
+    #[test]
+    fn matches_double_star_prefix() {
+        let g = Pattern::glob("**/b").unwrap();
+        assert!(g.matches("/b"));
+        assert!(g.matches("/a/b"));
+    }
+
+    #[test]
+    fn matches_double_star_infix() {
+        let g1 = Pattern::glob("/a/**/c").unwrap();
+        assert!(g1.matches("/a/b1/c"));
+        assert!(g1.matches("/a/b1/b2/c"));
+        assert!(g1.matches("/a/b1/b2/b3/c"));
+    }
+
+    #[test]
+    fn ext_glob_optional() {
+        let g = Pattern::glob("/a-?(foo|bar)").unwrap();
+        assert!(g.matches("/a-foo"));
+        assert!(g.matches("/a-bar"));
+    }
+
+    #[test]
+    fn ext_glob_many() {
+        let g = Pattern::glob("/a-*(foo|bar)").unwrap();
+        assert!(g.matches("/a-"));
+        assert!(g.matches("/a-foo"));
+        assert!(g.matches("/a-foofoo"));
+        assert!(g.matches("/a-foobar"));
+    }
+
+    #[test]
+    fn ext_glob_at_least_one() {
+        let g = Pattern::glob("/a-+(foo|bar)").unwrap();
+        assert!(!g.matches("/a-"));
+        assert!(g.matches("/a-foo"));
+        assert!(g.matches("/a-foofoo"));
+        assert!(g.matches("/a-foobar"));
+    }
+
+    #[test]
+    fn ext_glob_at_least_never() {
+        let g = Pattern::glob("/a-!(foo)*").unwrap();
+        assert!(!g.matches("/a-foo-bar"));
+        assert!(!g.matches("/a-foo"));
+        assert!(g.matches("/a-bar"));
+        assert!(g.matches("/a-"));
+    }
+
+    #[test]
+    fn ext_glob_nested() {
+        let g = Pattern::glob("/a-@(foo|bar?(baz))").unwrap();
+        assert!(g.matches("/a-foo"));
+        assert!(g.matches("/a-bar"));
+        assert!(g.matches("/a-barbaz"));
+        assert!(!g.matches("/a-foobaz"));
+    }
+
+    #[test]
+    fn ext_glob_exactly_one() {
+        let g = Pattern::glob("/a-@(foo|bar)").unwrap();
+        assert!(!g.matches("/a-"));
+        assert!(g.matches("/a-foo"));
+        assert!(!g.matches("/a-foofoo"));
+        assert!(!g.matches("/a-foobar"));
     }
 
     #[test]
@@ -294,16 +411,6 @@ mod test {
         assert!(g1.matches("/a/b1/"));
         assert!(!g1.matches("/a/b1"));
         assert!(!g1.matches("/a/b/c"));
-
-        let g2 = Pattern::glob("/a/**/c").unwrap();
-        assert!(g2.matches("/a/b1/c"));
-        assert!(g2.matches("/a/b1/b2/c"));
-        assert!(g2.matches("/a/b1/b2/b3/c"));
-        assert!(!g2.matches("/a/c"));
-
-        let g3 = Pattern::glob("/a/**c").unwrap();
-        assert!(g3.matches("/a/c"));
-        assert!(g3.matches("/a/b1/c"));
     }
 
     #[test]

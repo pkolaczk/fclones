@@ -7,7 +7,7 @@ use std::path::PathBuf;
 use dashmap::DashSet;
 use fasthash::{FastHasher, HasherExt, t1ha2::Hasher128};
 use rayon::Scope;
-use crate::glob::PathSelector;
+use crate::selector::PathSelector;
 
 #[derive(Debug)]
 enum EntryType {
@@ -61,12 +61,13 @@ impl<'a> Walk<'a> {
 
     /// Creates a default walk with empty root dirs, no link following and logger set to sdterr
     pub fn new() -> Walk<'a> {
+        let base_dir = current_dir().unwrap_or_default();
         Walk {
-            base_dir: current_dir().unwrap_or_default(),
+            base_dir: base_dir.clone(),
             recursive: true,
             skip_hidden: false,
             follow_links: false,
-            path_selector: PathSelector::match_all(),
+            path_selector: PathSelector::new(base_dir),
             logger: &|s| eprintln!("{}", s),
         }
     }

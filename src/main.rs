@@ -5,7 +5,6 @@ use std::io::stdout;
 use std::path::PathBuf;
 
 use clap::AppSettings;
-use glob::Pattern;
 use itertools::Itertools;
 use rayon::iter::ParallelIterator;
 use structopt::StructOpt;
@@ -15,19 +14,42 @@ use dff::files::*;
 use dff::group::*;
 use dff::progress::FastProgressBar;
 use dff::report::Report;
+use dff::selector::PathSelector;
 use dff::walk::Walk;
-use dff::glob::PathSelector;
+use dff::pattern::Pattern;
+use ansi_term::Colour;
+use regex::Regex;
 
 const MIN_PREFIX_LEN: FileLen = FileLen(4096);
 const MAX_PREFIX_LEN: FileLen = FileLen(2 * MIN_PREFIX_LEN.0);
 const SUFFIX_LEN: FileLen = FileLen(4096);
 
+/// Searches filesystem(s) and reports redundant files
+///
 #[derive(Debug, StructOpt)]
 #[structopt(
     name = "Duplicate File Finder",
-    author,
+
     setting(AppSettings::ColoredHelp),
-    setting(AppSettings::DeriveDisplayOrder)
+    setting(AppSettings::DeriveDisplayOrder),
+    after_help("PATTERN SYNTAX:
+    Options `-n` `-p` and `-e` accept extended glob patterns.
+    The following wildcards can be used:
+    - `?`      matches any character
+    - `*`      matches any sequence of characters except the directory separator
+    - `**`     matches any sequence of characters
+    - `**/`    matches any non-empty sequence of characters followed
+               by the directory separator or an empty sequence
+    - `[a-z]`  matches one of the characters or character ranges given in the square brackets
+    - `[!a-z]` matches any character that is not given in the square brackets
+    - `{a,b}`  matches exactly one pattern from the comma-separated
+               patterns given inside the curly brackets
+    - `@(a|b)` same as `{a,b}`
+    - `?(a|b)` matches at most one occurrence of the pattern inside the brackets
+    - `+(a|b)` matches at least occurrence of the patterns given inside the brackets
+    - `*(a|b)` matches any number of occurrences of the patterns given inside the brackets
+    - `!(a|b)` matches anything that doesn't match any of the patterns given inside the brackets
+    ")
 )]
 struct Config {
 
@@ -44,7 +66,7 @@ struct Config {
     pub follow_links: bool,
 
     /// Treats files reachable from multiple paths through
-    /// symbolic or hard links as duplicates
+    /// hard links as duplicates
     #[structopt(short="H", long)]
     pub duplicate_links: bool,
 
@@ -56,18 +78,17 @@ struct Config {
     #[structopt(short="x", long, default_value="18446744073709551615")]
     pub max_size: FileLen,
 
+    /// Includes only file names matched fully by any of the given patterns.
+    #[structopt(short="n", long="names", parse(try_from_str=Pattern::glob), verbatim_doc_comment)]
+    pub name_include_patterns: Vec<Pattern>,
+
     /// Includes only paths matched fully by any of the given patterns.
-    /// Accepted wildcards:
-    ///   - `?` matches any single character
-    ///   - `*` matches any (possibly empty) sequence of characters, except the directory separator
-    ///   - `**` matches any (possibly empty) sequence of characters
-    ///   - `[...]` matches any character inside the brackets
-    #[structopt(short="p", long="paths", parse(try_from_str=Pattern::new), verbatim_doc_comment)]
+    #[structopt(short="p", long="paths", parse(try_from_str=Pattern::glob), verbatim_doc_comment)]
     pub path_include_patterns: Vec<Pattern>,
 
     /// Excludes paths matched fully by any of the given patterns.
     /// Accepts the same pattern syntax as -p.
-    #[structopt(short="e", long="exclude", parse(try_from_str=Pattern::new))]
+    #[structopt(short="e", long="exclude", parse(try_from_str=Pattern::glob))]
     pub path_exclude_patterns: Vec<Pattern>,
 
     /// Parallelism level.
@@ -111,10 +132,10 @@ fn scan_files(report: &mut Report, config: &Config) -> Vec<Vec<FileInfo>> {
     walk.recursive = config.recursive;
     walk.skip_hidden = config.skip_hidden;
     walk.follow_links =  config.follow_links;
-    walk.path_selector = PathSelector::new(
-        walk.base_dir.clone(),
-        config.path_include_patterns.clone(),
-        config.path_exclude_patterns.clone());
+    walk.path_selector = PathSelector::new(walk.base_dir.clone())
+        .include_names(config.name_include_patterns.clone())
+        .include_paths(config.path_include_patterns.clone())
+        .exclude_paths(config.path_exclude_patterns.clone());
     walk.logger = &logger;
     walk.run(config.paths.clone(), |path| {
         spinner.tick();
@@ -235,8 +256,36 @@ fn write_report(report: &mut Report, groups: &mut Vec<((FileLen, FileHash), Vec<
     }
 }
 
+fn paint_code(s: &str) -> String {
+    let r = Regex::new(r"`([^`]+)`").unwrap();
+    r.replace_all(s,  Colour::Green.paint("$1").to_string().as_str()).to_string()
+}
+
+
 fn main() {
-    let config: Config = Config::from_args();
+    let after_help =
+        Colour::Yellow.paint("PATTERN SYNTAX:").to_string() +
+        &paint_code("
+    Options `-n` `-p` and `-e` accept extended glob patterns.
+    The following wildcards can be used:
+      `?`      matches any character except the directory separator
+      `[a-z]`  matches one of the characters or character ranges given in the square brackets
+      `[!a-z]` matches any character that is not given in the square brackets
+      `*`      matches any sequence of characters except the directory separator
+      `**`     matches any sequence of characters
+      `{a,b}`  matches exactly one pattern from the comma-separated patterns given
+             inside the curly brackets
+      `@(a|b)` same as `{a,b}`
+      `?(a|b)` matches at most one occurrence of the pattern inside the brackets
+      `+(a|b)` matches at least occurrence of the patterns given inside the brackets
+      `*(a|b)` matches any number of occurrences of the patterns given inside the brackets
+      `!(a|b)` matches anything that doesn't match any of the patterns given inside the brackets
+    ");
+
+    let clap = Config::clap()
+        .after_help(after_help.as_str());
+    let config: Config = Config::from_clap(&clap.get_matches());
+
     configure_thread_pool(config.threads);
 
     let mut report = Report::new();
