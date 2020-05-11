@@ -57,6 +57,10 @@ struct Config {
     #[structopt(short="R", long)]
     pub recursive: bool,
 
+    /// Limits recursion depth
+    #[structopt(short="d", long)]
+    pub depth: Option<usize>,
+
     /// Skips hidden files
     #[structopt(short="A", long)]
     pub skip_hidden: bool,
@@ -75,8 +79,8 @@ struct Config {
     pub min_size: FileLen,
 
     /// Maximum file size. Inclusive.
-    #[structopt(short="x", long, default_value="18446744073709551615")]
-    pub max_size: FileLen,
+    #[structopt(short="x", long)]
+    pub max_size: Option<FileLen>,
 
     /// Includes only file names matched fully by any of the given patterns.
     #[structopt(short="n", long="names", parse(try_from_str=Pattern::glob), verbatim_doc_comment)]
@@ -130,6 +134,7 @@ fn scan_files(report: &mut Report, config: &Config) -> Vec<Vec<FileInfo>> {
     let file_collector = ThreadLocal::new();
     let mut walk = Walk::new();
     walk.recursive = config.recursive;
+    walk.depth = config.depth.unwrap_or(usize::MAX);
     walk.skip_hidden = config.skip_hidden;
     walk.follow_links =  config.follow_links;
     walk.path_selector = PathSelector::new(walk.base_dir.clone())
@@ -141,7 +146,8 @@ fn scan_files(report: &mut Report, config: &Config) -> Vec<Vec<FileInfo>> {
         spinner.tick();
         file_info_or_log_err(path, &logger)
             .into_iter()
-            .filter(|info| info.len >= config.min_size && info.len <= config.max_size)
+            .filter(|info|
+                info.len >= config.min_size && info.len <= config.max_size.unwrap_or(FileLen::MAX))
             .for_each(|info| {
                 let vec = file_collector.get_or(|| RefCell::new(Vec::new()));
                 vec.borrow_mut().push(info);

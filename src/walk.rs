@@ -45,6 +45,7 @@ impl Entry {
 pub struct Walk<'a> {
     pub base_dir: PathBuf,
     pub recursive: bool,
+    pub depth: usize,
     pub skip_hidden: bool,
     pub follow_links: bool,
     pub path_selector: PathSelector,
@@ -65,6 +66,7 @@ impl<'a> Walk<'a> {
         Walk {
             base_dir: base_dir.clone(),
             recursive: true,
+            depth: usize::MAX,
             skip_hidden: false,
             follow_links: false,
             path_selector: PathSelector::new(base_dir),
@@ -122,13 +124,13 @@ impl<'a> Walk<'a> {
         rayon::scope( |scope| {
             for p in roots {
                 let p = self.absolute(p);
-                scope.spawn(|scope| self.visit_path(p, scope, &state))
+                scope.spawn(|scope| self.visit_path(p, scope, 0, &state))
             }
         });
     }
 
     /// Visits path of any type (can be a symlink target, file or dir)
-    fn visit_path<'s, 'w, F>(&'s self, path: PathBuf, scope: &Scope<'w>, state: &'w WalkState<F>)
+    fn visit_path<'s, 'w, F>(&'s self, path: PathBuf, scope: &Scope<'w>, level: usize, state: &'w WalkState<F>)
         where F: Fn(PathBuf) + Sync + Send, 's: 'w
     {
         if self.path_selector.matches_dir(&path) {
@@ -136,7 +138,7 @@ impl<'a> Walk<'a> {
                 .map_err(|e|
                     (self.logger)(format!("Failed to stat {}: {}", path.display(), e)))
                 .into_iter()
-                .for_each(|entry| self.visit_entry(entry, scope, state))
+                .for_each(|entry| self.visit_entry(entry, scope, level, state))
         }
     }
 
@@ -152,7 +154,7 @@ impl<'a> Walk<'a> {
 
     /// Visits a path that was already converted to an `Entry` so the entry type is known.
     /// Faster than `visit_path` because it doesn't need to call `stat` internally.
-    fn visit_entry<'s, 'w, F>(&'s self, entry: Entry, scope: &Scope<'w>, state: &'w WalkState<F>)
+    fn visit_entry<'s, 'w, F>(&'s self, entry: Entry, scope: &Scope<'w>, level: usize, state: &'w WalkState<F>)
         where F: Fn(PathBuf) + Sync + Send, 's: 'w
     {
         // Skip hidden files
@@ -174,9 +176,9 @@ impl<'a> Walk<'a> {
             EntryType::File =>
                 self.visit_file(entry.path, state),
             EntryType::Dir =>
-                self.visit_dir(&entry.path, scope, state),
+                self.visit_dir(&entry.path, scope, level, state),
             EntryType::SymLink =>
-                self.visit_link(&entry.path, scope, state),
+                self.visit_link(&entry.path, scope, level, state),
             EntryType::Other => {}
         }
     }
@@ -192,13 +194,14 @@ impl<'a> Walk<'a> {
 
     /// Resolves a symbolic link.
     /// If `follow_links` is set to false, does nothing.
-    fn visit_link<'s, 'w, F>(&'s self, path: &PathBuf, scope: &Scope<'w>, state: &'w WalkState<F>)
+    fn visit_link<'s, 'w, F>
+    (&'s self, path: &PathBuf, scope: &Scope<'w>, level: usize, state: &'w WalkState<F>)
         where F: Fn(PathBuf) + Sync + Send, 's: 'w
     {
         if self.follow_links {
             match self.resolve_link(&path) {
                 Ok(target) =>
-                    self.visit_path(target, scope, state),
+                    self.visit_path(target, scope, level, state),
                 Err(e) =>
                     (self.logger)(format!("Failed to read link {}: {}", path.display(), e))
             }
@@ -207,14 +210,17 @@ impl<'a> Walk<'a> {
 
     /// Reads the contents of the directory pointed to by `path`
     /// and recursively visits each child entry
-    fn visit_dir<'s, 'w, F>(&'s self, path: &PathBuf, scope: &Scope<'w>, state: &'w WalkState<F>)
+    fn visit_dir<'s, 'w, F>
+    (&'s self, path: &PathBuf, scope: &Scope<'w>, level: usize, state: &'w WalkState<F>)
         where F: Fn(PathBuf) + Sync + Send, 's: 'w
     {
-        if self.recursive && self.path_selector.matches_dir(path) {
+        if self.recursive && level <= self.depth && self.path_selector.matches_dir(path) {
             match std::fs::read_dir(&path) {
                 Ok(rd) => {
                     for entry in Self::sorted_entries(rd) {
-                        scope.spawn(move |s| self.visit_entry(entry, s, state))
+                        scope.spawn(move |s| {
+                            self.visit_entry(entry, s, level + 1, state)
+                        })
                     }
                 },
                 Err(e) =>
