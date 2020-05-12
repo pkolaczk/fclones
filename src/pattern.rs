@@ -33,6 +33,22 @@ pub struct Pattern {
     prefix_regex: Regex
 }
 
+pub struct PatternOpts {
+    case_insensitive: bool
+}
+
+impl PatternOpts {
+    pub fn case_insensitive() -> PatternOpts {
+        PatternOpts { case_insensitive: true }
+    }
+}
+
+impl Default for PatternOpts {
+    fn default() -> PatternOpts {
+        PatternOpts { case_insensitive: false }
+    }
+}
+
 #[derive(PartialEq, Debug)]
 enum Scope {
     TopLevel,
@@ -42,17 +58,29 @@ enum Scope {
 
 impl Pattern {
 
-    /// Creates `Pattern` instance from raw regular expression
+    /// Creates `Pattern` instance from raw regular expression. Supports PCRE syntax.
     pub fn regex(pattern: &str) -> Result<Pattern, PatternError> {
+        Self::regex_with(pattern, &PatternOpts::default())
+    }
+
+    /// Creates `Pattern` instance from raw regular expression. Supports PCRE syntax.
+    /// Allows to specify case sensitivity
+    pub fn regex_with(pattern: &str, opts: &PatternOpts) -> Result<Pattern, PatternError> {
         let pattern = pattern.trim_start_matches("^");
         let pattern = pattern.trim_end_matches("$");
         let mut builder = RegexBuilder::new();
         builder.jit_if_available(true);
 
-        let anchored_regex = "^".to_string() + pattern + "$";
+        // We don't set caseless on builder,
+        // because we may wish to concatenate patterns of different case-sensitivities
+        let pattern =
+            if opts.case_insensitive { "(?i)".to_string() + pattern + "(?-i)" }
+            else { pattern.to_string() };
+
+        let anchored_regex = "^".to_string() + &pattern + "$";
         let anchored_regex = builder.build(anchored_regex.as_str());
 
-        let prefix_regex = "^".to_string() + pattern;
+        let prefix_regex = "^".to_string() + &pattern;
         let prefix_regex = builder.build(prefix_regex.as_str());
 
         match anchored_regex {
@@ -68,13 +96,19 @@ impl Pattern {
         }
     }
 
-    /// Creates a `Pattern` that matches literal string.
+    /// Creates a `Pattern` that matches literal string. Case insensitive.
     /// Special characters in the string are escaped before creating the underlying regex.
     pub fn literal(s: &str) -> Pattern {
         Self::regex(escape(s).as_str()).unwrap()
     }
 
-    /// Creates `Pattern` instance from Unix glob.
+    /// Creates `Pattern` instance from a Unix extended glob.
+    /// Case insensitive. For syntax reference see [glob_with](glob_with).
+    pub fn glob(pattern: &str) -> Result<Pattern, PatternError> {
+        Self::glob_with(pattern, &PatternOpts::default())
+    }
+
+    /// Creates `Pattern` instance from a Unix extended glob.
     ///
     /// Glob patterns handle the following wildcards:
     /// - `?`: matches any character
@@ -92,11 +126,11 @@ impl Pattern {
     /// Use `\` to escape the special symbols that need to be matched literally. E.g. `\*` matches
     /// a single `*` character.
     ///
-    pub fn glob(glob: &str) -> Result<Pattern, PatternError> {
+    pub fn glob_with(glob: &str, opts: &PatternOpts) -> Result<Pattern, PatternError> {
         let result: IResult<&str, String> = Self::glob_to_regex(Scope::TopLevel, glob);
         match result {
             Ok((remaining, regex)) if remaining.is_empty() =>
-                Self::regex(regex.as_str()),
+                Self::regex_with(regex.as_str(), opts),
             Ok((remaining, _)) => Err(PatternError {
                 input: glob.to_string(),
                 cause: format!("Unexpected '{}' at end of input", remaining.chars().next().unwrap())
@@ -327,6 +361,14 @@ mod test {
     fn literal() {
         assert_eq!(Pattern::literal("test*?{}\\").to_string(),
                    "test\\*\\?\\{\\}\\\\")
+    }
+
+    #[test]
+    fn case_insensitive() {
+        let p = Pattern::glob_with("foo", &PatternOpts::case_insensitive()).unwrap();
+        assert!(p.matches("foo"));
+        assert!(p.matches("Foo"));
+        assert!(p.matches("FOO"));
     }
 
     #[test]

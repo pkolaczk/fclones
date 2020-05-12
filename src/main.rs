@@ -16,9 +16,10 @@ use dff::progress::FastProgressBar;
 use dff::report::Report;
 use dff::selector::PathSelector;
 use dff::walk::Walk;
-use dff::pattern::Pattern;
+use dff::pattern::{Pattern, PatternOpts};
 use ansi_term::Colour;
 use regex::Regex;
+use std::process::exit;
 
 const MIN_PREFIX_LEN: FileLen = FileLen(4096);
 const MAX_PREFIX_LEN: FileLen = FileLen(2 * MIN_PREFIX_LEN.0);
@@ -29,27 +30,8 @@ const SUFFIX_LEN: FileLen = FileLen(4096);
 #[derive(Debug, StructOpt)]
 #[structopt(
     name = "Duplicate File Finder",
-
     setting(AppSettings::ColoredHelp),
     setting(AppSettings::DeriveDisplayOrder),
-    after_help("PATTERN SYNTAX:
-    Options `-n` `-p` and `-e` accept extended glob patterns.
-    The following wildcards can be used:
-    - `?`      matches any character
-    - `*`      matches any sequence of characters except the directory separator
-    - `**`     matches any sequence of characters
-    - `**/`    matches any non-empty sequence of characters followed
-               by the directory separator or an empty sequence
-    - `[a-z]`  matches one of the characters or character ranges given in the square brackets
-    - `[!a-z]` matches any character that is not given in the square brackets
-    - `{a,b}`  matches exactly one pattern from the comma-separated
-               patterns given inside the curly brackets
-    - `@(a|b)` same as `{a,b}`
-    - `?(a|b)` matches at most one occurrence of the pattern inside the brackets
-    - `+(a|b)` matches at least occurrence of the patterns given inside the brackets
-    - `*(a|b)` matches any number of occurrences of the patterns given inside the brackets
-    - `!(a|b)` matches anything that doesn't match any of the patterns given inside the brackets
-    ")
 )]
 struct Config {
 
@@ -83,17 +65,25 @@ struct Config {
     pub max_size: Option<FileLen>,
 
     /// Includes only file names matched fully by any of the given patterns.
-    #[structopt(short="n", long="names", parse(try_from_str=Pattern::glob), verbatim_doc_comment)]
-    pub name_include_patterns: Vec<Pattern>,
+    #[structopt(short="n", long="names")]
+    pub name_patterns: Vec<String>,
 
     /// Includes only paths matched fully by any of the given patterns.
-    #[structopt(short="p", long="paths", parse(try_from_str=Pattern::glob), verbatim_doc_comment)]
-    pub path_include_patterns: Vec<Pattern>,
+    #[structopt(short="p", long="paths")]
+    pub path_patterns: Vec<String>,
 
     /// Excludes paths matched fully by any of the given patterns.
     /// Accepts the same pattern syntax as -p.
-    #[structopt(short="e", long="exclude", parse(try_from_str=Pattern::glob))]
-    pub path_exclude_patterns: Vec<Pattern>,
+    #[structopt(short="e", long="exclude")]
+    pub exclude_patterns: Vec<String>,
+
+    /// Makes pattern matching case-insensitive
+    #[structopt(long)]
+    pub caseless: bool,
+
+    /// Expects patterns as Perl compatible regular expressions instead of Unix globs
+    #[structopt(short="g", long)]
+    pub regex: bool,
 
     /// Parallelism level.
     /// If set to 0, the number of CPU cores reported by the operating system is used.
@@ -104,6 +94,33 @@ struct Config {
     #[structopt(parse(from_os_str), required = true)]
     pub paths: Vec<PathBuf>,
 }
+
+impl Config {
+    fn path_selector(&self, base_dir: &PathBuf) -> PathSelector {
+        let pattern_opts =
+            if self.caseless { PatternOpts::case_insensitive() }
+            else { PatternOpts::default() };
+        let pattern = |s: &String| {
+            let pattern =
+                if self.regex {
+                    Pattern::regex_with(s.as_str(), &pattern_opts)
+                } else {
+                    Pattern::glob_with(s.as_str(), &pattern_opts)
+                };
+
+            pattern.unwrap_or_else(|e| {
+                eprintln!("{}: {}", Colour::Red.paint("error"), e);
+                exit(1);
+            })
+        };
+
+        PathSelector::new(base_dir.clone())
+            .include_names(self.name_patterns.iter().map(pattern).collect())
+            .include_paths(self.path_patterns.iter().map(pattern).collect())
+            .exclude_paths(self.exclude_patterns.iter().map(pattern).collect())
+    }
+}
+
 
 /// Configures global thread pool to use desired number of threads
 fn configure_thread_pool(parallelism: usize) {
@@ -137,10 +154,7 @@ fn scan_files(report: &mut Report, config: &Config) -> Vec<Vec<FileInfo>> {
     walk.depth = config.depth.unwrap_or(usize::MAX);
     walk.skip_hidden = config.skip_hidden;
     walk.follow_links =  config.follow_links;
-    walk.path_selector = PathSelector::new(walk.base_dir.clone())
-        .include_names(config.name_include_patterns.clone())
-        .include_paths(config.path_include_patterns.clone())
-        .exclude_paths(config.path_exclude_patterns.clone());
+    walk.path_selector = config.path_selector(&walk.base_dir);
     walk.logger = &logger;
     walk.run(config.paths.clone(), |path| {
         spinner.tick();
