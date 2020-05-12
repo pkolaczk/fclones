@@ -8,6 +8,7 @@ use dashmap::DashSet;
 use fasthash::{FastHasher, HasherExt, t1ha2::Hasher128};
 use rayon::Scope;
 use crate::selector::PathSelector;
+use crate::log::Log;
 
 #[derive(Debug)]
 enum EntryType {
@@ -49,7 +50,7 @@ pub struct Walk<'a> {
     pub skip_hidden: bool,
     pub follow_links: bool,
     pub path_selector: PathSelector,
-    pub logger: &'a (dyn Fn(String) + Sync + Send),
+    pub log: Option<&'a Log>,
 }
 
 /// Private shared state scoped to a single `run` invocation.
@@ -70,7 +71,7 @@ impl<'a> Walk<'a> {
             skip_hidden: false,
             follow_links: false,
             path_selector: PathSelector::new(base_dir),
-            logger: &|s| eprintln!("{}", s),
+            log: None,
         }
     }
 
@@ -130,13 +131,13 @@ impl<'a> Walk<'a> {
     }
 
     /// Visits path of any type (can be a symlink target, file or dir)
-    fn visit_path<'s, 'w, F>(&'s self, path: PathBuf, scope: &Scope<'w>, level: usize, state: &'w WalkState<F>)
+    fn visit_path<'s, 'w, F>
+    (&'s self, path: PathBuf, scope: &Scope<'w>, level: usize, state: &'w WalkState<F>)
         where F: Fn(PathBuf) + Sync + Send, 's: 'w
     {
         if self.path_selector.matches_dir(&path) {
             Entry::from_path(path.clone())
-                .map_err(|e|
-                    (self.logger)(format!("Failed to stat {}: {}", path.display(), e)))
+                .map_err(|e| self.log_err(format!("Failed to stat {}: {}", path.display(), e)))
                 .into_iter()
                 .for_each(|entry| self.visit_entry(entry, scope, level, state))
         }
@@ -203,7 +204,7 @@ impl<'a> Walk<'a> {
                 Ok(target) =>
                     self.visit_path(target, scope, level, state),
                 Err(e) =>
-                    (self.logger)(format!("Failed to read link {}: {}", path.display(), e))
+                    self.log_err(format!("Failed to read link {}: {}", path.display(), e))
             }
         }
     }
@@ -224,7 +225,7 @@ impl<'a> Walk<'a> {
                     }
                 },
                 Err(e) =>
-                    (self.logger)(format!("Failed to read dir {}: {}", path.display(), e))
+                    self.log_err(format!("Failed to read dir {}: {}", path.display(), e))
             }
         }
     }
@@ -275,6 +276,11 @@ impl<'a> Walk<'a> {
         path.strip_prefix(self.base_dir.clone())
             .map(|p| p.to_path_buf())
             .unwrap_or(path)
+    }
+
+    /// Logs an error
+    fn log_err(&self, msg: String) {
+        self.log.iter().for_each(|l| l.err(&msg))
     }
 }
 

@@ -3,23 +3,23 @@ use std::cmp::Reverse;
 use std::io::{BufWriter, Write};
 use std::io::stdout;
 use std::path::PathBuf;
+use std::process::exit;
 
 use clap::AppSettings;
+use console::style;
 use itertools::Itertools;
 use rayon::iter::ParallelIterator;
+use regex::Regex;
 use structopt::StructOpt;
 use thread_local::ThreadLocal;
 
 use dff::files::*;
 use dff::group::*;
-use dff::progress::FastProgressBar;
+use dff::log::Log;
+use dff::pattern::{Pattern, PatternOpts};
 use dff::report::Report;
 use dff::selector::PathSelector;
 use dff::walk::Walk;
-use dff::pattern::{Pattern, PatternOpts};
-use ansi_term::Colour;
-use regex::Regex;
-use std::process::exit;
 
 const MIN_PREFIX_LEN: FileLen = FileLen(4096);
 const MAX_PREFIX_LEN: FileLen = FileLen(2 * MIN_PREFIX_LEN.0);
@@ -96,7 +96,7 @@ struct Config {
 }
 
 impl Config {
-    fn path_selector(&self, base_dir: &PathBuf) -> PathSelector {
+    fn path_selector(&self, log: &Log, base_dir: &PathBuf) -> PathSelector {
         let pattern_opts =
             if self.caseless { PatternOpts::case_insensitive() }
             else { PatternOpts::default() };
@@ -109,7 +109,7 @@ impl Config {
                 };
 
             pattern.unwrap_or_else(|e| {
-                eprintln!("{}: {}", Colour::Red.paint("error"), e);
+                log.err(e);
                 exit(1);
             })
         };
@@ -143,10 +143,7 @@ fn remove_duplicate_links_if_needed(config: &Config, files: Vec<FileInfo>) -> Ve
     }
 }
 
-fn scan_files(report: &mut Report, config: &Config) -> Vec<Vec<FileInfo>> {
-    let spinner = FastProgressBar::new_spinner("[1/6] Scanning files");
-    let logger = spinner.logger();
-
+fn scan_files(log: &mut Log, report: &mut Report, config: &Config) -> Vec<Vec<FileInfo>> {
     // Walk the tree and collect matching files in parallel:
     let file_collector = ThreadLocal::new();
     let mut walk = Walk::new();
@@ -154,11 +151,13 @@ fn scan_files(report: &mut Report, config: &Config) -> Vec<Vec<FileInfo>> {
     walk.depth = config.depth.unwrap_or(usize::MAX);
     walk.skip_hidden = config.skip_hidden;
     walk.follow_links =  config.follow_links;
-    walk.path_selector = config.path_selector(&walk.base_dir);
-    walk.logger = &logger;
+    walk.path_selector = config.path_selector(&log, &walk.base_dir);
+
+    let spinner = log.spinner("[1/6] Scanning files");
+    walk.log = Some(&log);
     walk.run(config.paths.clone(), |path| {
         spinner.tick();
-        file_info_or_log_err(path, &logger)
+        file_info_or_log_err(path, &log)
             .into_iter()
             .filter(|info|
                 info.len >= config.min_size && info.len <= config.max_size.unwrap_or(FileLen::MAX))
@@ -172,11 +171,11 @@ fn scan_files(report: &mut Report, config: &Config) -> Vec<Vec<FileInfo>> {
     file_collector.into_iter().map(|r| r.into_inner()).collect()
 }
 
-fn group_by_size(report: &mut Report, config: &Config, files: Vec<Vec<FileInfo>>)
+fn group_by_size(log: &mut Log, report: &mut Report, config: &Config, files: Vec<Vec<FileInfo>>)
                  -> Vec<(FileLen, Vec<PathBuf>)>
 {
     let file_count: usize = files.iter().map(|v| v.len()).sum();
-    let progress = FastProgressBar::new_progress_bar(
+    let progress = log.progress_bar(
         "[2/6] Grouping by size", file_count as u64);
 
     let groups = GroupMap::new(|info: FileInfo| (info.len, info));
@@ -197,13 +196,12 @@ fn group_by_size(report: &mut Report, config: &Config, files: Vec<Vec<FileInfo>>
     groups
 }
 
-fn group_by_prefix(report: &mut Report, groups: Vec<(FileLen, Vec<PathBuf>)>)
+fn group_by_prefix(log: &mut Log, report: &mut Report, groups: Vec<(FileLen, Vec<PathBuf>)>)
                    -> Vec<((FileLen, FileHash), Vec<PathBuf>)>
 {
     let remaining_files = count_values(&groups);
-    let progress = FastProgressBar::new_progress_bar(
+    let progress = log.progress_bar(
         "[3/6] Grouping by prefix", remaining_files as u64);
-    let log = progress.logger();
 
     let groups = split_groups(groups, 2, |&len, path| {
         progress.tick();
@@ -216,13 +214,12 @@ fn group_by_prefix(report: &mut Report, groups: Vec<(FileLen, Vec<PathBuf>)>)
     groups
 }
 
-fn group_by_suffix(report: &mut Report, groups: Vec<((FileLen, FileHash), Vec<PathBuf>)>)
+fn group_by_suffix(log: &mut Log, report: &mut Report, groups: Vec<((FileLen, FileHash), Vec<PathBuf>)>)
                    -> Vec<((FileLen, FileHash), Vec<PathBuf>)>
 {
     let remaining_files = count_values(&groups);
-    let progress = FastProgressBar::new_progress_bar(
+    let progress = log.progress_bar(
         "[4/6] Grouping by suffix", remaining_files as u64);
-    let log = progress.logger();
 
     let groups = split_groups(groups, 2, |&(len, hash), path| {
         progress.tick();
@@ -238,13 +235,12 @@ fn group_by_suffix(report: &mut Report, groups: Vec<((FileLen, FileHash), Vec<Pa
     groups
 }
 
-fn group_by_contents(report: &mut Report, groups: Vec<((FileLen, FileHash), Vec<PathBuf>)>)
+fn group_by_contents(log: &mut Log, report: &mut Report, groups: Vec<((FileLen, FileHash), Vec<PathBuf>)>)
                      -> Vec<((FileLen, FileHash), Vec<PathBuf>)>
 {
     let remaining_files = count_values(&groups);
-    let progress = FastProgressBar::new_progress_bar(
+    let progress = log.progress_bar(
         "[5/6] Grouping by contents", remaining_files as u64);
-    let log = progress.logger();
 
     let groups = split_groups(groups, 2, |&(len, hash), path| {
         progress.tick();
@@ -259,9 +255,9 @@ fn group_by_contents(report: &mut Report, groups: Vec<((FileLen, FileHash), Vec<
     groups
 }
 
-fn write_report(report: &mut Report, groups: &mut Vec<((FileLen, FileHash), Vec<PathBuf>)>) {
+fn write_report(log: &mut Log, report: &mut Report, groups: &mut Vec<((FileLen, FileHash), Vec<PathBuf>)>) {
     let remaining_files = count_values(&groups);
-    let progress = FastProgressBar::new_progress_bar(
+    let progress = log.progress_bar(
         "[6/6] Writing report", remaining_files as u64);
     groups.sort_by_key(|&((len, _), _)| Reverse(len));
     report.write(&mut std::io::stdout()).expect("Failed to write report");
@@ -276,16 +272,16 @@ fn write_report(report: &mut Report, groups: &mut Vec<((FileLen, FileHash), Vec<
     }
 }
 
-fn paint_code(s: &str) -> String {
+fn paint_help(s: &str) -> String {
     let r = Regex::new(r"`([^`]+)`").unwrap();
-    r.replace_all(s,  Colour::Green.paint("$1").to_string().as_str()).to_string()
+    r.replace_all(s,  style("$1").green().to_string().as_str()).to_string()
 }
 
 
 fn main() {
     let after_help =
-        Colour::Yellow.paint("PATTERN SYNTAX:").to_string() +
-        &paint_code("
+        style("PATTERN SYNTAX:").yellow().to_string() +
+        &paint_help("
     Options `-n` `-p` and `-e` accept extended glob patterns.
     The following wildcards can be used:
       `?`      matches any character except the directory separator
@@ -309,10 +305,11 @@ fn main() {
     configure_thread_pool(config.threads);
 
     let mut report = Report::new();
-    let matching_files = scan_files(&mut report, &config);
-    let size_groups = group_by_size(&mut report, &config, matching_files);
-    let prefix_groups = group_by_prefix(&mut report, size_groups);
-    let suffix_groups = group_by_suffix(&mut report, prefix_groups);
-    let mut contents_groups= group_by_contents(&mut report, suffix_groups);
-    write_report(&mut report, &mut contents_groups)
+    let mut log = Log::new();
+    let matching_files = scan_files(&mut log, &mut report, &config);
+    let size_groups = group_by_size(&mut log, &mut report, &config, matching_files);
+    let prefix_groups = group_by_prefix(&mut log, &mut report, size_groups);
+    let suffix_groups = group_by_suffix(&mut log, &mut report, prefix_groups);
+    let mut contents_groups= group_by_contents(&mut log, &mut report, suffix_groups);
+    write_report(&mut log, &mut report, &mut contents_groups)
 }

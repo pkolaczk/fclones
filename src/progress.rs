@@ -1,9 +1,9 @@
-use ansi_term::Colour::*;
-use indicatif::{ProgressBar, ProgressStyle};
+use indicatif::{ProgressBar, ProgressStyle, ProgressDrawTarget};
 use atomic_counter::{RelaxedCounter, AtomicCounter};
 use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
+use console::style;
 
 /// A wrapper over `indicatif::ProgressBar` that makes updating its progress lockless.
 /// Unfortunately `indicatif::ProgressBar` wraps state in a `Mutex`, so updates are slow
@@ -83,10 +83,12 @@ impl FastProgressBar {
     /// Create a new preconfigured animated spinner with given message.
     pub fn new_spinner(msg: &str) -> FastProgressBar {
         let inner = ProgressBar::new_spinner();
+        let template = style("{msg:28}").cyan().bold().for_stderr().to_string() +
+            "[{spinner}] {pos:>10}";
         let tick_strings = Self::gen_tick_strings();
         let tick_strings: Vec<&str> = tick_strings.iter().map(|s| s as &str).collect();
         inner.set_style(ProgressStyle::default_spinner()
-            .template("{msg:28.cyan.bold} [{spinner}] {pos:>10}")
+            .template(template.as_str())
             .tick_strings(tick_strings.as_slice())
         );
         inner.set_message(msg);
@@ -96,9 +98,11 @@ impl FastProgressBar {
     /// Create a new preconfigured progress bar with given message.
     pub fn new_progress_bar(msg: &str, len: u64) -> FastProgressBar {
         let inner = ProgressBar::new(len);
+        let template = style("{msg:28}").cyan().bold().for_stderr().to_string() +
+            &"[{bar:WIDTH}] {pos:>10}/{len}".replace("WIDTH", Self::WIDTH.to_string().as_str());
+
         inner.set_style(ProgressStyle::default_bar()
-            .template("{msg:28.cyan.bold} [{bar:WIDTH}] {pos:>10}/{len}"
-                .replace("WIDTH", Self::WIDTH.to_string().as_str()).as_str())
+            .template(template.as_str())
             .progress_chars(Self::PROGRESS_CHARS));
         inner.set_message(msg);
         FastProgressBar::wrap(inner)
@@ -109,22 +113,16 @@ impl FastProgressBar {
         self.progress_bar.set_position(value);
     }
 
-    pub fn err<I: Into<String>>(&self, msg: I) {
-        let msg = Red.paint("[E] ").to_string() + &msg.into();
+    pub fn set_draw_target(&self, target: ProgressDrawTarget) {
+        self.progress_bar.set_draw_target(target)
+    }
+
+    pub fn is_visible(&self) -> bool {
+        !self.progress_bar.is_hidden()
+    }
+
+    pub fn println<I: Into<String>>(&self, msg: I) {
         self.progress_bar.println(msg);
-    }
-
-    pub fn warn<I: Into<String>>(&self, msg: I) {
-        let msg = Yellow.paint("[W] ").to_string() + &msg.into();
-        self.progress_bar.println(msg);
-    }
-
-    pub fn info<I: Into<String>>(&self, msg: I) {
-        self.progress_bar.println("[I] ".to_owned() + &msg.into());
-    }
-
-    pub fn logger<'a>(&'a self) -> Box<dyn Fn(String) + Send + Sync + 'a> {
-        Box::new(move |msg| self.err(msg))
     }
 
     pub fn tick(&self) {
