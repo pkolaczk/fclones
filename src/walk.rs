@@ -50,6 +50,7 @@ pub struct Walk<'a> {
     pub skip_hidden: bool,
     pub follow_links: bool,
     pub path_selector: PathSelector,
+    pub on_visit: &'a (dyn Fn(&PathBuf) + Sync + Send),
     pub log: Option<&'a Log>,
 }
 
@@ -71,6 +72,7 @@ impl<'a> Walk<'a> {
             skip_hidden: false,
             follow_links: false,
             path_selector: PathSelector::new(base_dir),
+            on_visit: &|_|{},
             log: None,
         }
     }
@@ -158,6 +160,9 @@ impl<'a> Walk<'a> {
     fn visit_entry<'s, 'w, F>(&'s self, entry: Entry, scope: &Scope<'w>, level: usize, state: &'w WalkState<F>)
         where F: Fn(PathBuf) + Sync + Send, 's: 'w
     {
+        // For progress reporting
+        (self.on_visit)(&entry.path);
+
         // Skip hidden files
         if self.skip_hidden {
             if let Some(name) = entry.path.file_name() {

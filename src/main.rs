@@ -20,6 +20,7 @@ use dff::pattern::{Pattern, PatternOpts};
 use dff::report::Report;
 use dff::selector::PathSelector;
 use dff::walk::Walk;
+use std::env::current_dir;
 
 const MIN_PREFIX_LEN: FileLen = FileLen(4096);
 const MAX_PREFIX_LEN: FileLen = FileLen(2 * MIN_PREFIX_LEN.0);
@@ -143,20 +144,23 @@ fn remove_duplicate_links_if_needed(config: &Config, files: Vec<FileInfo>) -> Ve
     }
 }
 
+/// Walks the directory tree and collects matching files in parallel into a vector
 fn scan_files(log: &mut Log, report: &mut Report, config: &Config) -> Vec<Vec<FileInfo>> {
-    // Walk the tree and collect matching files in parallel:
+    let base_dir = current_dir().unwrap_or_default();
+    let path_selector = config.path_selector(&log, &base_dir);
     let file_collector = ThreadLocal::new();
+    let spinner = log.spinner("[1/6] Scanning files");
+    let spinner_tick = &|_: &PathBuf| { spinner.tick() };
+
     let mut walk = Walk::new();
     walk.recursive = config.recursive;
     walk.depth = config.depth.unwrap_or(usize::MAX);
     walk.skip_hidden = config.skip_hidden;
     walk.follow_links =  config.follow_links;
-    walk.path_selector = config.path_selector(&log, &walk.base_dir);
-
-    let spinner = log.spinner("[1/6] Scanning files");
+    walk.path_selector = path_selector;
     walk.log = Some(&log);
+    walk.on_visit = spinner_tick;
     walk.run(config.paths.clone(), |path| {
-        spinner.tick();
         file_info_or_log_err(path, &log)
             .into_iter()
             .filter(|info|
@@ -167,6 +171,7 @@ fn scan_files(log: &mut Log, report: &mut Report, config: &Config) -> Vec<Vec<Fi
             });
     });
 
+    log.info(format!("Scanned entries: {}", spinner.position()));
     report.scanned_files(spinner.position());
     file_collector.into_iter().map(|r| r.into_inner()).collect()
 }
@@ -175,6 +180,9 @@ fn group_by_size(log: &mut Log, report: &mut Report, config: &Config, files: Vec
                  -> Vec<(FileLen, Vec<PathBuf>)>
 {
     let file_count: usize = files.iter().map(|v| v.len()).sum();
+    let total_size: u64 = files.iter().flat_map(|v| v.iter().map(|i| i.len.0)).sum();
+    log.info(format!("Matched files: {} ({})", file_count, FileLen(total_size)));
+
     let progress = log.progress_bar(
         "[2/6] Grouping by size", file_count as u64);
 

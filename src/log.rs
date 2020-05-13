@@ -7,13 +7,19 @@ use crate::progress::FastProgressBar;
 use console::{style, Term};
 
 pub struct Log {
+    program_name: String,
     progress_bar: Weak<FastProgressBar>
 }
 
 impl Log {
 
     pub fn new() -> Log {
-        Log { progress_bar: Weak::default() }
+        Log {
+            progress_bar: Weak::default(),
+            program_name: std::env::current_exe().unwrap()
+                .file_name().unwrap()
+                .to_string_lossy().to_string()
+        }
     }
 
     /// Clears any previous progress bar or spinner and installs a new spinner.
@@ -60,19 +66,21 @@ impl Log {
         }
     }
 
-
     pub fn info<I: Display>(&self, msg: I) {
-        let msg = format!("{} {}", style("info:").for_stderr().white(), msg);
+        let msg = format!("{}: {} {}",
+                          self.program_name, style(" info:").for_stderr().cyan(), msg);
         self.eprintln(msg);
     }
 
     pub fn warn<I: Display>(&self, msg: I) {
-        let msg = format!("{} {}", style("warn:").for_stderr().yellow(), msg);
+        let msg = format!("{}: {} {}",
+                          self.program_name, style(" warn:").for_stderr().yellow(), msg);
         self.eprintln(msg);
     }
 
     pub fn err<I: Display>(&self, msg: I) {
-        let msg = format!("{} {}", style("error:").for_stderr().red(), msg);
+        let msg = format!("{}: {} {}",
+                          self.program_name, style("error:").for_stderr().red(), msg);
         self.eprintln(msg);
     }
 
