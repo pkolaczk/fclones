@@ -171,18 +171,22 @@ fn scan_files(log: &mut Log, report: &mut Report, config: &Config) -> Vec<Vec<Fi
             });
     });
 
-    log.info(format!("Scanned entries: {}", spinner.position()));
+    log.info(format!("Scanned {} file entries", spinner.position()));
     report.scanned_files(spinner.position());
-    file_collector.into_iter().map(|r| r.into_inner()).collect()
+
+    let files: Vec<_> = file_collector.into_iter()
+        .map(|r| r.into_inner()).collect();
+
+    let file_count: usize = files.iter().map(|v| v.len()).sum();
+    let total_size: u64 = files.iter().flat_map(|v| v.iter().map(|i| i.len.0)).sum();
+    log.info(format!("Found {} ({}) files matching selection criteria", file_count, FileLen(total_size)));
+    files
 }
 
 fn group_by_size(log: &mut Log, report: &mut Report, config: &Config, files: Vec<Vec<FileInfo>>)
                  -> Vec<(FileLen, Vec<PathBuf>)>
 {
     let file_count: usize = files.iter().map(|v| v.len()).sum();
-    let total_size: u64 = files.iter().flat_map(|v| v.iter().map(|i| i.len.0)).sum();
-    log.info(format!("Matched files: {} ({})", file_count, FileLen(total_size)));
-
     let progress = log.progress_bar(
         "[2/6] Grouping by size", file_count as u64);
 
@@ -193,13 +197,16 @@ fn group_by_size(log: &mut Log, report: &mut Report, config: &Config, files: Vec
             groups.add(file);
         }
     }
-   let groups = groups
+   let groups: Vec<_> = groups
         .into_iter()
         .filter(|(_, files)| files.len() >= 2)
         .map(|(l, files)| (l, remove_duplicate_links_if_needed(&config, files)))
         .map(|(l, files)| (l, files.into_iter().map(|info| info.path).collect()))
         .collect();
 
+    let redundant_count: usize = groups.redundant_count(1);
+    let redundant_bytes: u64 = groups.redundant_size(1);
+    log.info(format!("Found {} ({}) candidates matching by size", redundant_count, FileLen(redundant_bytes)));
     report.stage_finished("Group by size", &groups);
     groups
 }
@@ -207,17 +214,20 @@ fn group_by_size(log: &mut Log, report: &mut Report, config: &Config, files: Vec
 fn group_by_prefix(log: &mut Log, report: &mut Report, groups: Vec<(FileLen, Vec<PathBuf>)>)
                    -> Vec<((FileLen, FileHash), Vec<PathBuf>)>
 {
-    let remaining_files = count_values(&groups);
+    let remaining_files = groups.total_count();
     let progress = log.progress_bar(
         "[3/6] Grouping by prefix", remaining_files as u64);
 
-    let groups = split_groups(groups, 2, |&len, path| {
+    let groups: Vec<_> = split_groups(groups, 2, |&len, path| {
         progress.tick();
         let prefix_len = if len <= MAX_PREFIX_LEN { len } else { MIN_PREFIX_LEN };
         file_hash_or_log_err(path, FilePos(0), prefix_len, &log)
             .map(|h| (len, h))
     }).collect();
 
+    let redundant_count: usize = groups.redundant_count(1);
+    let redundant_bytes: u64 = groups.redundant_size(1);
+    log.info(format!("Found {} ({}) candidates matching by prefix", redundant_count, FileLen(redundant_bytes)));
     report.stage_finished("Group by prefix", &groups);
     groups
 }
@@ -225,11 +235,11 @@ fn group_by_prefix(log: &mut Log, report: &mut Report, groups: Vec<(FileLen, Vec
 fn group_by_suffix(log: &mut Log, report: &mut Report, groups: Vec<((FileLen, FileHash), Vec<PathBuf>)>)
                    -> Vec<((FileLen, FileHash), Vec<PathBuf>)>
 {
-    let remaining_files = count_values(&groups);
+    let remaining_files = groups.total_count();
     let progress = log.progress_bar(
         "[4/6] Grouping by suffix", remaining_files as u64);
 
-    let groups = split_groups(groups, 2, |&(len, hash), path| {
+    let groups: Vec<_> = split_groups(groups, 2, |&(len, hash), path| {
         progress.tick();
         if len >= MAX_PREFIX_LEN + SUFFIX_LEN {
             file_hash_or_log_err(path, (len - SUFFIX_LEN).as_pos(), SUFFIX_LEN, &log)
@@ -239,6 +249,9 @@ fn group_by_suffix(log: &mut Log, report: &mut Report, groups: Vec<((FileLen, Fi
         }
     }).collect();
 
+    let redundant_count: usize = groups.redundant_count(1);
+    let redundant_bytes: u64 = groups.redundant_size(1);
+    log.info(format!("Found {} ({}) candidates matching by suffix", redundant_count, FileLen(redundant_bytes)));
     report.stage_finished("Group by suffix", &groups);
     groups
 }
@@ -246,11 +259,11 @@ fn group_by_suffix(log: &mut Log, report: &mut Report, groups: Vec<((FileLen, Fi
 fn group_by_contents(log: &mut Log, report: &mut Report, groups: Vec<((FileLen, FileHash), Vec<PathBuf>)>)
                      -> Vec<((FileLen, FileHash), Vec<PathBuf>)>
 {
-    let remaining_files = count_values(&groups);
+    let remaining_files = groups.total_count();
     let progress = log.progress_bar(
         "[5/6] Grouping by contents", remaining_files as u64);
 
-    let groups = split_groups(groups, 2, |&(len, hash), path| {
+    let groups: Vec<_> = split_groups(groups, 2, |&(len, hash), path| {
         progress.tick();
         if len > MAX_PREFIX_LEN {
             file_hash_or_log_err(path, FilePos(0), len, &log).map(|h| (len, h))
@@ -259,12 +272,15 @@ fn group_by_contents(log: &mut Log, report: &mut Report, groups: Vec<((FileLen, 
         }
     }).collect();
 
+    let redundant_count: usize = groups.redundant_count(1);
+    let redundant_bytes: u64 = groups.redundant_size(1);
+    log.info(format!("Found {} ({}) redundant files", redundant_count, FileLen(redundant_bytes)));
     report.stage_finished("Group by contents", &groups);
     groups
 }
 
 fn write_report(log: &mut Log, report: &mut Report, groups: &mut Vec<((FileLen, FileHash), Vec<PathBuf>)>) {
-    let remaining_files = count_values(&groups);
+    let remaining_files = groups.total_count();
     let progress = log.progress_bar(
         "[6/6] Writing report", remaining_files as u64);
     groups.sort_by_key(|&((len, _), _)| Reverse(len));

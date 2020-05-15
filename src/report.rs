@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use bytesize::ByteSize;
 
 use crate::files::AsFileLen;
-use crate::group::count_values;
+use crate::group::GroupedFileSetMetrics;
 
 struct FileGroupInfo {
     count: usize,
@@ -42,20 +42,17 @@ impl Report {
     pub fn stage_finished<L: AsFileLen>(&mut self, name: &str, groups: &Vec<(L, Vec<PathBuf>)>)
         -> usize
     {
-        let num_files = count_values(groups);
+        let num_files = groups.total_count();
         let s = Stage {
             name: name.to_owned(),
             group_count: groups.len(),
             output_files: FileGroupInfo {
                 count: num_files,
-                bytes: groups.iter().map(|g|
-                    (g.1.len() as u64) * g.0.as_file_len().0).sum()
+                bytes: groups.total_size()
             },
             redundant_files: FileGroupInfo {
-                count: groups.iter().map(|g|
-                    g.1.len() - 1).sum(),
-                bytes: groups.iter().map(|g|
-                    (g.1.len() as u64 - 1) * g.0.as_file_len().0).sum()
+                count: groups.redundant_count(1),
+                bytes: groups.redundant_size(1)
             }
         };
 

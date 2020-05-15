@@ -4,6 +4,7 @@ use std::marker::PhantomData;
 use dashmap::DashMap;
 use rayon::iter::{ParallelIterator, IntoParallelIterator};
 use std::convert::identity;
+use crate::files::AsFileLen;
 
 /// Groups items by key.
 /// After all items have been added, this structure can be transformed into
@@ -174,13 +175,49 @@ pub fn split_groups<K1, K2, V, F, I1, I2>(input: I1, min_group_size: usize, grou
         })
 }
 
-/// Counts values in a grouped vector
-///
-/// # Example
-/// ```
-/// use dff::group::count_values;
-/// assert_eq!(count_values(&vec![("a", vec![1, 2]), ("b", vec![3, 4])]), 4)
-/// ```
-pub fn count_values<K, V>(input: &Vec<(K, Vec<V>)>) -> usize {
-    input.iter().map(|(_, values)| values.len()).sum()
+/// Computes metrics for reporting summaries of each processing stage.
+pub trait GroupedFileSetMetrics {
+
+    /// Returns the total count of the files
+    fn total_count(self) -> usize;
+
+    /// Returns the sum of file lengths
+    fn total_size(self) -> u64;
+
+    /// Returns the total count of redundant files
+    /// # Arguments
+    /// * `max_rf` - maximum number of replicas allowed (they won't be counted as redundant)
+    fn redundant_count(self, max_rf: usize) -> usize;
+
+    /// Returns the amount of data in redundant files
+    /// # Arguments
+    /// * `max_rf` - maximum number of replicas allowed (they won't be counted as redundant)
+    fn redundant_size(self, max_rf: usize) -> u64;
 }
+
+impl<'a, I, K, V> GroupedFileSetMetrics for I
+    where I: IntoIterator<Item=&'a (K, Vec<V>)> + 'a,
+          K: AsFileLen + 'a,
+          V: 'a
+{
+
+    fn total_count(self) -> usize {
+        self.into_iter().map(|(_, values)| values.len()).sum()
+    }
+
+    fn total_size(self) -> u64 {
+        self.into_iter().map(|(k, values)|
+            values.len() as u64 * k.as_file_len().0).sum()
+    }
+
+    fn redundant_count(self, max_rf: usize) -> usize {
+        self.into_iter().map(|(_, values)|
+            values.len().saturating_sub(max_rf)).sum()
+    }
+
+    fn redundant_size(self, max_rf: usize) -> u64 {
+        self.into_iter().map(|(k, values)|
+            values.len().saturating_sub(max_rf) as u64 * k.as_file_len().0).sum()
+    }
+}
+
