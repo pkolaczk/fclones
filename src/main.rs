@@ -1,12 +1,11 @@
 use std::cell::RefCell;
 use std::cmp::Reverse;
 use std::io::{BufWriter, Write};
-use std::io::stdout;
 use std::path::PathBuf;
 use std::process::exit;
 
 use clap::AppSettings;
-use console::style;
+use console::{style, Term};
 use itertools::Itertools;
 use rayon::iter::ParallelIterator;
 use regex::Regex;
@@ -17,7 +16,6 @@ use dff::files::*;
 use dff::group::*;
 use dff::log::Log;
 use dff::pattern::{Pattern, PatternOpts};
-use dff::report::Report;
 use dff::selector::PathSelector;
 use dff::walk::Walk;
 use std::env::current_dir;
@@ -145,7 +143,7 @@ fn remove_duplicate_links_if_needed(config: &Config, files: Vec<FileInfo>) -> Ve
 }
 
 /// Walks the directory tree and collects matching files in parallel into a vector
-fn scan_files(log: &mut Log, report: &mut Report, config: &Config) -> Vec<Vec<FileInfo>> {
+fn scan_files(log: &mut Log, config: &Config) -> Vec<Vec<FileInfo>> {
     let base_dir = current_dir().unwrap_or_default();
     let path_selector = config.path_selector(&log, &base_dir);
     let file_collector = ThreadLocal::new();
@@ -172,7 +170,6 @@ fn scan_files(log: &mut Log, report: &mut Report, config: &Config) -> Vec<Vec<Fi
     });
 
     log.info(format!("Scanned {} file entries", spinner.position()));
-    report.scanned_files(spinner.position());
 
     let files: Vec<_> = file_collector.into_iter()
         .map(|r| r.into_inner()).collect();
@@ -183,7 +180,7 @@ fn scan_files(log: &mut Log, report: &mut Report, config: &Config) -> Vec<Vec<Fi
     files
 }
 
-fn group_by_size(log: &mut Log, report: &mut Report, config: &Config, files: Vec<Vec<FileInfo>>)
+fn group_by_size(log: &mut Log, config: &Config, files: Vec<Vec<FileInfo>>)
                  -> Vec<(FileLen, Vec<PathBuf>)>
 {
     let file_count: usize = files.iter().map(|v| v.len()).sum();
@@ -207,11 +204,10 @@ fn group_by_size(log: &mut Log, report: &mut Report, config: &Config, files: Vec
     let redundant_count: usize = groups.redundant_count(1);
     let redundant_bytes: u64 = groups.redundant_size(1);
     log.info(format!("Found {} ({}) candidates matching by size", redundant_count, FileLen(redundant_bytes)));
-    report.stage_finished("Group by size", &groups);
     groups
 }
 
-fn group_by_prefix(log: &mut Log, report: &mut Report, groups: Vec<(FileLen, Vec<PathBuf>)>)
+fn group_by_prefix(log: &mut Log, groups: Vec<(FileLen, Vec<PathBuf>)>)
                    -> Vec<((FileLen, FileHash), Vec<PathBuf>)>
 {
     let remaining_files = groups.total_count();
@@ -228,11 +224,10 @@ fn group_by_prefix(log: &mut Log, report: &mut Report, groups: Vec<(FileLen, Vec
     let redundant_count: usize = groups.redundant_count(1);
     let redundant_bytes: u64 = groups.redundant_size(1);
     log.info(format!("Found {} ({}) candidates matching by prefix", redundant_count, FileLen(redundant_bytes)));
-    report.stage_finished("Group by prefix", &groups);
     groups
 }
 
-fn group_by_suffix(log: &mut Log, report: &mut Report, groups: Vec<((FileLen, FileHash), Vec<PathBuf>)>)
+fn group_by_suffix(log: &mut Log, groups: Vec<((FileLen, FileHash), Vec<PathBuf>)>)
                    -> Vec<((FileLen, FileHash), Vec<PathBuf>)>
 {
     let needs_processing = |len: &FileLen| *len >= MAX_PREFIX_LEN + SUFFIX_LEN;
@@ -255,11 +250,10 @@ fn group_by_suffix(log: &mut Log, report: &mut Report, groups: Vec<((FileLen, Fi
     let redundant_count: usize = groups.redundant_count(1);
     let redundant_bytes: u64 = groups.redundant_size(1);
     log.info(format!("Found {} ({}) candidates matching by suffix", redundant_count, FileLen(redundant_bytes)));
-    report.stage_finished("Group by suffix", &groups);
     groups
 }
 
-fn group_by_contents(log: &mut Log, report: &mut Report, groups: Vec<((FileLen, FileHash), Vec<PathBuf>)>)
+fn group_by_contents(log: &mut Log, groups: Vec<((FileLen, FileHash), Vec<PathBuf>)>)
                      -> Vec<((FileLen, FileHash), Vec<PathBuf>)>
 {
     let needs_processing = |len: &FileLen| *len > MAX_PREFIX_LEN;
@@ -280,18 +274,22 @@ fn group_by_contents(log: &mut Log, report: &mut Report, groups: Vec<((FileLen, 
     let redundant_count: usize = groups.redundant_count(1);
     let redundant_bytes: u64 = groups.redundant_size(1);
     log.info(format!("Found {} ({}) redundant files", redundant_count, FileLen(redundant_bytes)));
-    report.stage_finished("Group by contents", &groups);
     groups
 }
 
-fn write_report(log: &mut Log, report: &mut Report, groups: &mut Vec<((FileLen, FileHash), Vec<PathBuf>)>) {
+fn write_report(log: &mut Log, groups: &mut Vec<((FileLen, FileHash), Vec<PathBuf>)>) {
+    let stdout = Term::stdout();
     let remaining_files = groups.total_count();
     let progress = log.progress_bar(
         "[6/6] Writing report", remaining_files as u64);
+
+    // No progress bar when we write to terminal
+    if stdout.is_term() {
+        progress.finish_and_clear()
+    }
     groups.sort_by_key(|&((len, _), _)| Reverse(len));
-    report.write(&mut std::io::stdout()).expect("Failed to write report");
-    let mut out = BufWriter::new(stdout());
-    writeln!(out).unwrap();
+    groups.iter_mut().for_each(|(_, files)| files.sort());
+    let mut out = BufWriter::new(stdout);
     for ((len, hash), files) in groups {
         writeln!(out, "{} {}:", hash, len).unwrap();
         for f in files {
@@ -332,13 +330,12 @@ fn main() {
     let config: Config = Config::from_clap(&clap.get_matches());
 
     configure_thread_pool(config.threads);
-
-    let mut report = Report::new();
+    
     let mut log = Log::new();
-    let matching_files = scan_files(&mut log, &mut report, &config);
-    let size_groups = group_by_size(&mut log, &mut report, &config, matching_files);
-    let prefix_groups = group_by_prefix(&mut log, &mut report, size_groups);
-    let suffix_groups = group_by_suffix(&mut log, &mut report, prefix_groups);
-    let mut contents_groups= group_by_contents(&mut log, &mut report, suffix_groups);
-    write_report(&mut log, &mut report, &mut contents_groups)
+    let matching_files = scan_files(&mut log, &config);
+    let size_groups = group_by_size(&mut log, &config,matching_files);
+    let prefix_groups = group_by_prefix(&mut log, size_groups);
+    let suffix_groups = group_by_suffix(&mut log, prefix_groups);
+    let mut contents_groups= group_by_contents(&mut log, suffix_groups);
+    write_report(&mut log, &mut contents_groups)
 }
