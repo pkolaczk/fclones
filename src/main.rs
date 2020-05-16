@@ -1,5 +1,5 @@
 use std::cell::RefCell;
-use std::cmp::Reverse;
+use std::cmp::{Reverse, max};
 use std::env::current_dir;
 use std::io::{BufWriter, Write};
 use std::path::PathBuf;
@@ -205,15 +205,16 @@ fn group_by_size(ctx: &mut AppCtx, files: Vec<Vec<FileInfo>>) -> Vec<(FileLen, V
             groups.add(file);
         }
     }
-   let groups: Vec<_> = groups
+    let min_clones = ctx.config.min_clones;
+    let groups: Vec<_> = groups
         .into_iter()
-        .filter(|(_, files)| files.len() >= ctx.config.min_clones)
+        .filter(|(_, files)| files.len() >= min_clones)
         .map(|(l, files)| (l, remove_duplicate_links_if_needed(&ctx.config, files)))
         .map(|(l, files)| (l, files.into_iter().map(|info| info.path).collect()))
         .collect();
 
-    let redundant_count: usize = groups.redundant_count(1);
-    let redundant_bytes: u64 = groups.redundant_size(1);
+    let redundant_count: usize = groups.redundant_count(max(1, min_clones.saturating_sub(1)));
+    let redundant_bytes: u64 = groups.redundant_size(max(1, min_clones.saturating_sub(1)));
     ctx.log.info(format!("Found {} ({}) candidates matching by size",
                          redundant_count, FileLen(redundant_bytes)));
     groups
@@ -229,7 +230,8 @@ fn group_by_prefix(ctx: &mut AppCtx, groups: Vec<(FileLen, Vec<PathBuf>)>)
     let progress = ctx.log.progress_bar(
         "[3/6] Grouping by prefix", remaining_files as u64);
 
-    let groups: Vec<_> = split_groups(groups, ctx.config.min_clones, |clone_count, &len, path| {
+    let min_clones = ctx.config.min_clones;
+    let groups: Vec<_> = split_groups(groups, min_clones, |clone_count, &len, path| {
         if (needs_processing)(clone_count) {
             progress.tick();
             let prefix_len = if len <= MAX_PREFIX_LEN { len } else { MIN_PREFIX_LEN };
@@ -240,8 +242,8 @@ fn group_by_prefix(ctx: &mut AppCtx, groups: Vec<(FileLen, Vec<PathBuf>)>)
         }
     }).collect();
 
-    let redundant_count: usize = groups.redundant_count(1);
-    let redundant_bytes: u64 = groups.redundant_size(1);
+    let redundant_count: usize = groups.redundant_count(max(1, min_clones.saturating_sub(1)));
+    let redundant_bytes: u64 = groups.redundant_size(max(1, min_clones.saturating_sub(1)));
     ctx.log.info(format!("Found {} ({}) candidates matching by prefix",
                          redundant_count, FileLen(redundant_bytes)));
     groups
@@ -270,8 +272,8 @@ fn group_by_suffix(ctx: &mut AppCtx, groups: Vec<((FileLen, FileHash), Vec<PathB
         }
     }).collect();
 
-    let redundant_count: usize = groups.redundant_count(1);
-    let redundant_bytes: u64 = groups.redundant_size(1);
+    let redundant_count: usize = groups.redundant_count(max(1, min_clones.saturating_sub(1)));
+    let redundant_bytes: u64 = groups.redundant_size(max(1, min_clones.saturating_sub(1)));
     ctx.log.info(format!("Found {} ({}) candidates matching by suffix",
                          redundant_count, FileLen(redundant_bytes)));
     groups
@@ -286,8 +288,9 @@ fn group_by_contents(ctx: &mut AppCtx, groups: Vec<((FileLen, FileHash), Vec<Pat
         .filter(|((file_len, _hash), v)| (needs_processing)(v.len(), file_len))
         .total_size();
     let progress = ctx.log.bytes_progress_bar("[5/6] Grouping by contents", bytes_to_scan);
+    let min_clones = ctx.config.min_clones;
 
-    let groups: Vec<_> = split_groups(groups, ctx.config.min_clones, |clone_count, &(len, hash), path| {
+    let groups: Vec<_> = split_groups(groups, min_clones, |clone_count, &(len, hash), path| {
         if (needs_processing)(clone_count, &len) {
             file_hash_or_log_err(path, FilePos(0), len, |delta| progress.inc(delta), &ctx.log)
                 .map(|h| (len, h))
@@ -296,8 +299,8 @@ fn group_by_contents(ctx: &mut AppCtx, groups: Vec<((FileLen, FileHash), Vec<Pat
         }
     }).collect();
 
-    let redundant_count: usize = groups.redundant_count(1);
-    let redundant_bytes: u64 = groups.redundant_size(1);
+    let redundant_count: usize = groups.redundant_count(max(1, min_clones.saturating_sub(1)));
+    let redundant_bytes: u64 = groups.redundant_size(max(1, min_clones.saturating_sub(1)));
     ctx.log.info(format!("Found {} ({}) redundant files",
                          redundant_count, FileLen(redundant_bytes)));
     groups
