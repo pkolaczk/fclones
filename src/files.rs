@@ -262,7 +262,7 @@ impl<T> AsFileHash for (T, FileHash) {
 
 impl Display for FileHash {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        write!(f, "{:x}", self.0)
+        write!(f, "{:032x}", self.0)
     }
 }
 

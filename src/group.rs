@@ -135,14 +135,14 @@ impl<T, In> GroupByKey<T> for In
 ///
 /// # Example
 /// ```
-/// use dff::group::split_groups;
 /// use rayon::iter::ParallelIterator;
+/// use fclones::group::split_groups;
 ///
 /// let input = vec![
 ///     ("a", vec![1, -5, 12, 9]),
 ///     ("b", vec![-2, -5, 3])
 /// ];
-/// let mut output = split_groups(input, 1, |&k, &v| Some((k, v >= 0))).collect::<Vec<_>>();
+/// let mut output = split_groups(input, 1, |_, &k, &v| Some((k, v >= 0))).collect::<Vec<_>>();
 /// output.sort_by_key(|g| g.0);
 /// output.iter_mut().for_each(|x| x.1.sort());
 ///
@@ -153,21 +153,21 @@ impl<T, In> GroupByKey<T> for In
 ///     (("b", true),  vec![3]),
 /// ]);
 /// ```
-pub fn split_groups<K1, K2, V, F, I1, I2>(input: I1, min_group_size: usize, group_by: F)
+pub fn split_groups<K1, K2, V, F, I>(input: I, min_group_size: usize, group_by: F)
                                           -> impl ParallelIterator<Item=(K2, Vec<V>)>
     where K1: Eq + Hash + Sync + Send,
           K2: Eq + Hash + Sync + Send,
           V: Sync + Send,
-          F: (Fn(&K1, &V) -> Option<K2>) + Sync + Send,
-          I1: IntoParallelIterator<Item=(K1, I2)>,
-          I2: IntoParallelIterator<Item=V> + Send,
+          F: (Fn(usize, &K1, &V) -> Option<K2>) + Sync + Send,
+          I: IntoParallelIterator<Item=(K1, Vec<V>)>,
 {
     input
         .into_par_iter()
         .flat_map(move |(k1, values)| {
+            let len = values.len();
             values
                 .into_par_iter()
-                .filter_map(|v| (group_by)(&k1, &v).map(|k2| (k2, v)))
+                .filter_map(|v| (group_by)(len, &k1, &v).map(|k2| (k2, v)))
                 .group_by_key(identity)
                 .into_iter()
                 .filter(|(_, values)| values.len() >= min_group_size)
