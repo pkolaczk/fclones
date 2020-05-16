@@ -16,7 +16,7 @@ use console::style;
 /// ```
 /// use indicatif::{ProgressBar, ProgressDrawTarget};
 /// use rayon::prelude::*;
-/// use dff::progress::FastProgressBar;
+/// use fclones::progress::FastProgressBar;
 /// use std::time::Duration;
 ///
 /// let collection = vec![0; 100000];

@@ -84,7 +84,7 @@ impl<'a> Walk<'a> {
     ///
     /// # Example
     /// ```
-    /// use dff::walk::*;
+    /// use fclones::walk::*;
     /// use std::fs::{File, create_dir_all, remove_dir_all, create_dir};
     /// use std::path::PathBuf;
     /// use std::sync::Mutex;
@@ -147,8 +147,7 @@ impl<'a> Walk<'a> {
 
     /// Computes a 128-bit hash of a full path.
     /// We need 128-bits so that collisions are not a problem.
-    /// Thanks to using a long hash we can be sure that if a path hash has been recorded
-    /// we can
+    /// Thanks to using a long hash we can be sure collisions won't be a problem.
     fn path_hash(path: &PathBuf) -> u128 {
         let mut h = Hasher128::new();
         path.hash(&mut h);

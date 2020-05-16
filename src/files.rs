@@ -90,7 +90,7 @@ impl Sub<FileLen> for FilePos {
 /// # Examples
 /// Formatting file length as a human readable string:
 /// ```
-/// use dff::files::FileLen;
+/// use fclones::files::FileLen;
 /// let file_len = FileLen(16000);
 /// let human_readable = format!("{}", file_len);
 /// assert_eq!(human_readable, "16.0 KB");
@@ -98,7 +98,7 @@ impl Sub<FileLen> for FilePos {
 ///
 /// `FileLen` can be added directly to `FilePos`:
 /// ```
-/// use dff::files::{FileLen, FilePos};
+/// use fclones::files::{FileLen, FilePos};
 /// assert_eq!(FilePos(1000) + FileLen(64), FilePos(1064));
 /// ```
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
@@ -406,7 +406,7 @@ fn scan<F: FnMut(&[u8]) -> ()>(file: &mut File, len: FileLen, mut consumer: F) -
 ///
 /// # Example
 /// ```
-/// use dff::files::{file_hash, FileLen, FilePos};
+/// use fclones::files::{file_hash, FileLen, FilePos};
 /// use std::path::PathBuf;
 /// use std::fs::{File, create_dir_all};
 /// use std::io::Write;

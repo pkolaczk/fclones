@@ -19,7 +19,7 @@ use crate::files::AsFileLen;
 ///
 /// # Example
 /// ```
-/// use dff::group::GroupMap;
+/// use fclones::group::GroupMap;
 /// let map = GroupMap::new(|item: (u32, u32)| (item.0, item.1));
 /// map.add((1, 10));
 /// map.add((2, 20));
@@ -83,7 +83,7 @@ impl<T, K, V, F> IntoIterator for GroupMap<T, K, V, F>
 /// # Example
 /// ```
 /// use rayon::prelude::*;
-/// use dff::group::*;
+/// use fclones::group::*;
 /// use std::convert::identity;
 ///
 /// let mut groups: Vec<_> = vec![(1, 10), (2, 20), (1, 11), (2, 21)]
