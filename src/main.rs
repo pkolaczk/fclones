@@ -1,5 +1,6 @@
 use std::cell::RefCell;
 use std::cmp::Reverse;
+use std::env::current_dir;
 use std::io::{BufWriter, Write};
 use std::path::PathBuf;
 use std::process::exit;
@@ -12,13 +13,12 @@ use regex::Regex;
 use structopt::StructOpt;
 use thread_local::ThreadLocal;
 
-use dff::files::*;
-use dff::group::*;
-use dff::log::Log;
-use dff::pattern::{Pattern, PatternOpts};
-use dff::selector::PathSelector;
-use dff::walk::Walk;
-use std::env::current_dir;
+use fclones::files::*;
+use fclones::group::*;
+use fclones::log::Log;
+use fclones::pattern::{Pattern, PatternOpts};
+use fclones::selector::PathSelector;
+use fclones::walk::Walk;
 
 const MIN_PREFIX_LEN: FileLen = FileLen(4096);
 const MAX_PREFIX_LEN: FileLen = FileLen(2 * MIN_PREFIX_LEN.0);
@@ -28,7 +28,7 @@ const SUFFIX_LEN: FileLen = FileLen(4096);
 ///
 #[derive(Debug, StructOpt)]
 #[structopt(
-    name = "Duplicate File Finder",
+    name = "File Clones Finder",
     setting(AppSettings::ColoredHelp),
     setting(AppSettings::DeriveDisplayOrder),
 )]
@@ -89,7 +89,7 @@ struct Config {
     #[structopt(short, long, default_value="0")]
     pub threads: usize,
 
-    /// A list of input paths
+    /// A list of input paths. Accepts files and directories.
     #[structopt(parse(from_os_str), required = true)]
     pub paths: Vec<PathBuf>,
 }

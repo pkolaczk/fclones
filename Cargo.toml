@@ -1,6 +1,6 @@
 [package]
-name = "dff"
-description = "Duplicate File Finder"
+name = "fclones"
+description = "File Clones Finder"
 version = "0.1.0"
 authors = ["Piotr Kołaczkowski <pkolaczk@gmail.com>"]
 edition = "2018"
