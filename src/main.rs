@@ -221,7 +221,7 @@ fn group_by_prefix(log: &mut Log, report: &mut Report, groups: Vec<(FileLen, Vec
     let groups: Vec<_> = split_groups(groups, 2, |&len, path| {
         progress.tick();
         let prefix_len = if len <= MAX_PREFIX_LEN { len } else { MIN_PREFIX_LEN };
-        file_hash_or_log_err(path, FilePos(0), prefix_len, &log)
+        file_hash_or_log_err(path, FilePos(0), prefix_len, |_|{}, &log)
             .map(|h| (len, h))
     }).collect();
 
@@ -242,7 +242,7 @@ fn group_by_suffix(log: &mut Log, report: &mut Report, groups: Vec<((FileLen, Fi
     let groups: Vec<_> = split_groups(groups, 2, |&(len, hash), path| {
         progress.tick();
         if len >= MAX_PREFIX_LEN + SUFFIX_LEN {
-            file_hash_or_log_err(path, (len - SUFFIX_LEN).as_pos(), SUFFIX_LEN, &log)
+            file_hash_or_log_err(path, (len - SUFFIX_LEN).as_pos(), SUFFIX_LEN, |_|{}, &log)
                 .map(|h| (len, h))
         } else {
             Some((len, hash))
@@ -259,14 +259,15 @@ fn group_by_suffix(log: &mut Log, report: &mut Report, groups: Vec<((FileLen, Fi
 fn group_by_contents(log: &mut Log, report: &mut Report, groups: Vec<((FileLen, FileHash), Vec<PathBuf>)>)
                      -> Vec<((FileLen, FileHash), Vec<PathBuf>)>
 {
-    let remaining_files = groups.total_count();
-    let progress = log.progress_bar(
-        "[5/6] Grouping by contents", remaining_files as u64);
+    let bytes_to_scan = groups.iter()
+        .filter(|((len, _hash), _)| *len > MAX_PREFIX_LEN)
+        .total_size();
+    let progress = log.bytes_progress_bar("[5/6] Grouping by contents", bytes_to_scan);
 
     let groups: Vec<_> = split_groups(groups, 2, |&(len, hash), path| {
-        progress.tick();
         if len > MAX_PREFIX_LEN {
-            file_hash_or_log_err(path, FilePos(0), len, &log).map(|h| (len, h))
+            file_hash_or_log_err(path, FilePos(0), len, |delta| progress.inc(delta), &log)
+                .map(|h| (len, h))
         } else {
             Some((len, hash))
         }

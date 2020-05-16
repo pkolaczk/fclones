@@ -108,6 +108,21 @@ impl FastProgressBar {
         FastProgressBar::wrap(inner)
     }
 
+    /// Create a new preconfigured progress bar with given message.
+    /// Displays progress in bytes.
+    pub fn new_bytes_progress_bar(msg: &str, len: u64) -> FastProgressBar {
+        let inner = ProgressBar::new(len);
+        let template = style("{msg:28}").cyan().bold().for_stderr().to_string() +
+            &"[{bar:WIDTH}] {bytes:>10}/{total_bytes}".replace("WIDTH", Self::WIDTH.to_string().as_str());
+
+        inner.set_style(ProgressStyle::default_bar()
+            .template(template.as_str())
+            .progress_chars(Self::PROGRESS_CHARS));
+        inner.set_message(msg);
+
+        FastProgressBar::wrap(inner)
+    }
+
     fn update_progress(&self) {
         let value = self.counter.get() as u64;
         self.progress_bar.set_position(value);

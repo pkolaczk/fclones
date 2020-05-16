@@ -38,6 +38,15 @@ impl Log {
         result
     }
 
+    /// Clears any previous progress bar or spinner and installs a new progress bar.
+    pub fn bytes_progress_bar(&mut self, msg: &str, len: u64) -> Arc<FastProgressBar> {
+        self.progress_bar.upgrade().iter().for_each(|pb| pb.finish_and_clear());
+        let result = Arc::new(FastProgressBar::new_bytes_progress_bar(msg, len));
+        self.progress_bar = Arc::downgrade(&result);
+        result
+    }
+
+
     /// Prints a message to stdout.
     /// Does not interfere with progress bar.
     pub fn println<I: Display>(&self, msg: I) {

@@ -418,16 +418,21 @@ fn scan<F: FnMut(&[u8]) -> ()>(file: &mut File, len: FileLen, mut consumer: F) -
 /// let file2 = test_root.join("file2");
 /// File::create(&file2).unwrap().write_all(b"Test file 2");
 ///
-/// let hash1 = file_hash(&file1, FilePos(0), FileLen::MAX).unwrap();
-/// let hash2 = file_hash(&file2, FilePos(0), FileLen::MAX).unwrap();
-/// let hash3 = file_hash(&file2, FilePos(0), FileLen(8)).unwrap();
+/// let hash1 = file_hash(&file1, FilePos(0), FileLen::MAX, |_|{}).unwrap();
+/// let hash2 = file_hash(&file2, FilePos(0), FileLen::MAX, |_|{}).unwrap();
+/// let hash3 = file_hash(&file2, FilePos(0), FileLen(8), |_|{}).unwrap();
 /// assert_ne!(hash1, hash2);
 /// assert_ne!(hash2, hash3);
 /// ```
-pub fn file_hash(path: &PathBuf, offset: FilePos, len: FileLen) -> io::Result<FileHash> {
+pub fn file_hash(path: &PathBuf, offset: FilePos, len: FileLen, progress: impl Fn(usize))
+    -> io::Result<FileHash>
+{
     let mut hasher = Hasher128::new();
     let mut file = open(path, offset, len)?;
-    scan(&mut file, len, |buf| hasher.write(buf))?;
+    scan(&mut file, len, |buf| {
+        hasher.write(buf);
+        (progress)(buf.len());
+    })?;
     evict_page_cache_if_low_mem(&mut file, len);
     Ok(FileHash(hasher.finish_ext()))
 }
@@ -435,9 +440,10 @@ pub fn file_hash(path: &PathBuf, offset: FilePos, len: FileLen) -> io::Result<Fi
 /// Computes the file hash or logs an error and returns none if failed.
 /// If file is not found, no error is logged and `None` is returned.
 pub fn file_hash_or_log_err
-(path: &PathBuf, offset: FilePos, len: FileLen, log: &Log) -> Option<FileHash>
+(path: &PathBuf, offset: FilePos, len: FileLen, progress: impl Fn(usize), log: &Log)
+    -> Option<FileHash>
 {
-    match file_hash(path, offset, len) {
+    match file_hash(path, offset, len, progress) {
         Ok(hash) => Some(hash),
         Err(e) if e.kind() == ErrorKind::NotFound =>
             None,
