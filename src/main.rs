@@ -319,8 +319,10 @@ fn write_report(ctx: &mut AppCtx, groups: &mut Vec<((FileLen, FileHash), Vec<Pat
     groups.sort_by_key(|&((len, _), _)| Reverse(len));
     groups.iter_mut().for_each(|(_, files)| files.sort());
     let mut out = BufWriter::new(stdout);
-    for ((len, _hash), files) in groups {
-        writeln!(out, "{}:", len).unwrap();
+    for ((len, hash), files) in groups {
+        let len = style(format!("{:8}", len)).yellow().bold();
+        let hash = style(format!("{}", hash)).blue().bold().bright();
+        writeln!(out, "{} {}:", len, hash).unwrap();
         for f in files {
             progress.tick();
             writeln!(out, "    {}", f.display()).unwrap();

@@ -184,7 +184,7 @@ impl FromStr for FileLen {
 
 impl Display for FileLen {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-       write!(f, "{}", ByteSize(self.0))
+        f.pad(format!("{}", ByteSize(self.0)).as_str())
     }
 }
 
@@ -262,7 +262,7 @@ impl<T> AsFileHash for (T, FileHash) {
 
 impl Display for FileHash {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        write!(f, "{:032x}", self.0)
+        f.pad(format!("{:032x}", self.0).as_str())
     }
 }
 
