@@ -77,7 +77,7 @@ struct Config {
     pub exclude_patterns: Vec<String>,
 
     /// Makes pattern matching case-insensitive
-    #[structopt(long)]
+    #[structopt(short="i", long)]
     pub caseless: bool,
 
     /// Expects patterns as Perl compatible regular expressions instead of Unix globs
