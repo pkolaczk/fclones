@@ -1,6 +1,6 @@
 use std::fmt::{Display, Formatter};
 use std::ops::Add;
-use std::path::PathBuf;
+use std::path::{MAIN_SEPARATOR, PathBuf};
 
 use nom::branch::alt;
 use nom::bytes::complete::tag;
@@ -55,6 +55,12 @@ enum Scope {
     CurlyBrackets,
     RoundBrackets
 }
+
+#[cfg(unix)]
+pub const ESCAPE_CHAR: &'static str = "\\";
+
+#[cfg(windows)]
+pub const ESCAPE_CHAR: &'static str = "^";
 
 impl Pattern {
 
@@ -166,7 +172,7 @@ impl Pattern {
     fn glob_to_regex(scope: Scope, glob: &str) -> IResult<&str, String> {
         // pass escaped characters as-is:
         let p_escaped =
-            map(tuple((tag("\\"), anychar)), |(_, c)|
+            map(tuple((tag(ESCAPE_CHAR), anychar)), |(_, c)|
                 escape(c.to_string().as_str()));
 
         fn mk_string(contents: Vec<String>, prefix: &str, sep: &str, suffix: &str) -> String {
@@ -207,13 +213,15 @@ impl Pattern {
         let p_double_star =
             map(tag("**"), |_| ".*".to_string());
 
+        let escaped_sep = escape(MAIN_SEPARATOR.to_string().as_str());
+
         // * -> [^/]*
         let p_single_star =
-            map(tag("*"), |_| "[^/]*".to_string());
+            map(tag("*"), |_| "[^".to_string() + &escaped_sep + "]*");
 
         // ? -> .
         let p_question_mark =
-            map(tag("?"), |_| ".".to_string());
+            map(tag("?"), |_| "[^".to_string() + &escaped_sep + "]");
 
         // [ characters ] -> [ characters ]
         let p_neg_character_set =
@@ -232,6 +240,9 @@ impl Pattern {
                 tag("]")
             )), |(_, characters, _)|
                 "[".to_string() + &characters.into_iter().collect::<String>() + "]");
+
+        let p_separator =
+            map(tag("/"), |_| escaped_sep.clone());
 
         // if we are nested, we can't just pass these through without interpretation
         let p_any_char =
@@ -255,6 +266,7 @@ impl Pattern {
             p_question_mark,
             p_neg_character_set,
             p_character_set,
+            p_separator,
             p_any_char));
 
         let parse_all = map(many0(p_token), |s| s.join(""));
@@ -285,6 +297,10 @@ mod test {
         Pattern::glob(glob).unwrap().to_string()
     }
 
+    fn native_dir_sep(str: &str) -> String {
+        str.replace("/", MAIN_SEPARATOR.to_string().as_str())
+    }
+
     #[test]
     fn empty() {
         assert_eq!(glob_to_regex_str(""), "");
@@ -306,17 +322,22 @@ mod test {
 
     #[test]
     fn question_mark() {
-        assert_eq!(glob_to_regex_str("foo???"), "foo...");
+        let p = Pattern::glob("foo???").unwrap();
+        assert!(p.matches("foo123"));
+        assert!(!p.matches_path(&PathBuf::from("foo").join("23")));
     }
 
     #[test]
     fn single_star() {
-        assert_eq!(glob_to_regex_str("*bar*"), "[^/]*bar[^/]*");
+        let p = Pattern::glob("foo*").unwrap();
+        assert!(p.matches("foo123"));
+        assert!(!p.matches(native_dir_sep("foo/bar").as_str()));
     }
 
     #[test]
     fn double_star() {
-        assert_eq!(glob_to_regex_str("foo/**/bar"), "foo/.*/bar");
+        let p = Pattern::glob("foo/**/bar").unwrap();
+        assert!(p.matches(native_dir_sep("foo/1/2/bar").as_str()));
     }
 
     #[test]
@@ -328,7 +349,9 @@ mod test {
     #[test]
     fn alternatives() {
         assert_eq!(glob_to_regex_str("{a,b,c}"), "(a|b|c)");
-        assert_eq!(glob_to_regex_str("{?.jpg,*.JPG}"), "(.\\.jpg|[^/]*\\.JPG)");
+        let p = Pattern::glob("{*.jpg,*.JPG}").unwrap();
+        assert!(p.matches("foo.jpg"));
+        assert!(p.matches("foo.JPG"));
     }
 
     #[test]
@@ -382,108 +405,108 @@ mod test {
     #[test]
     fn matches_double_star_prefix() {
         let g = Pattern::glob("**/b").unwrap();
-        assert!(g.matches("/b"));
-        assert!(g.matches("/a/b"));
+        assert!(g.matches(native_dir_sep("/b").as_str()));
+        assert!(g.matches(native_dir_sep("/a/b").as_str()));
     }
 
     #[test]
     fn matches_double_star_infix() {
         let g1 = Pattern::glob("/a/**/c").unwrap();
-        assert!(g1.matches("/a/b1/c"));
-        assert!(g1.matches("/a/b1/b2/c"));
-        assert!(g1.matches("/a/b1/b2/b3/c"));
+        assert!(g1.matches(native_dir_sep("/a/b1/c").as_str()));
+        assert!(g1.matches(native_dir_sep("/a/b1/b2/c").as_str()));
+        assert!(g1.matches(native_dir_sep("/a/b1/b2/b3/c").as_str()));
     }
 
     #[test]
     fn ext_glob_optional() {
         let g = Pattern::glob("/a-?(foo|bar)").unwrap();
-        assert!(g.matches("/a-foo"));
-        assert!(g.matches("/a-bar"));
+        assert!(g.matches(native_dir_sep("/a-foo").as_str()));
+        assert!(g.matches(native_dir_sep("/a-bar").as_str()));
     }
 
     #[test]
     fn ext_glob_many() {
         let g = Pattern::glob("/a-*(foo|bar)").unwrap();
-        assert!(g.matches("/a-"));
-        assert!(g.matches("/a-foo"));
-        assert!(g.matches("/a-foofoo"));
-        assert!(g.matches("/a-foobar"));
+        assert!(g.matches(native_dir_sep("/a-").as_str()));
+        assert!(g.matches(native_dir_sep("/a-foo").as_str()));
+        assert!(g.matches(native_dir_sep("/a-foofoo").as_str()));
+        assert!(g.matches(native_dir_sep("/a-foobar").as_str()));
     }
 
     #[test]
     fn ext_glob_at_least_one() {
         let g = Pattern::glob("/a-+(foo|bar)").unwrap();
-        assert!(!g.matches("/a-"));
-        assert!(g.matches("/a-foo"));
-        assert!(g.matches("/a-foofoo"));
-        assert!(g.matches("/a-foobar"));
+        assert!(!g.matches(native_dir_sep("/a-").as_str()));
+        assert!(g.matches(native_dir_sep("/a-foo").as_str()));
+        assert!(g.matches(native_dir_sep("/a-foofoo").as_str()));
+        assert!(g.matches(native_dir_sep("/a-foobar").as_str()));
     }
 
     #[test]
     fn ext_glob_at_least_never() {
         let g = Pattern::glob("/a-!(foo)*").unwrap();
-        assert!(!g.matches("/a-foo-bar"));
-        assert!(!g.matches("/a-foo"));
-        assert!(g.matches("/a-bar"));
-        assert!(g.matches("/a-"));
+        assert!(!g.matches(native_dir_sep("/a-foo-bar").as_str()));
+        assert!(!g.matches(native_dir_sep("/a-foo").as_str()));
+        assert!(g.matches(native_dir_sep("/a-bar").as_str()));
+        assert!(g.matches(native_dir_sep("/a-").as_str()));
     }
 
     #[test]
     fn ext_glob_nested() {
         let g = Pattern::glob("/a-@(foo|bar?(baz))").unwrap();
-        assert!(g.matches("/a-foo"));
-        assert!(g.matches("/a-bar"));
-        assert!(g.matches("/a-barbaz"));
-        assert!(!g.matches("/a-foobaz"));
+        assert!(g.matches(native_dir_sep("/a-foo").as_str()));
+        assert!(g.matches(native_dir_sep("/a-bar").as_str()));
+        assert!(g.matches(native_dir_sep("/a-barbaz").as_str()));
+        assert!(!g.matches(native_dir_sep("/a-foobaz").as_str()));
     }
 
     #[test]
     fn ext_glob_exactly_one() {
         let g = Pattern::glob("/a-@(foo|bar)").unwrap();
-        assert!(!g.matches("/a-"));
-        assert!(g.matches("/a-foo"));
-        assert!(!g.matches("/a-foofoo"));
-        assert!(!g.matches("/a-foobar"));
+        assert!(!g.matches(native_dir_sep("/a-").as_str()));
+        assert!(g.matches(native_dir_sep("/a-foo").as_str()));
+        assert!(!g.matches(native_dir_sep("/a-foofoo").as_str()));
+        assert!(!g.matches(native_dir_sep("/a-foobar").as_str()));
     }
 
     #[test]
     fn matches_fully() {
         let g1 = Pattern::glob("/a/b?/*").unwrap();
-        assert!(g1.matches("/a/b1/c"));
-        assert!(g1.matches("/a/b1/"));
-        assert!(!g1.matches("/a/b1"));
-        assert!(!g1.matches("/a/b/c"));
+        assert!(g1.matches(native_dir_sep("/a/b1/c").as_str()));
+        assert!(g1.matches(native_dir_sep("/a/b1/").as_str()));
+        assert!(!g1.matches(native_dir_sep("/a/b1").as_str()));
+        assert!(!g1.matches(native_dir_sep("/a/b/c").as_str()));
     }
 
     #[test]
     fn matches_partially() {
         let g1 = Pattern::glob("/a/b/*").unwrap();
-        assert!(g1.matches_partially("/a"));
-        assert!(g1.matches_partially("/a/b"));
-        assert!(g1.matches_partially("/a/b/foo"));
-        assert!(!g1.matches_partially("/b/foo"));
+        assert!(g1.matches_partially(native_dir_sep("/a").as_str()));
+        assert!(g1.matches_partially(native_dir_sep("/a/b").as_str()));
+        assert!(g1.matches_partially(native_dir_sep("/a/b/foo").as_str()));
+        assert!(!g1.matches_partially(native_dir_sep("/b/foo").as_str()));
 
         let g2 = Pattern::glob("/a/{b1,b2}/c/*").unwrap();
-        assert!(g2.matches_partially("/a/b1"));
-        assert!(g2.matches_partially("/a/b2"));
-        assert!(g2.matches_partially("/a/b2/c"));
-        assert!(!g2.matches_partially("/b2/c"));
+        assert!(g2.matches_partially(native_dir_sep("/a/b1").as_str()));
+        assert!(g2.matches_partially(native_dir_sep("/a/b2").as_str()));
+        assert!(g2.matches_partially(native_dir_sep("/a/b2/c").as_str()));
+        assert!(!g2.matches_partially(native_dir_sep("/b2/c").as_str()));
 
         let g3 = Pattern::glob("/a/{b11,b21/b22}/c/*").unwrap();
-        assert!(g3.matches_partially("/a/b11"));
-        assert!(g3.matches_partially("/a/b11/c"));
-        assert!(g3.matches_partially("/a/b21"));
-        assert!(g3.matches_partially("/a/b21/b22"));
-        assert!(g3.matches_partially("/a/b21/b22/c"));
-        assert!(!g3.matches_partially("/a/b11/b21/c"));
-        assert!(!g3.matches_partially("/a/b21/c"));
+        assert!(g3.matches_partially(native_dir_sep("/a/b11").as_str()));
+        assert!(g3.matches_partially(native_dir_sep("/a/b11/c").as_str()));
+        assert!(g3.matches_partially(native_dir_sep("/a/b21").as_str()));
+        assert!(g3.matches_partially(native_dir_sep("/a/b21/b22").as_str()));
+        assert!(g3.matches_partially(native_dir_sep("/a/b21/b22/c").as_str()));
+        assert!(!g3.matches_partially(native_dir_sep("/a/b11/b21/c").as_str()));
+        assert!(!g3.matches_partially(native_dir_sep("/a/b21/c").as_str()));
     }
 
     #[test]
     fn matches_prefix() {
         let g1 = Pattern::glob("/a/b/*").unwrap();
-        assert!(g1.matches_prefix("/a/b/c"));
-        assert!(g1.matches_prefix("/a/b/z/foo"));
-        assert!(!g1.matches_prefix("/a/c/z/foo"));
+        assert!(g1.matches_prefix(native_dir_sep("/a/b/c").as_str()));
+        assert!(g1.matches_prefix(native_dir_sep("/a/b/z/foo").as_str()));
+        assert!(!g1.matches_prefix(native_dir_sep("/a/c/z/foo").as_str()));
     }
 }
