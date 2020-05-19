@@ -21,6 +21,7 @@ use smallvec::alloc::fmt::Formatter;
 use smallvec::alloc::str::FromStr;
 use sys_info::mem_info;
 use crate::log::Log;
+use std::iter::Sum;
 
 /// Represents data position in the file, counted from the beginning of the file, in bytes.
 /// Provides more type safety and nicer formatting over using a raw u64.
@@ -169,6 +170,12 @@ impl Mul<u64> for FileLen {
     type Output = FileLen;
     fn mul(self, rhs: u64) -> Self::Output {
         FileLen(self.0 * rhs)
+    }
+}
+
+impl Sum<FileLen> for FileLen {
+    fn sum<I: Iterator<Item=FileLen>>(iter: I) -> Self {
+        iter.fold(FileLen(0), |a, b| a + b)
     }
 }
 

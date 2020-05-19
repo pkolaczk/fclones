@@ -1,5 +1,5 @@
 use std::cell::RefCell;
-use std::cmp::{Reverse, max};
+use std::cmp::Reverse;
 use std::env::current_dir;
 use std::io::{BufWriter, Write};
 use std::path::PathBuf;
@@ -7,7 +7,6 @@ use std::process::exit;
 
 use clap::AppSettings;
 use console::{style, Term};
-use indoc::indoc;
 use itertools::Itertools;
 use rayon::iter::ParallelIterator;
 use regex::Regex;
@@ -17,9 +16,10 @@ use thread_local::ThreadLocal;
 use fclones::files::*;
 use fclones::group::*;
 use fclones::log::Log;
-use fclones::pattern::{Pattern, PatternOpts, ESCAPE_CHAR};
+use fclones::pattern::{ESCAPE_CHAR, Pattern, PatternOpts};
 use fclones::selector::PathSelector;
 use fclones::walk::Walk;
+use indoc::indoc;
 
 const MIN_PREFIX_LEN: FileLen = FileLen(4096);
 const MAX_PREFIX_LEN: FileLen = FileLen(2 * MIN_PREFIX_LEN.0);
@@ -56,9 +56,20 @@ struct Config {
     #[structopt(short="H", long)]
     pub duplicate_links: bool,
 
-    /// Minimum number of identical files in a group
-    #[structopt(short="c", long, default_value="2")]
-    pub min_clones: usize,
+    /// Searches for over-replicated files with replication factor above the specified value.
+    /// Specifying neither `--rf-over` nor `--rf-under` is equivalent to `--rf-over 1` which would
+    /// report duplicate files.
+    #[structopt(long, conflicts_with("rf-under"), value_name("count"))]
+    pub rf_over: Option<usize>,
+
+    /// Searches for under-replicated files with replication factor below the specified value.
+    /// Specifying `--rf-under 2` will report unique files.
+    #[structopt(long, conflicts_with("rf-over"), value_name("count"))]
+    pub rf_under: Option<usize>,
+
+    /// Instead of searching for duplicates, searches for unique files.
+    #[structopt(short="U", long, conflicts_with_all(&["rf-over", "rf-under"]))]
+    pub unique: bool,
 
     /// Minimum file size. Inclusive.
     #[structopt(short="s", long, default_value="1")]
@@ -122,6 +133,19 @@ impl Config {
             .include_names(self.name_patterns.iter().map(pattern).collect())
             .include_paths(self.path_patterns.iter().map(pattern).collect())
             .exclude_paths(self.exclude_patterns.iter().map(pattern).collect())
+    }
+
+    fn rf_over(&self) -> usize {
+        self.rf_over.unwrap_or_else(|| if self.rf_under.is_some() || self.unique { 0 } else { 1 })
+    }
+
+    fn rf_under(&self) -> usize {
+        if self.unique { 2 }
+        else { self.rf_under.unwrap_or(usize::MAX) }
+    }
+
+    fn search_type(&self) -> &'static str {
+        if self.rf_under.is_some() { "under-replicated" } else { "over-replicated" }
     }
 }
 
@@ -206,18 +230,20 @@ fn group_by_size(ctx: &mut AppCtx, files: Vec<Vec<FileInfo>>) -> Vec<(FileLen, V
             groups.add(file);
         }
     }
-    let min_clones = ctx.config.min_clones;
+    let rf_over = ctx.config.rf_over();
+    let rf_under = ctx.config.rf_under();
+
     let groups: Vec<_> = groups
         .into_iter()
-        .filter(|(_, files)| files.len() >= min_clones)
+        .filter(|(_, files)| files.len() >= rf_over)
         .map(|(l, files)| (l, remove_duplicate_links_if_needed(&ctx.config, files)))
         .map(|(l, files)| (l, files.into_iter().map(|info| info.path).collect()))
         .collect();
 
-    let redundant_count: usize = groups.redundant_count(max(1, min_clones.saturating_sub(1)));
-    let redundant_bytes: u64 = groups.redundant_size(max(1, min_clones.saturating_sub(1)));
-    ctx.log.info(format!("Found {} ({}) candidates matching by size",
-                         redundant_count, FileLen(redundant_bytes)));
+    let count: usize = groups.selected_count(rf_over, rf_under);
+    let bytes: FileLen = groups.selected_size(rf_over, rf_under);
+    ctx.log.info(format!("Found {} ({}) candidates by grouping by size",
+                         count, bytes));
     groups
 }
 
@@ -231,8 +257,10 @@ fn group_by_prefix(ctx: &mut AppCtx, groups: Vec<(FileLen, Vec<PathBuf>)>)
     let progress = ctx.log.progress_bar(
         "[3/6] Grouping by prefix", remaining_files as u64);
 
-    let min_clones = ctx.config.min_clones;
-    let groups: Vec<_> = split_groups(groups, min_clones, |clone_count, &len, path| {
+    let rf_over = ctx.config.rf_over();
+    let rf_under = ctx.config.rf_under();
+
+    let groups: Vec<_> = split_groups(groups, rf_over + 1, |clone_count, &len, path| {
         if (needs_processing)(clone_count) {
             progress.tick();
             let prefix_len = if len <= MAX_PREFIX_LEN { len } else { MIN_PREFIX_LEN };
@@ -243,10 +271,9 @@ fn group_by_prefix(ctx: &mut AppCtx, groups: Vec<(FileLen, Vec<PathBuf>)>)
         }
     }).collect();
 
-    let redundant_count: usize = groups.redundant_count(max(1, min_clones.saturating_sub(1)));
-    let redundant_bytes: u64 = groups.redundant_size(max(1, min_clones.saturating_sub(1)));
-    ctx.log.info(format!("Found {} ({}) candidates matching by prefix",
-                         redundant_count, FileLen(redundant_bytes)));
+    let count = groups.selected_count(rf_over, rf_under);
+    let bytes = groups.selected_size(rf_over, rf_under);
+    ctx.log.info(format!("Found {} ({}) candidates by grouping by prefix", count, bytes));
     groups
 }
 
@@ -262,8 +289,10 @@ fn group_by_suffix(ctx: &mut AppCtx, groups: Vec<((FileLen, FileHash), Vec<PathB
     let progress = ctx.log.progress_bar(
         "[4/6] Grouping by suffix", remaining_files as u64);
 
-    let min_clones = ctx.config.min_clones;
-    let groups: Vec<_> = split_groups(groups, min_clones, |clone_count, &(len, hash), path| {
+    let rf_over = ctx.config.rf_over();
+    let rf_under = ctx.config.rf_under();
+
+    let groups: Vec<_> = split_groups(groups, rf_over + 1, |clone_count, &(len, hash), path| {
         if (needs_processing)(clone_count, &len) {
             progress.tick();
             file_hash_or_log_err(path, (len - SUFFIX_LEN).as_pos(), SUFFIX_LEN, |_|{}, &ctx.log)
@@ -273,10 +302,9 @@ fn group_by_suffix(ctx: &mut AppCtx, groups: Vec<((FileLen, FileHash), Vec<PathB
         }
     }).collect();
 
-    let redundant_count: usize = groups.redundant_count(max(1, min_clones.saturating_sub(1)));
-    let redundant_bytes: u64 = groups.redundant_size(max(1, min_clones.saturating_sub(1)));
-    ctx.log.info(format!("Found {} ({}) candidates matching by suffix",
-                         redundant_count, FileLen(redundant_bytes)));
+    let count = groups.selected_count(rf_over, rf_under);
+    let bytes = groups.selected_size(rf_over, rf_under);
+    ctx.log.info(format!("Found {} ({}) candidates by grouping by suffix", count, bytes));
     groups
 }
 
@@ -289,9 +317,10 @@ fn group_by_contents(ctx: &mut AppCtx, groups: Vec<((FileLen, FileHash), Vec<Pat
         .filter(|((file_len, _hash), v)| (needs_processing)(v.len(), file_len))
         .total_size();
     let progress = ctx.log.bytes_progress_bar("[5/6] Grouping by contents", bytes_to_scan);
-    let min_clones = ctx.config.min_clones;
+    let rf_over = ctx.config.rf_over();
+    let rf_under = ctx.config.rf_under();
 
-    let groups: Vec<_> = split_groups(groups, min_clones, |clone_count, &(len, hash), path| {
+    let groups: Vec<_> = split_groups(groups, rf_over + 1, |clone_count, &(len, hash), path| {
         if (needs_processing)(clone_count, &len) {
             file_hash_or_log_err(path, FilePos(0), len, |delta| progress.inc(delta), &ctx.log)
                 .map(|h| (len, h))
@@ -300,10 +329,9 @@ fn group_by_contents(ctx: &mut AppCtx, groups: Vec<((FileLen, FileHash), Vec<Pat
         }
     }).collect();
 
-    let redundant_count: usize = groups.redundant_count(max(1, min_clones.saturating_sub(1)));
-    let redundant_bytes: u64 = groups.redundant_size(max(1, min_clones.saturating_sub(1)));
-    ctx.log.info(format!("Found {} ({}) redundant files",
-                         redundant_count, FileLen(redundant_bytes)));
+    let count = groups.selected_count(rf_over, rf_under);
+    let bytes = groups.selected_size(rf_over, rf_under);
+    ctx.log.info(format!("Found {} ({}) {} files", count, bytes, ctx.config.search_type()));
     groups
 }
 
@@ -317,6 +345,7 @@ fn write_report(ctx: &mut AppCtx, groups: &mut Vec<((FileLen, FileHash), Vec<Pat
     if stdout.is_term() {
         progress.finish_and_clear()
     }
+    groups.retain(|(_, v)| v.len() < ctx.config.rf_under());
     groups.sort_by_key(|&((len, _), _)| Reverse(len));
     groups.iter_mut().for_each(|(_, files)| files.sort());
     let mut out = BufWriter::new(stdout);

@@ -4,7 +4,9 @@ use std::marker::PhantomData;
 use dashmap::DashMap;
 use rayon::iter::{ParallelIterator, IntoParallelIterator};
 use std::convert::identity;
-use crate::files::AsFileLen;
+use crate::files::{AsFileLen, FileLen};
+
+
 
 /// Groups items by key.
 /// After all items have been added, this structure can be transformed into
@@ -187,12 +189,12 @@ pub trait GroupedFileSetMetrics {
     /// Returns the total count of redundant files
     /// # Arguments
     /// * `max_rf` - maximum number of replicas allowed (they won't be counted as redundant)
-    fn redundant_count(self, max_rf: usize) -> usize;
+    fn selected_count(self, rf_over: usize, rf_under: usize) -> usize;
 
     /// Returns the amount of data in redundant files
     /// # Arguments
     /// * `max_rf` - maximum number of replicas allowed (they won't be counted as redundant)
-    fn redundant_size(self, max_rf: usize) -> u64;
+    fn selected_size(self, rf_over: usize, rf_under: usize) -> FileLen;
 }
 
 impl<'a, I, K, V> GroupedFileSetMetrics for I
@@ -210,14 +212,16 @@ impl<'a, I, K, V> GroupedFileSetMetrics for I
             values.len() as u64 * k.as_file_len().0).sum()
     }
 
-    fn redundant_count(self, max_rf: usize) -> usize {
-        self.into_iter().map(|(_, values)|
-            values.len().saturating_sub(max_rf)).sum()
+    fn selected_count(self, rf_over: usize, rf_under: usize) -> usize {
+        self.into_iter()
+            .filter(|&(_, values)| values.len() < rf_under)
+            .map(|(_, values)| values.len().saturating_sub(rf_over)).sum()
     }
 
-    fn redundant_size(self, max_rf: usize) -> u64 {
-        self.into_iter().map(|(k, values)|
-            values.len().saturating_sub(max_rf) as u64 * k.as_file_len().0).sum()
+    fn selected_size(self, rf_over: usize, rf_under: usize) -> FileLen {
+        self.into_iter()
+            .filter(|&(_, values)| values.len() < rf_under)
+            .map(|(k, values)| *k.as_file_len() * values.len().saturating_sub(rf_over) as u64).sum()
     }
 }
 
