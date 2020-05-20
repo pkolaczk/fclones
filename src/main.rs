@@ -1,7 +1,7 @@
 use std::cell::RefCell;
 use std::cmp::Reverse;
 use std::env::current_dir;
-use std::io::{BufWriter, Write};
+use std::io::{BufWriter, Write, BufReader, stdin, BufRead};
 use std::path::PathBuf;
 use std::process::exit;
 
@@ -25,7 +25,7 @@ const MIN_PREFIX_LEN: FileLen = FileLen(4096);
 const MAX_PREFIX_LEN: FileLen = FileLen(2 * MIN_PREFIX_LEN.0);
 const SUFFIX_LEN: FileLen = FileLen(4096);
 
-/// Searches filesystem(s) and reports redundant files
+/// Searches filesystem(s) and reports over- or under-replicated files
 ///
 #[derive(Debug, StructOpt)]
 #[structopt(
@@ -34,6 +34,10 @@ const SUFFIX_LEN: FileLen = FileLen(4096);
     setting(AppSettings::DeriveDisplayOrder),
 )]
 struct Config {
+    /// Reads the list of input paths from the standard input instead of the arguments.
+    /// This flag is mostly useful together with `find` utility.
+    #[structopt(short="I", long)]
+    pub stdin: bool,
 
     /// Descends into directories recursively
     #[structopt(short="R", long)]
@@ -76,7 +80,7 @@ struct Config {
     pub min_size: FileLen,
 
     /// Maximum file size. Inclusive.
-    #[structopt(short="x", long)]
+    #[structopt(long)]
     pub max_size: Option<FileLen>,
 
     /// Includes only file names matched fully by any of the given patterns.
@@ -88,7 +92,6 @@ struct Config {
     pub path_patterns: Vec<String>,
 
     /// Excludes paths matched fully by any of the given patterns.
-    /// Accepts the same pattern syntax as -p.
     #[structopt(short="e", long="exclude")]
     pub exclude_patterns: Vec<String>,
 
@@ -106,7 +109,7 @@ struct Config {
     pub threads: usize,
 
     /// A list of input paths. Accepts files and directories.
-    #[structopt(parse(from_os_str), required = true)]
+    #[structopt(parse(from_os_str), required_unless("stdin"))]
     pub paths: Vec<PathBuf>,
 }
 
@@ -146,6 +149,19 @@ impl Config {
 
     fn search_type(&self) -> &'static str {
         if self.rf_under.is_some() { "under-replicated" } else { "over-replicated" }
+    }
+
+    /// Returns an iterator over the input paths.
+    /// Input paths may be provided as arguments or from standard input.
+    fn input_paths(&self) -> Box<dyn Iterator<Item=PathBuf> + Send> {
+        if self.stdin {
+            Box::new(BufReader::new(stdin())
+                .lines()
+                .into_iter()
+                .map(|s| PathBuf::from(s.unwrap())))
+        } else {
+            Box::new(self.paths.clone().into_iter())
+        }
     }
 }
 
@@ -195,11 +211,10 @@ fn scan_files(ctx: &mut AppCtx) -> Vec<Vec<FileInfo>> {
     walk.path_selector = path_selector;
     walk.log = Some(&ctx.log);
     walk.on_visit = spinner_tick;
-    walk.run(config.paths.clone(), |path| {
+    walk.run(ctx.config.input_paths(), |path| {
         file_info_or_log_err(path, &ctx.log)
             .into_iter()
-            .filter(|info|
-                info.len >= min_size && info.len <= max_size)
+            .filter(|info| info.len >= min_size && info.len <= max_size)
             .for_each(|info| {
                 let vec = file_collector.get_or(|| RefCell::new(Vec::new()));
                 vec.borrow_mut().push(info);

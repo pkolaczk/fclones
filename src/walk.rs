@@ -15,6 +15,7 @@ enum EntryType {
     File, Dir, SymLink, Other
 }
 
+/// A path to a file, directory or symbolic link.
 /// Provides an abstraction over `PathBuf` and `DirEntry`
 #[derive(Debug)]
 struct Entry {
@@ -120,12 +121,15 @@ impl<'a> Walk<'a> {
     ///
     /// remove_dir_all(&test_root).ok();
     /// ```
-    pub fn run<F>(&self, roots: Vec<PathBuf>, consumer: F)
-        where F: Fn(PathBuf) + Sync + Send {
+    pub fn run<I, F>(&self, roots: I, consumer: F)
+        where
+            I: IntoIterator<Item=PathBuf> + Send,
+            F: Fn(PathBuf) + Sync + Send,
+    {
 
         let state = WalkState { consumer, visited: DashSet::new() };
         rayon::scope( |scope| {
-            for p in roots {
+            for p in roots.into_iter() {
                 let p = self.absolute(p);
                 scope.spawn(|scope| self.visit_path(p, scope, 0, &state))
             }
