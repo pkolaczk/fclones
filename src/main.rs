@@ -1,11 +1,9 @@
 use std::cell::RefCell;
 use std::cmp::Reverse;
 use std::env::current_dir;
-use std::io::{BufWriter, Write, BufReader, stdin, BufRead};
+use std::io::{BufWriter, Write};
 use std::path::PathBuf;
-use std::process::exit;
 
-use clap::AppSettings;
 use console::{style, Term};
 use itertools::Itertools;
 use rayon::iter::ParallelIterator;
@@ -13,11 +11,11 @@ use regex::Regex;
 use structopt::StructOpt;
 use thread_local::ThreadLocal;
 
+use fclones::config::*;
 use fclones::files::*;
 use fclones::group::*;
 use fclones::log::Log;
-use fclones::pattern::{ESCAPE_CHAR, Pattern, PatternOpts};
-use fclones::selector::PathSelector;
+use fclones::pattern::ESCAPE_CHAR;
 use fclones::walk::Walk;
 use indoc::indoc;
 
@@ -25,145 +23,6 @@ const MIN_PREFIX_LEN: FileLen = FileLen(4096);
 const MAX_PREFIX_LEN: FileLen = FileLen(2 * MIN_PREFIX_LEN.0);
 const SUFFIX_LEN: FileLen = FileLen(4096);
 
-/// Searches filesystem(s) and reports over- or under-replicated files
-///
-#[derive(Debug, StructOpt)]
-#[structopt(
-    name = "File Clones Finder",
-    setting(AppSettings::ColoredHelp),
-    setting(AppSettings::DeriveDisplayOrder),
-)]
-struct Config {
-    /// Reads the list of input paths from the standard input instead of the arguments.
-    /// This flag is mostly useful together with `find` utility.
-    #[structopt(short="I", long)]
-    pub stdin: bool,
-
-    /// Descends into directories recursively
-    #[structopt(short="R", long)]
-    pub recursive: bool,
-
-    /// Limits recursion depth
-    #[structopt(short="d", long)]
-    pub depth: Option<usize>,
-
-    /// Skips hidden files
-    #[structopt(short="A", long)]
-    pub skip_hidden: bool,
-
-    /// Follows symbolic links
-    #[structopt(short="L", long)]
-    pub follow_links: bool,
-
-    /// Treats files reachable from multiple paths through
-    /// hard links as duplicates
-    #[structopt(short="H", long)]
-    pub duplicate_links: bool,
-
-    /// Searches for over-replicated files with replication factor above the specified value.
-    /// Specifying neither `--rf-over` nor `--rf-under` is equivalent to `--rf-over 1` which would
-    /// report duplicate files.
-    #[structopt(long, conflicts_with("rf-under"), value_name("count"))]
-    pub rf_over: Option<usize>,
-
-    /// Searches for under-replicated files with replication factor below the specified value.
-    /// Specifying `--rf-under 2` will report unique files.
-    #[structopt(long, conflicts_with("rf-over"), value_name("count"))]
-    pub rf_under: Option<usize>,
-
-    /// Instead of searching for duplicates, searches for unique files.
-    #[structopt(short="U", long, conflicts_with_all(&["rf-over", "rf-under"]))]
-    pub unique: bool,
-
-    /// Minimum file size. Inclusive.
-    #[structopt(short="s", long, default_value="1")]
-    pub min_size: FileLen,
-
-    /// Maximum file size. Inclusive.
-    #[structopt(long)]
-    pub max_size: Option<FileLen>,
-
-    /// Includes only file names matched fully by any of the given patterns.
-    #[structopt(short="n", long="names")]
-    pub name_patterns: Vec<String>,
-
-    /// Includes only paths matched fully by any of the given patterns.
-    #[structopt(short="p", long="paths")]
-    pub path_patterns: Vec<String>,
-
-    /// Excludes paths matched fully by any of the given patterns.
-    #[structopt(short="e", long="exclude")]
-    pub exclude_patterns: Vec<String>,
-
-    /// Makes pattern matching case-insensitive
-    #[structopt(short="i", long)]
-    pub caseless: bool,
-
-    /// Expects patterns as Perl compatible regular expressions instead of Unix globs
-    #[structopt(short="g", long)]
-    pub regex: bool,
-
-    /// Parallelism level.
-    /// If set to 0, the number of CPU cores reported by the operating system is used.
-    #[structopt(short, long, default_value="0")]
-    pub threads: usize,
-
-    /// A list of input paths. Accepts files and directories.
-    #[structopt(parse(from_os_str), required_unless("stdin"))]
-    pub paths: Vec<PathBuf>,
-}
-
-impl Config {
-    fn path_selector(&self, log: &Log, base_dir: &PathBuf) -> PathSelector {
-        let pattern_opts =
-            if self.caseless { PatternOpts::case_insensitive() }
-            else { PatternOpts::default() };
-        let pattern = |s: &String| {
-            let pattern =
-                if self.regex {
-                    Pattern::regex_with(s.as_str(), &pattern_opts)
-                } else {
-                    Pattern::glob_with(s.as_str(), &pattern_opts)
-                };
-
-            pattern.unwrap_or_else(|e| {
-                log.err(e);
-                exit(1);
-            })
-        };
-
-        PathSelector::new(base_dir.clone())
-            .include_names(self.name_patterns.iter().map(pattern).collect())
-            .include_paths(self.path_patterns.iter().map(pattern).collect())
-            .exclude_paths(self.exclude_patterns.iter().map(pattern).collect())
-    }
-
-    fn rf_over(&self) -> usize {
-        self.rf_over.unwrap_or_else(|| if self.rf_under.is_some() || self.unique { 0 } else { 1 })
-    }
-
-    fn rf_under(&self) -> usize {
-        if self.unique { 2 }
-        else { self.rf_under.unwrap_or(usize::MAX) }
-    }
-
-    fn search_type(&self) -> &'static str {
-        if self.rf_under.is_some() { "under-replicated" } else { "over-replicated" }
-    }
-
-    /// Returns an iterator over the input paths.
-    /// Input paths may be provided as arguments or from standard input.
-    fn input_paths(&self) -> Box<dyn Iterator<Item=PathBuf> + Send> {
-        if self.stdin {
-            Box::new(BufReader::new(stdin())
-                .lines()
-                .into_iter()
-                .map(|s| PathBuf::from(s.unwrap())))
-        } else {
-            Box::new(self.paths.clone().into_iter())
-        }
-    }
-}
 
 struct AppCtx<'a> {
     config: &'a Config,
@@ -404,8 +263,7 @@ fn main() {
         `{escape}`      escapes wildcards, e.g. `{escape}?` would match `?` literally
     "));
 
-    let clap = Config::clap()
-        .after_help(after_help.as_str());
+    let clap = Config::clap().after_help(after_help.as_str());
     let config: Config = Config::from_clap(&clap.get_matches());
 
     configure_thread_pool(config.threads);

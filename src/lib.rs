@@ -1,7 +1,9 @@
-pub mod walk;
+pub mod config;
 pub mod files;
-pub mod log;
-pub mod selector;
 pub mod group;
+pub mod log;
 pub mod pattern;
 pub mod progress;
+pub mod report;
+pub mod selector;
+pub mod walk;
