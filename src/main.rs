@@ -29,6 +29,7 @@ struct AppCtx<'a> {
     log: &'a mut Log,
 }
 
+
 /// Configures global thread pool to use desired number of threads
 fn configure_thread_pool(parallelism: usize) {
     rayon::ThreadPoolBuilder::new()
@@ -92,7 +93,7 @@ fn scan_files(ctx: &mut AppCtx) -> Vec<Vec<FileInfo>> {
     files
 }
 
-fn group_by_size(ctx: &mut AppCtx, files: Vec<Vec<FileInfo>>) -> Vec<(FileLen, Vec<PathBuf>)> {
+fn group_by_size(ctx: &mut AppCtx, files: Vec<Vec<FileInfo>>) -> Vec<FileGroup> {
     let file_count: usize = files.iter().map(|v| v.len()).sum();
     let progress = ctx.log.progress_bar(
         "[2/6] Grouping by size", file_count as u64);
@@ -111,22 +112,23 @@ fn group_by_size(ctx: &mut AppCtx, files: Vec<Vec<FileInfo>>) -> Vec<(FileLen, V
         .into_iter()
         .filter(|(_, files)| files.len() >= rf_over)
         .map(|(l, files)| (l, remove_duplicate_links_if_needed(&ctx.config, files)))
-        .map(|(l, files)| (l, files.into_iter().map(|info| info.path).collect()))
+        .map(|(l, files)| FileGroup {
+            len: l,
+            hash: None,
+            files: files.into_iter().map(|info| info.path).collect()
+        })
         .collect();
 
     let count: usize = groups.selected_count(rf_over, rf_under);
     let bytes: FileLen = groups.selected_size(rf_over, rf_under);
-    ctx.log.info(format!("Found {} ({}) candidates by grouping by size",
-                         count, bytes));
+    ctx.log.info(format!("Found {} ({}) candidates by grouping by size", count, bytes));
     groups
 }
 
-fn group_by_prefix(ctx: &mut AppCtx, groups: Vec<(FileLen, Vec<PathBuf>)>)
-    -> Vec<((FileLen, FileHash), Vec<PathBuf>)>
+fn group_by_prefix(ctx: &mut AppCtx, groups: Vec<FileGroup>) -> Vec<FileGroup>
 {
-    let needs_processing = |clone_count| clone_count > 1;
     let remaining_files = groups.iter()
-        .filter(|(_, v)| needs_processing(v.len()))
+        .filter(|g| g.files.len() > 1)
         .total_count();
     let progress = ctx.log.progress_bar(
         "[3/6] Grouping by prefix", remaining_files as u64);
@@ -134,16 +136,11 @@ fn group_by_prefix(ctx: &mut AppCtx, groups: Vec<(FileLen, Vec<PathBuf>)>)
     let rf_over = ctx.config.rf_over();
     let rf_under = ctx.config.rf_under();
 
-    let groups: Vec<_> = split_groups(groups, rf_over + 1, |clone_count, &len, path| {
-        if (needs_processing)(clone_count) {
-            progress.tick();
-            let prefix_len = if len <= MAX_PREFIX_LEN { len } else { MIN_PREFIX_LEN };
-            file_hash_or_log_err(path, FilePos(0), prefix_len, |_| {}, &ctx.log)
-                .map(|h| (len, h))
-        } else {
-            Some((len, FileHash(0)))
-        }
-    }).collect();
+    let groups: Vec<_> = groups.split(rf_over + 1, |len, hash, path| {
+        progress.tick();
+        let prefix_len = if len <= MAX_PREFIX_LEN { len } else { MIN_PREFIX_LEN };
+        file_hash_or_log_err(path, FilePos(0), prefix_len, |_| {}, &ctx.log)
+    });
 
     let count = groups.selected_count(rf_over, rf_under);
     let bytes = groups.selected_size(rf_over, rf_under);
@@ -151,13 +148,11 @@ fn group_by_prefix(ctx: &mut AppCtx, groups: Vec<(FileLen, Vec<PathBuf>)>)
     groups
 }
 
-fn group_by_suffix(ctx: &mut AppCtx, groups: Vec<((FileLen, FileHash), Vec<PathBuf>)>)
-                   -> Vec<((FileLen, FileHash), Vec<PathBuf>)>
+fn group_by_suffix(ctx: &mut AppCtx, groups: Vec<FileGroup>) -> Vec<FileGroup>
 {
-    let needs_processing = |clone_count, len: &FileLen|
-        clone_count > 1 && *len >= MAX_PREFIX_LEN + SUFFIX_LEN;
+    let needs_processing = |len: FileLen| len >= MAX_PREFIX_LEN + SUFFIX_LEN;
     let remaining_files = groups.iter()
-        .filter(|((file_len, _), v)| (needs_processing)(v.len(), file_len))
+        .filter(|&g| (needs_processing)(g.len) && g.files.len() > 1)
         .total_count();
 
     let progress = ctx.log.progress_bar(
@@ -166,15 +161,14 @@ fn group_by_suffix(ctx: &mut AppCtx, groups: Vec<((FileLen, FileHash), Vec<PathB
     let rf_over = ctx.config.rf_over();
     let rf_under = ctx.config.rf_under();
 
-    let groups: Vec<_> = split_groups(groups, rf_over + 1, |clone_count, &(len, hash), path| {
-        if (needs_processing)(clone_count, &len) {
+    let groups: Vec<_> = groups.split(rf_over + 1, |len, hash, path| {
+        if (needs_processing)(len) {
             progress.tick();
             file_hash_or_log_err(path, (len - SUFFIX_LEN).as_pos(), SUFFIX_LEN, |_|{}, &ctx.log)
-                .map(|h| (len, h))
         } else {
-            Some((len, hash))
+            hash
         }
-    }).collect();
+    });
 
     let count = groups.selected_count(rf_over, rf_under);
     let bytes = groups.selected_size(rf_over, rf_under);
@@ -182,26 +176,23 @@ fn group_by_suffix(ctx: &mut AppCtx, groups: Vec<((FileLen, FileHash), Vec<PathB
     groups
 }
 
-fn group_by_contents(ctx: &mut AppCtx, groups: Vec<((FileLen, FileHash), Vec<PathBuf>)>)
-                     -> Vec<((FileLen, FileHash), Vec<PathBuf>)>
+fn group_by_contents(ctx: &mut AppCtx, groups: Vec<FileGroup>) -> Vec<FileGroup>
 {
-    let needs_processing = |clone_count, len: &FileLen|
-        clone_count > 1 && *len > MAX_PREFIX_LEN;
+    let needs_processing = |len: FileLen| len >= MAX_PREFIX_LEN;
     let bytes_to_scan = groups.iter()
-        .filter(|((file_len, _hash), v)| (needs_processing)(v.len(), file_len))
+        .filter(|&g| (needs_processing)(g.len) && g.files.len() > 1)
         .total_size();
-    let progress = ctx.log.bytes_progress_bar("[5/6] Grouping by contents", bytes_to_scan);
+    let progress = ctx.log.bytes_progress_bar("[5/6] Grouping by contents", bytes_to_scan.0);
     let rf_over = ctx.config.rf_over();
     let rf_under = ctx.config.rf_under();
 
-    let groups: Vec<_> = split_groups(groups, rf_over + 1, |clone_count, &(len, hash), path| {
-        if (needs_processing)(clone_count, &len) {
+    let groups: Vec<_> = groups.split(rf_over + 1, |len, hash, path| {
+        if (needs_processing)(len) {
             file_hash_or_log_err(path, FilePos(0), len, |delta| progress.inc(delta), &ctx.log)
-                .map(|h| (len, h))
         } else {
-            Some((len, hash))
+            hash
         }
-    }).collect();
+    });
 
     let count = groups.selected_count(rf_over, rf_under);
     let bytes = groups.selected_size(rf_over, rf_under);
@@ -209,7 +200,7 @@ fn group_by_contents(ctx: &mut AppCtx, groups: Vec<((FileLen, FileHash), Vec<Pat
     groups
 }
 
-fn write_report(ctx: &mut AppCtx, groups: &mut Vec<((FileLen, FileHash), Vec<PathBuf>)>) {
+fn write_report(ctx: &mut AppCtx, groups: &mut Vec<FileGroup>) {
     let stdout = Term::stdout();
     let remaining_files = groups.total_count();
     let progress = ctx.log.progress_bar(
@@ -219,15 +210,19 @@ fn write_report(ctx: &mut AppCtx, groups: &mut Vec<((FileLen, FileHash), Vec<Pat
     if stdout.is_term() {
         progress.finish_and_clear()
     }
-    groups.retain(|(_, v)| v.len() < ctx.config.rf_under());
-    groups.sort_by_key(|&((len, _), _)| Reverse(len));
-    groups.iter_mut().for_each(|(_, files)| files.sort());
+    groups.retain(|g| g.files.len() < ctx.config.rf_under());
+    groups.sort_by_key(|g| Reverse(g.len));
+    groups.iter_mut().for_each(|g| g.files.sort());
     let mut out = BufWriter::new(stdout);
-    for ((len, hash), files) in groups {
-        let len = style(format!("{:8}", len)).yellow().bold();
-        let hash = style(format!("{}", hash)).blue().bold().bright();
-        writeln!(out, "{} {}:", len, hash).unwrap();
-        for f in files {
+    for g in groups {
+        let len = style(format!("{:8}", g.len)).yellow().bold();
+        let hash =
+            match g.hash {
+                None => style("-".repeat(32)).white().dim(),
+                Some(hash) => style(format!("{}", hash)).blue().bold().bright()
+            };
+        writeln!(out, "{} {}:", len, hash.for_stdout()).unwrap();
+        for f in g.files.iter() {
             progress.tick();
             writeln!(out, "    {}", f.display()).unwrap();
         }

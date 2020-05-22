@@ -112,22 +112,6 @@ impl FileLen {
     }
 }
 
-pub trait AsFileLen {
-    fn as_file_len(&self) -> &FileLen;
-}
-
-impl AsFileLen for FileLen {
-    fn as_file_len(&self) -> &FileLen {
-        self
-    }
-}
-
-impl<T> AsFileLen for (FileLen, T) {
-    fn as_file_len(&self) -> &FileLen {
-        &self.0
-    }
-}
-
 impl From<u64> for FileLen {
     fn from(l: u64) -> Self {
         FileLen(l)
