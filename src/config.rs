@@ -3,12 +3,21 @@ use std::path::PathBuf;
 use std::process::exit;
 
 use clap::AppSettings;
+use clap::arg_enum;
 use structopt::StructOpt;
 
 use crate::files::FileLen;
 use crate::log::Log;
 use crate::pattern::{Pattern, PatternOpts};
 use crate::selector::PathSelector;
+
+arg_enum! {
+    #[derive(Debug, StructOpt)]
+    pub enum OutputFormat {
+        Text, Csv, Json
+    }
+}
+
 
 /// Searches filesystem(s) and reports over- or under-replicated files
 #[derive(Debug, StructOpt)]
@@ -18,6 +27,12 @@ setting(AppSettings::ColoredHelp),
 setting(AppSettings::DeriveDisplayOrder),
 )]
 pub struct Config {
+
+    /// Sets output file format
+    #[structopt(short="f", long, possible_values = &OutputFormat::variants(),
+    case_insensitive = true, default_value="Text")]
+    pub format: OutputFormat,
+
     /// Reads the list of input paths from the standard input instead of the arguments.
     /// This flag is mostly useful together with `find` utility.
     #[structopt(short="I", long)]
@@ -148,3 +163,4 @@ impl Config {
         }
     }
 }
+

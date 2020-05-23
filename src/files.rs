@@ -6,6 +6,7 @@ use std::fs::{File, Metadata, OpenOptions};
 use std::hash::{Hash, Hasher};
 use std::io;
 use std::io::{ErrorKind, Read, Seek, SeekFrom};
+use std::iter::Sum;
 use std::ops::{Add, Mul, Sub};
 #[cfg(unix)]
 use std::os::unix::fs::OpenOptionsExt;
@@ -17,11 +18,12 @@ use bytesize::ByteSize;
 use fasthash::{FastHasher, HasherExt, t1ha2::Hasher128};
 #[cfg(unix)]
 use nix::fcntl::*;
+use serde::*;
 use smallvec::alloc::fmt::Formatter;
 use smallvec::alloc::str::FromStr;
 use sys_info::mem_info;
+
 use crate::log::Log;
-use std::iter::Sum;
 
 /// Represents data position in the file, counted from the beginning of the file, in bytes.
 /// Provides more type safety and nicer formatting over using a raw u64.
@@ -102,7 +104,7 @@ impl Sub<FileLen> for FilePos {
 /// use fclones::files::{FileLen, FilePos};
 /// assert_eq!(FilePos(1000) + FileLen(64), FilePos(1064));
 /// ```
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, Serialize)]
 pub struct FileLen(pub u64);
 
 impl FileLen {
@@ -257,6 +259,13 @@ impl Display for FileHash {
     }
 }
 
+impl Serialize for FileHash {
+    fn serialize<S>(&self, serializer: S) -> Result<<S as Serializer>::Ok, <S as Serializer>::Error>
+        where S: Serializer
+    {
+        serializer.collect_str(self)
+    }
+}
 /// Size of the temporary buffer used for file read operations.
 /// There is one such buffer per thread.
 pub const BUF_LEN: usize = 8192;

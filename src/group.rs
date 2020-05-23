@@ -5,6 +5,7 @@ use std::path::PathBuf;
 use dashmap::DashMap;
 use itertools::Itertools;
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
+use serde::*;
 
 use crate::files::{FileHash, FileLen};
 
@@ -125,7 +126,9 @@ impl<T, In> GroupByKey<T> for In
 }
 
 
+
 /// Represents a group of files that have something in common, e.g. same size or same hash
+#[derive(Serialize, Debug)]
 pub struct FileGroup {
     pub len: FileLen,
     pub hash: Option<FileHash>,

@@ -215,7 +215,15 @@ fn write_report(ctx: &mut AppCtx, groups: &mut Vec<FileGroup>) {
     groups.iter_mut().for_each(|g| g.files.sort());
     let out = BufWriter::new(stdout);
     let mut reporter = Reporter::new(out, progress);
-    reporter.write_as_text(groups);
+    let result = match &ctx.config.format {
+        OutputFormat::Text => reporter.write_as_text(groups),
+        OutputFormat::Csv => reporter.write_as_csv(groups),
+        OutputFormat::Json => reporter.write_as_json(groups),
+    };
+    match result {
+        Ok(()) => (),
+        Err(e) => ctx.log.err(format!("Failed to write report: {}", e))
+    }
 }
 
 fn paint_help(s: &str) -> String {
