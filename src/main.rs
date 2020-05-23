@@ -1,12 +1,11 @@
 use std::cell::RefCell;
 use std::cmp::Reverse;
 use std::env::current_dir;
-use std::io::{BufWriter, Write};
+use std::io::BufWriter;
 use std::path::PathBuf;
 
 use console::{style, Term};
 use itertools::Itertools;
-use rayon::iter::ParallelIterator;
 use regex::Regex;
 use structopt::StructOpt;
 use thread_local::ThreadLocal;
@@ -18,6 +17,7 @@ use fclones::log::Log;
 use fclones::pattern::ESCAPE_CHAR;
 use fclones::walk::Walk;
 use indoc::indoc;
+use fclones::report::Reporter;
 
 const MIN_PREFIX_LEN: FileLen = FileLen(4096);
 const MAX_PREFIX_LEN: FileLen = FileLen(2 * MIN_PREFIX_LEN.0);
@@ -136,7 +136,7 @@ fn group_by_prefix(ctx: &mut AppCtx, groups: Vec<FileGroup>) -> Vec<FileGroup>
     let rf_over = ctx.config.rf_over();
     let rf_under = ctx.config.rf_under();
 
-    let groups: Vec<_> = groups.split(rf_over + 1, |len, hash, path| {
+    let groups: Vec<_> = groups.split(rf_over + 1, |len, _hash, path| {
         progress.tick();
         let prefix_len = if len <= MAX_PREFIX_LEN { len } else { MIN_PREFIX_LEN };
         file_hash_or_log_err(path, FilePos(0), prefix_len, |_| {}, &ctx.log)
@@ -213,20 +213,9 @@ fn write_report(ctx: &mut AppCtx, groups: &mut Vec<FileGroup>) {
     groups.retain(|g| g.files.len() < ctx.config.rf_under());
     groups.sort_by_key(|g| Reverse(g.len));
     groups.iter_mut().for_each(|g| g.files.sort());
-    let mut out = BufWriter::new(stdout);
-    for g in groups {
-        let len = style(format!("{:8}", g.len)).yellow().bold();
-        let hash =
-            match g.hash {
-                None => style("-".repeat(32)).white().dim(),
-                Some(hash) => style(format!("{}", hash)).blue().bold().bright()
-            };
-        writeln!(out, "{} {}:", len, hash.for_stdout()).unwrap();
-        for f in g.files.iter() {
-            progress.tick();
-            writeln!(out, "    {}", f.display()).unwrap();
-        }
-    }
+    let out = BufWriter::new(stdout);
+    let mut reporter = Reporter::new(out, progress);
+    reporter.write_as_text(groups);
 }
 
 fn paint_help(s: &str) -> String {
