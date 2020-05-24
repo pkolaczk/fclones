@@ -430,7 +430,9 @@ pub fn file_hash(path: &PathBuf, offset: FilePos, len: FileLen, progress: impl F
     let mut hasher = Hasher128::new();
     let mut file = open(path, offset, len)?;
     scan(&mut file, len, |buf| {
-        hasher.write(buf);
+        let mut block_hasher = Hasher128::new();
+        block_hasher.write(buf);
+        hasher.write_u128(block_hasher.finish_ext());
         (progress)(buf.len());
     })?;
     evict_page_cache_if_low_mem(&mut file, len);
