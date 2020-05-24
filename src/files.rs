@@ -1,5 +1,4 @@
 use core::fmt;
-use std::cell::RefCell;
 use std::cmp::min;
 use std::fmt::Display;
 use std::fs::{File, Metadata, OpenOptions};
@@ -270,25 +269,6 @@ impl Serialize for FileHash {
 /// There is one such buffer per thread.
 pub const BUF_LEN: usize = 8192;
 
-#[repr(C, align(4096))]
-#[derive(Copy, Clone)]
-struct AlignedBuf([u8; BUF_LEN]);
-
-impl AlignedBuf {
-    pub fn as_mut(&mut self) -> &mut [u8] {
-        &mut self.0
-    }
-
-    pub fn len(&self) -> FileLen {
-        FileLen(BUF_LEN as u64)
-    }
-}
-
-thread_local! {
-    static BUF: RefCell<AlignedBuf> =
-        RefCell::new(AlignedBuf([0; BUF_LEN]));
-}
-
 fn to_off_t(offset: u64) -> i64 {
     min(i64::MAX as u64, offset) as i64
 }
@@ -376,28 +356,26 @@ fn open_noatime(path: &PathBuf) -> io::Result<File> {
 /// Scans up to `len` bytes in a file and sends data to the given consumer.
 /// Returns the number of bytes successfully read.
 fn scan<F: FnMut(&[u8]) -> ()>(file: &mut File, len: FileLen, mut consumer: F) -> io::Result<u64> {
-    BUF.with(|buf| {
-        let mut buf = buf.borrow_mut();
-        let mut read = 0;
-        let len = len.into();
-        while read < len {
-            let remaining = len - read;
-            let to_read = min(remaining, buf.len().into()) as usize;
-            let buf = &mut buf.as_mut()[..to_read];
-            match file.read(buf) {
-                Ok(0) =>
-                    break,
-                Ok(actual_read) => {
-                    read += actual_read as u64;
-                    (consumer)(buf);
-                },
-                Err(e) => {
-                    return Err(e);
-                }
+    let mut buf = [0; BUF_LEN];
+    let mut read: u64 = 0;
+    let len = len.into();
+    while read < len {
+        let remaining = len - read;
+        let to_read = min(remaining, buf.len() as u64) as usize;
+        let buf = &mut buf[..to_read];
+        match file.read(buf) {
+            Ok(0) =>
+                break,
+            Ok(actual_read) => {
+                read += actual_read as u64;
+                (consumer)(buf);
+            },
+            Err(e) => {
+                return Err(e);
             }
         }
-        Ok(read)
-    })
+    }
+    Ok(read)
 }
 
 /// Computes hash of initial `len` bytes of a file.
