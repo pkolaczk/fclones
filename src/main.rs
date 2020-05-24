@@ -98,7 +98,7 @@ fn group_by_size(ctx: &mut AppCtx, files: Vec<Vec<FileInfo>>) -> Vec<FileGroup> 
     let progress = ctx.log.progress_bar(
         "[2/6] Grouping by size", file_count as u64);
 
-    let groups = GroupMap::new(|info: FileInfo| (info.len, info));
+    let mut groups = GroupMap::new(|info: FileInfo| (info.len, info));
     for files in files.into_iter() {
         for file in files.into_iter() {
             progress.tick();

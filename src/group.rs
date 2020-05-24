@@ -1,8 +1,8 @@
+use std::collections::HashMap;
 use std::hash::Hash;
 use std::marker::PhantomData;
 use std::path::PathBuf;
 
-use dashmap::DashMap;
 use itertools::Itertools;
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
 use serde::*;
@@ -14,16 +14,15 @@ use crate::files::{FileHash, FileLen};
 /// an iterator over groups.
 /// The order of groups in the output iterator is not defined.
 /// The order of items in each group matches the order of adding the items by a thread.
-/// Items can be added from multiple threads.
 ///
-/// Internally uses a concurrent hash map.
+/// Internally uses a hash map.
 /// The amortized complexity of adding an item is O(1).
 /// The complexity of reading all groups is O(N).
 ///
 /// # Example
 /// ```
 /// use fclones::group::GroupMap;
-/// let map = GroupMap::new(|item: (u32, u32)| (item.0, item.1));
+/// let mut map = GroupMap::new(|item: (u32, u32)| (item.0, item.1));
 /// map.add((1, 10));
 /// map.add((2, 20));
 /// map.add((1, 11));
@@ -41,7 +40,7 @@ pub struct GroupMap<T, K, V, F>
           F: Fn(T) -> (K, V)
 {
     item_type: PhantomData<T>,
-    groups: DashMap<K, Vec<V>>,
+    groups: HashMap<K, Vec<V>>,
     split_fn: F,
 }
 
@@ -54,12 +53,12 @@ impl<T, K, V, F> GroupMap<T, K, V, F>
     /// # Arguments
     /// * `split_fn` - a function generating the key-value pair for each input item
     pub fn new(split_fn: F) -> GroupMap<T, K, V, F> {
-        GroupMap { item_type: PhantomData, groups: DashMap::new(), split_fn }
+        GroupMap { item_type: PhantomData, groups: HashMap::new(), split_fn }
     }
 
     /// Adds an item to the map.
     /// Note, this doesn't take `&mut self` so this can be called from safely from many threads.
-    pub fn add(&self, item: T) {
+    pub fn add(&mut self, item: T) {
         let (key, new_item) = (self.split_fn)(item);
         self.groups
             .entry(key)
@@ -73,58 +72,12 @@ impl<T, K, V, F> IntoIterator for GroupMap<T, K, V, F>
           F: Fn(T) -> (K, V),
 {
     type Item = (K, Vec<V>);
-    type IntoIter = <DashMap<K, Vec<V>> as IntoIterator>::IntoIter;
+    type IntoIter = <HashMap<K, Vec<V>> as IntoIterator>::IntoIter;
 
     fn into_iter(self) -> Self::IntoIter {
         self.groups.into_iter()
     }
 }
-
-/// Implemented by collections of items that can be grouped in parallel according to some key.
-/// The value of the key for each item is provided by a key-generating function.
-///
-/// # Example
-/// ```
-/// use rayon::prelude::*;
-/// use fclones::group::*;
-/// use std::convert::identity;
-///
-/// let mut groups: Vec<_> = vec![(1, 10), (2, 20), (1, 11), (2, 21)]
-///     .into_par_iter()
-///     .group_by_key(identity)
-///     .into_iter()
-///     .collect();
-///
-/// // The results may come in any order, so let's make them deterministic:
-/// groups.sort_by_key(|item| item.0);
-/// groups[0].1.sort();
-/// groups[1].1.sort();
-///
-/// assert_eq!(groups[0], (1, vec![10, 11]));
-/// assert_eq!(groups[1], (2, vec![20, 21]));
-///
-/// ```
-pub trait GroupByKey<T> {
-    fn group_by_key<K, V, F>(self, f: F) -> GroupMap<T, K, V, F>
-        where K: Eq + Hash + Sync + Send,
-              V: Send + Sync,
-              F: (Fn(T) -> (K, V)) + Sync;
-}
-
-impl<T, In> GroupByKey<T> for In
-    where T: Sync + Send, In: ParallelIterator<Item=T>
-{
-    fn group_by_key<K, V, F>(self, f: F) -> GroupMap<T, K, V, F>
-        where K: Eq + Hash + Sync + Send,
-              V: Send + Sync,
-              F: (Fn(T) -> (K, V)) + Sync
-    {
-        let grouping_map = GroupMap::new(f);
-        self.for_each(|item| grouping_map.add(item));
-        grouping_map
-    }
-}
-
 
 
 /// Represents a group of files that have something in common, e.g. same size or same hash
@@ -248,10 +201,13 @@ where H: Fn(FileLen, Option<FileHash>, &PathBuf) -> Option<FileHash> + Sync + Se
 {
     let file_len = g.len;
     let file_hash = g.hash;
-    g.files
+    let mut hashed = g.files
         .into_par_iter()
         .filter_map(|p: PathBuf| (hash)(file_len, file_hash, &p).map(|h: FileHash| (h, p)))
-        .collect::<Vec<_>>()
+        .collect::<Vec<_>>();
+
+    hashed.sort_by_key(|(h, _p)| h.0);
+    hashed
         .into_iter()
         .group_by(|(h, _p)| *h)
         .into_iter()
@@ -261,4 +217,12 @@ where H: Fn(FileLen, Option<FileHash>, &PathBuf) -> Option<FileHash> + Sync + Se
             files: group.map(|(_hash, path)| path).collect()
         })
         .collect()
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+
+
 }
