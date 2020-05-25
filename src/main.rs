@@ -18,6 +18,7 @@ use fclones::pattern::ESCAPE_CHAR;
 use fclones::walk::Walk;
 use indoc::indoc;
 use fclones::report::Reporter;
+use rayon::prelude::*;
 
 const MIN_PREFIX_LEN: FileLen = FileLen(4096);
 const MAX_PREFIX_LEN: FileLen = FileLen(2 * MIN_PREFIX_LEN.0);
@@ -206,13 +207,14 @@ fn write_report(ctx: &mut AppCtx, groups: &mut Vec<FileGroup>) {
     let progress = ctx.log.progress_bar(
         "[6/6] Writing report", remaining_files as u64);
 
+    groups.retain(|g| g.files.len() < ctx.config.rf_under());
+    groups.par_sort_by_key(|g| Reverse(g.len));
+    groups.par_iter_mut().for_each(|g| g.files.sort());
+
     // No progress bar when we write to terminal
     if stdout.is_term() {
         progress.finish_and_clear()
     }
-    groups.retain(|g| g.files.len() < ctx.config.rf_under());
-    groups.sort_by_key(|g| Reverse(g.len));
-    groups.iter_mut().for_each(|g| g.files.sort());
     let out = BufWriter::new(stdout);
     let mut reporter = Reporter::new(out, progress);
     let result = match &ctx.config.format {
