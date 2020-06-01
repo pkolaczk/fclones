@@ -1,8 +1,10 @@
 use std::{fmt, io};
-use std::ffi::OsString;
+use std::ffi::{CStr, CString, OsStr, OsString};
 use std::fmt::Display;
 use std::hash::{Hash, Hasher};
-use std::path::PathBuf;
+use std::os::unix::ffi::OsStrExt;
+use std::os::unix::ffi::OsStringExt;
+use std::path::{Component, PathBuf};
 use std::sync::Arc;
 
 use nom::lib::std::fmt::Formatter;
@@ -16,7 +18,7 @@ use smallvec::SmallVec;
 /// The price is a tiny cost of managing Arc references.
 #[derive(Clone, Eq, PartialEq, Debug)]
 pub struct Path {
-    component: OsString,
+    component: CString,
     parent: Option<Arc<Path>>
 }
 
@@ -27,7 +29,7 @@ impl Path {
     }
 
     pub fn is_absolute(&self) -> bool {
-        PathBuf::from(&self.root().component).is_absolute()
+        PathBuf::from(&self.root().component_as_os_str()).is_absolute()
     }
 
     pub fn is_relative(&self) -> bool {
@@ -39,16 +41,21 @@ impl Path {
         assert!(path.is_relative());
         let components = path.components();
         let mut iter = components.iter();
-        let mut result = self.push((*iter.next().unwrap()).clone());
+        let mut result = self.push(CString::from(*iter.next().unwrap()));
 
         while let Some(&c) = iter.next() {
-            result = Arc::new(result).push(c.clone());
+            result = Arc::new(result).push(CString::from(c));
         }
         result
     }
 
-    pub fn file_name(&self) -> Option<OsString> {
-        PathBuf::from(&self.component).file_name().map(|s| OsString::from(s))
+    pub fn file_name(&self) -> Option<&CStr> {
+        match self.component.as_bytes() {
+            b"/" => None,
+            b".." => None,
+            b"." => None,
+            other => Some(self.component.as_c_str())
+        }
     }
 
     pub fn parent(&self) -> Option<&Arc<Path>> {
@@ -61,8 +68,8 @@ impl Path {
 
     pub fn to_std_path(&self) -> PathBuf {
         match &self.parent {
-            Some(p) => p.to_std_path().join(self.component.as_os_str()),
-            None => PathBuf::from(self.component.as_os_str())
+            Some(p) => p.to_std_path().join(self.component_as_os_str()),
+            None => PathBuf::from(self.component_as_os_str())
         }
     }
 
@@ -74,17 +81,26 @@ impl Path {
         &self
     }
 
-    fn new(component: OsString) -> Path {
-        Path { component, parent: None }
+    fn new(component: CString) -> Path {
+        Path {
+            component,
+            parent: None
+        }
     }
 
-    fn push(self: &Arc<Path>, mut component: OsString) -> Path {
-        component.shrink_to_fit();
-        Path { component, parent: Some(self.clone()) }
+    fn push(self: &Arc<Path>, component: CString) -> Path {
+        Path {
+            component,
+            parent: Some(self.clone())
+        }
+    }
+
+    fn component_as_os_str(&self) -> &OsStr {
+        OsStr::from_bytes(self.component.as_bytes())
     }
 
     /// Flattens this path to a vector of strings
-    pub fn components(self: &Path) -> SmallVec<[&OsString;16]> {
+    pub fn components(self: &Path) -> SmallVec<[&CStr;16]> {
         let mut result = match &self.parent {
             Some(p) => p.components(),
             None => SmallVec::new()
@@ -108,13 +124,19 @@ impl AsRef<Path> for Path {
     }
 }
 
+/// Converts std path Component to a new CString
+fn component_to_c_string(c: &Component) -> CString {
+    CString::new(c.as_os_str().as_bytes()).unwrap()
+}
+
 impl From<&std::path::Path> for Path {
     fn from(p: &std::path::Path) -> Self {
         let mut components = p.components();
-        let mut result = Path::new(OsString::from(
-            &components.next().expect("Empty path not supported")));
+        let mut result = Path::new(
+            component_to_c_string(&components.next().expect("Empty path not supported")));
         for c in components {
-            result = Arc::new(result).push(OsString::from(&c))
+            result = Arc::new(result)
+                .push(component_to_c_string(&c))
         }
         result
     }
@@ -173,6 +195,8 @@ impl Serialize for Path {
 
 #[cfg(test)]
 mod test {
+    use std::ffi::OsStr;
+
     use super::*;
 
     fn test_convert(s: &str) {
