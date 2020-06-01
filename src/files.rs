@@ -11,7 +11,6 @@ use std::ops::{Add, Mul, Sub};
 use std::os::unix::fs::OpenOptionsExt;
 #[cfg(unix)]
 use std::os::unix::io::*;
-use std::path::PathBuf;
 
 use bytesize::ByteSize;
 use fasthash::{FastHasher, HasherExt, t1ha2::Hasher128};
@@ -23,6 +22,7 @@ use smallvec::alloc::str::FromStr;
 use sys_info::mem_info;
 
 use crate::log::Log;
+use crate::path::Path;
 
 /// Represents data position in the file, counted from the beginning of the file, in bytes.
 /// Provides more type safety and nicer formatting over using a raw u64.
@@ -183,7 +183,7 @@ impl Display for FileLen {
 /// Keeps metadata of the file that we are interested in.
 /// We don't want to keep unused metadata in memory.
 pub struct FileInfo {
-    pub path: PathBuf,
+    pub path: Path,
     pub file_id: u64,
     pub dev_id: u64,
     pub len: FileLen,
@@ -192,7 +192,7 @@ pub struct FileInfo {
 impl FileInfo {
 
     #[cfg(unix)]
-    fn for_file(path: PathBuf, metadata: &Metadata) -> FileInfo {
+    fn for_file(path: Path, metadata: &Metadata) -> FileInfo {
         use std::os::unix::fs::MetadataExt;
         FileInfo {
             path,
@@ -215,15 +215,15 @@ impl FileInfo {
 }
 
 /// Returns file information for the given path.
-pub fn file_info(file: PathBuf) -> io::Result<FileInfo> {
-    let metadata = std::fs::metadata(&file)?;
+pub fn file_info(file: Path) -> io::Result<FileInfo> {
+    let metadata = std::fs::metadata(&file.to_std_path())?;
     Ok(FileInfo::for_file(file, &metadata))
 }
 
 /// Returns file information for the given path.
 /// On failure, logs an error to stderr and returns `None`.
-pub fn file_info_or_log_err(file: PathBuf, log: &Log) -> Option<FileInfo> {
-    match std::fs::metadata(&file) {
+pub fn file_info_or_log_err(file: Path, log: &Log) -> Option<FileInfo> {
+    match std::fs::metadata(&file.to_std_path()) {
         Ok(metadata) => Some(FileInfo::for_file(file, &metadata)),
         Err(e) if e.kind() == ErrorKind::NotFound => None,
         Err(e) => {
@@ -328,8 +328,8 @@ fn evict_page_cache_if_low_mem(file: &mut File, len: FileLen) {
 
 /// Opens a file and positions it at the given offset.
 /// Additionally, sends the advice to the operating system about how many bytes will be read.
-fn open(path: &PathBuf, offset: FilePos, len: FileLen) -> io::Result<File> {
-    let mut file = open_noatime(path)?;
+fn open(path: &Path, offset: FilePos, len: FileLen) -> io::Result<File> {
+    let mut file = open_noatime(&path)?;
     configure_readahead(&file, offset, len);
     if offset > FilePos::zero() {
         file.seek(offset.into())?;
@@ -339,17 +339,18 @@ fn open(path: &PathBuf, offset: FilePos, len: FileLen) -> io::Result<File> {
 
 /// Opens a file for read. On unix systems passes O_NOATIME flag to drastically improve
 /// performance of reading small files.
-fn open_noatime(path: &PathBuf) -> io::Result<File> {
+fn open_noatime(path: &Path) -> io::Result<File> {
+    let path = path.to_std_path();
     let mut options = OpenOptions::new();
     options.read(true);
     if cfg!(unix) {
         let mut noatime_opts = options.clone();
         noatime_opts.custom_flags(libc::O_NOATIME);
-        noatime_opts.open(path)
+        noatime_opts.open(&path)
             // opening with O_NOATIME may fail in some cases for security reasons
-            .or_else(|_| options.open(path))
+            .or_else(|_| options.open(&path))
     } else {
-        options.open(path)
+        options.open(&path)
     }
 }
 
@@ -385,11 +386,11 @@ fn scan<F: FnMut(&[u8]) -> ()>(file: &mut File, len: FileLen, mut consumer: F) -
 /// # Example
 /// ```
 /// use fclones::files::{file_hash, FileLen, FilePos};
-/// use std::path::PathBuf;
+/// use fclones::path::Path;
 /// use std::fs::{File, create_dir_all};
 /// use std::io::Write;
 ///
-/// let test_root = PathBuf::from("target/test/file_hash/");
+/// let test_root = Path::from("target/test/file_hash/");
 /// create_dir_all(&test_root).unwrap();
 /// let file1 = test_root.join("file1");
 /// File::create(&file1).unwrap().write_all(b"Test file 1");
@@ -402,7 +403,7 @@ fn scan<F: FnMut(&[u8]) -> ()>(file: &mut File, len: FileLen, mut consumer: F) -
 /// assert_ne!(hash1, hash2);
 /// assert_ne!(hash2, hash3);
 /// ```
-pub fn file_hash(path: &PathBuf, offset: FilePos, len: FileLen, progress: impl Fn(usize))
+pub fn file_hash(path: &Path, offset: FilePos, len: FileLen, progress: impl Fn(usize))
     -> io::Result<FileHash>
 {
     let mut hasher = Hasher128::new();
@@ -419,8 +420,12 @@ pub fn file_hash(path: &PathBuf, offset: FilePos, len: FileLen, progress: impl F
 
 /// Computes the file hash or logs an error and returns none if failed.
 /// If file is not found, no error is logged and `None` is returned.
-pub fn file_hash_or_log_err
-(path: &PathBuf, offset: FilePos, len: FileLen, progress: impl Fn(usize), log: &Log)
+pub fn file_hash_or_log_err(
+    path: &Path,
+    offset: FilePos,
+    len: FileLen,
+    progress: impl Fn(usize),
+    log: &Log)
     -> Option<FileHash>
 {
     match file_hash(path, offset, len, progress) {

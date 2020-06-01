@@ -1,5 +1,4 @@
 use std::io::{BufRead, BufReader, stdin};
-use std::path::PathBuf;
 use std::process::exit;
 
 use clap::AppSettings;
@@ -10,6 +9,8 @@ use crate::files::FileLen;
 use crate::log::Log;
 use crate::pattern::{Pattern, PatternOpts};
 use crate::selector::PathSelector;
+use crate::path::Path;
+use std::path::PathBuf;
 
 arg_enum! {
     #[derive(Debug, StructOpt)]
@@ -113,7 +114,7 @@ pub struct Config {
 }
 
 impl Config {
-    pub fn path_selector(&self, log: &Log, base_dir: &PathBuf) -> PathSelector {
+    pub fn path_selector(&self, log: &Log, base_dir: &Path) -> PathSelector {
         let pattern_opts =
             if self.caseless { PatternOpts::case_insensitive() }
             else { PatternOpts::default() };
@@ -152,14 +153,17 @@ impl Config {
 
     /// Returns an iterator over the input paths.
     /// Input paths may be provided as arguments or from standard input.
-    pub fn input_paths(&self) -> Box<dyn Iterator<Item=PathBuf> + Send> {
+    pub fn input_paths(&self) -> Box<dyn Iterator<Item=Path> + Send> {
         if self.stdin {
             Box::new(BufReader::new(stdin())
                 .lines()
                 .into_iter()
-                .map(|s| PathBuf::from(s.unwrap())))
+                .map(|s| Path::from(s.unwrap().as_str())))
         } else {
-            Box::new(self.paths.clone().into_iter())
+            Box::new(
+                self.paths.iter()
+                    .map(|p| Path::from(p))
+                    .collect::<Vec<_>>().into_iter())
         }
     }
 }

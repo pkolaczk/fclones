@@ -1,13 +1,13 @@
 use std::collections::HashMap;
 use std::hash::Hash;
 use std::marker::PhantomData;
-use std::path::PathBuf;
 
 use itertools::Itertools;
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
 use serde::*;
 
 use crate::files::{FileHash, FileLen};
+use crate::path::Path;
 
 /// Groups items by key.
 /// After all items have been added, this structure can be transformed into
@@ -85,7 +85,7 @@ impl<T, K, V, F> IntoIterator for GroupMap<T, K, V, F>
 pub struct FileGroup {
     pub len: FileLen,
     pub hash: Option<FileHash>,
-    pub files: Vec<PathBuf>
+    pub files: Vec<Path>
 }
 
 
@@ -152,35 +152,35 @@ pub trait SplitGroups<G, H> {
     /// ```
     /// use rayon::iter::ParallelIterator;
     /// use fclones::files::{FileLen, FileHash};
-    /// use std::path::PathBuf;
     /// use fasthash::spooky::Hasher128;
     /// use fasthash::{FastHasher, HasherExt};
     /// use std::hash::Hasher;
     /// use fclones::group::{FileGroup, SplitGroups};
+    /// use fclones::path::Path;
     ///
     /// let g = FileGroup { len: FileLen(10), hash: None, files: vec![
-    ///     PathBuf::from("file1"),
-    ///     PathBuf::from("file2")
+    ///     Path::from("file1"),
+    ///     Path::from("file2")
     /// ]};
     ///
-    /// fn hash(len: FileLen, hash: Option<FileHash>, path: &PathBuf) -> Option<FileHash> {
+    /// fn hash(len: FileLen, hash: Option<FileHash>, path: &Path) -> Option<FileHash> {
     ///     let mut hasher = Hasher128::new();
-    ///     hasher.write(path.to_str().unwrap().as_bytes());
+    ///     hasher.write(path.to_string().unwrap().as_bytes());
     ///     Some(FileHash(hasher.finish_ext()))
     /// }
     ///
     /// let mut groups = vec![g].split(1, hash);
     /// groups.sort_by_key(|g| g.files[0].clone());
     /// assert_eq!(groups[0].len, FileLen(10));
-    /// assert_eq!(groups[0].files, vec![PathBuf::from("file1")]);
+    /// assert_eq!(groups[0].files, vec![Path::from("file1")]);
     /// assert_eq!(groups[1].len, FileLen(10));
-    /// assert_eq!(groups[1].files, vec![PathBuf::from("file2")]);
+    /// assert_eq!(groups[1].files, vec![Path::from("file2")]);
     /// ```
     fn split(self, min_group_size: usize, hash: H) -> Vec<G>;
 }
 
 impl<H> SplitGroups<FileGroup, H> for Vec<FileGroup>
-    where H: Fn(FileLen, Option<FileHash>, &PathBuf) -> Option<FileHash> + Sync + Send
+    where H: Fn(FileLen, Option<FileHash>, &Path) -> Option<FileHash> + Sync + Send
 {
     fn split(self, min_group_size: usize, hash: H) -> Vec<FileGroup> {
         self.into_par_iter()
@@ -197,13 +197,13 @@ impl<H> SplitGroups<FileGroup, H> for Vec<FileGroup>
 }
 
 fn split_single<H>(g: FileGroup, hash: &H) -> Vec<FileGroup>
-where H: Fn(FileLen, Option<FileHash>, &PathBuf) -> Option<FileHash> + Sync + Send
+where H: Fn(FileLen, Option<FileHash>, &Path) -> Option<FileHash> + Sync + Send
 {
     let file_len = g.len;
     let file_hash = g.hash;
     let mut hashed = g.files
         .into_par_iter()
-        .filter_map(|p: PathBuf| (hash)(file_len, file_hash, &p).map(|h: FileHash| (h, p)))
+        .filter_map(|p: Path| (hash)(file_len, file_hash, &p).map(|h: FileHash| (h, p)))
         .collect::<Vec<_>>();
 
     hashed.sort_by_key(|(h, _p)| h.0);
@@ -221,7 +221,7 @@ where H: Fn(FileLen, Option<FileHash>, &PathBuf) -> Option<FileHash> + Sync + Se
 
 #[cfg(test)]
 mod test {
-    use super::*;
+
 
 
 

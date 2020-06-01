@@ -2,10 +2,10 @@ use std::cell::RefCell;
 use std::cmp::Reverse;
 use std::env::current_dir;
 use std::io::BufWriter;
-use std::path::PathBuf;
 
 use console::{style, Term};
 use itertools::Itertools;
+use rayon::prelude::*;
 use regex::Regex;
 use structopt::StructOpt;
 use thread_local::ThreadLocal;
@@ -14,11 +14,11 @@ use fclones::config::*;
 use fclones::files::*;
 use fclones::group::*;
 use fclones::log::Log;
+use fclones::path::Path;
 use fclones::pattern::ESCAPE_CHAR;
+use fclones::report::Reporter;
 use fclones::walk::Walk;
 use indoc::indoc;
-use fclones::report::Reporter;
-use rayon::prelude::*;
 
 const MIN_PREFIX_LEN: FileLen = FileLen(4096);
 const MAX_PREFIX_LEN: FileLen = FileLen(2 * MIN_PREFIX_LEN.0);
@@ -54,11 +54,11 @@ fn remove_duplicate_links_if_needed(config: &Config, files: Vec<FileInfo>) -> Ve
 
 /// Walks the directory tree and collects matching files in parallel into a vector
 fn scan_files(ctx: &mut AppCtx) -> Vec<Vec<FileInfo>> {
-    let base_dir = current_dir().unwrap_or_default();
+    let base_dir = Path::from(current_dir().unwrap_or_default());
     let path_selector = ctx.config.path_selector(&ctx.log, &base_dir);
     let file_collector = ThreadLocal::new();
     let spinner = ctx.log.spinner("[1/6] Scanning files");
-    let spinner_tick = &|_: &PathBuf| { spinner.tick() };
+    let spinner_tick = &|_: &Path| { spinner.tick() };
 
     let config = ctx.config;
     let min_size = config.min_size;
@@ -209,7 +209,7 @@ fn write_report(ctx: &mut AppCtx, groups: &mut Vec<FileGroup>) {
 
     groups.retain(|g| g.files.len() < ctx.config.rf_under());
     groups.par_sort_by_key(|g| Reverse(g.len));
-    groups.par_iter_mut().for_each(|g| g.files.sort());
+    //groups.par_iter_mut().for_each(|g| g.files.sort());
 
     // No progress bar when we write to terminal
     if stdout.is_term() {
