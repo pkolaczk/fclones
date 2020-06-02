@@ -35,7 +35,7 @@ impl Entry {
     }
 
     pub fn from_path(path: Path) -> io::Result<Entry> {
-        symlink_metadata(&path.to_std_path())
+        symlink_metadata(&path.to_path_buf())
             .map(|meta| Entry::new(meta.file_type(), path))
     }
 
@@ -228,7 +228,7 @@ impl<'a> Walk<'a> {
         where F: Fn(Path) + Sync + Send, 's: 'w
     {
         if self.recursive && level <= self.depth && self.path_selector.matches_dir(&path) {
-            match std::fs::read_dir(path.to_std_path()) {
+            match std::fs::read_dir(path.to_path_buf()) {
                 Ok(rd) => {
                     for entry in Self::sorted_entries(path, rd) {
                         scope.spawn(move |s| {
@@ -264,7 +264,7 @@ impl<'a> Walk<'a> {
 
     /// Returns the absolute target path of a symbolic link
     fn resolve_link(&self, link: &Path) -> io::Result<Path> {
-        let target = Path::from(read_link(link.to_std_path())?);
+        let target = Path::from(read_link(link.to_path_buf())?);
         let resolved =
             if target.is_relative() {
                 link.parent().unwrap().join(target)
@@ -299,6 +299,7 @@ impl<'a> Walk<'a> {
 #[cfg(test)]
 mod test {
     use std::fs::{create_dir, create_dir_all, File, remove_dir_all};
+    use std::path::PathBuf;
     use std::sync::Mutex;
 
     use super::*;
@@ -335,7 +336,7 @@ mod test {
             let file = test_root.join("file.txt");
             let link = test_root.join("link");
             File::create(&file).unwrap();
-            symlink(Path::from("file.txt"), &link).unwrap(); // link -> file.txt
+            symlink(PathBuf::from("file.txt"), &link).unwrap(); // link -> file.txt
             let mut walk = Walk::new();
             walk.follow_links = true;
             assert_eq!(run_walk(walk, link), vec![file]);
@@ -353,7 +354,7 @@ mod test {
 
             create_dir(&dir).unwrap();
             File::create(&file).unwrap();
-            symlink(Path::from("dir"), &link).unwrap(); // link -> dir
+            symlink(PathBuf::from("dir"), &link).unwrap(); // link -> dir
 
             let mut walk = Walk::new();
             walk.follow_links = true;
@@ -411,24 +412,24 @@ mod test {
             File::create(&hidden_file_2).unwrap();
             let mut walk = Walk::new();
             walk.skip_hidden = true;
-            assert_eq!(run_walk(walk, test_root.clone()), Vec::<Path>::new());
+            assert_eq!(run_walk(walk, test_root.clone()), Vec::<PathBuf>::new());
         });
     }
 
     fn with_dir<F>(test_root: &str, test_code: F)
-        where F: FnOnce(&Path)
+        where F: FnOnce(&PathBuf)
     {
-        let test_root = Path::from(test_root);
+        let test_root = PathBuf::from(test_root);
         remove_dir_all(&test_root).ok();
         create_dir_all(&test_root).unwrap();
         (test_code)(&test_root);
         remove_dir_all(&test_root).unwrap();
     }
 
-    fn run_walk(walk: Walk, root: Path) -> Vec<Path> {
+    fn run_walk(walk: Walk, root: PathBuf) -> Vec<PathBuf> {
         let results = Mutex::new(Vec::new());
-        walk.run(vec![root], |path|
-            results.lock().unwrap().push(path));
+        walk.run(vec![Path::from(root)], |path|
+            results.lock().unwrap().push(path.to_path_buf()));
 
         let mut results = results.into_inner().unwrap();
         results.sort();

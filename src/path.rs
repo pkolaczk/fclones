@@ -16,16 +16,16 @@ use smallvec::SmallVec;
 /// the parent duplicated in memory, wasting a lot of memory.
 /// This shares the common parent between many paths.
 /// The price is a tiny cost of managing Arc references.
-#[derive(Clone, Eq, PartialEq, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Path {
+    parent: Option<Arc<Path>>,
     component: CString,
-    parent: Option<Arc<Path>>
 }
 
 impl Path {
 
     pub fn canonicalize(&self) -> io::Result<Path> {
-        self.to_std_path().canonicalize().map(|p| Path::from(&p))
+        self.to_path_buf().canonicalize().map(|p| Path::from(&p))
     }
 
     pub fn is_absolute(&self) -> bool {
@@ -34,6 +34,17 @@ impl Path {
 
     pub fn is_relative(&self) -> bool {
         !self.is_absolute()
+    }
+
+    /// Moves this Path under an Arc
+    pub fn share(self) -> Arc<Self> {
+        Arc::new(self)
+    }
+
+    /// Copies this path from under Arc.
+    /// Generally cheap, becase only the last component is copied.
+    pub fn clone_inner(self: &Arc<Path>) -> Path {
+        self.as_ref().clone()
     }
 
     pub fn join<P: AsRef<Path>>(self: &Arc<Path>, path: P) -> Path {
@@ -66,15 +77,15 @@ impl Path {
         unimplemented!()
     }
 
-    pub fn to_std_path(&self) -> PathBuf {
+    pub fn to_path_buf(&self) -> PathBuf {
         match &self.parent {
-            Some(p) => p.to_std_path().join(self.component_as_os_str()),
+            Some(p) => p.to_path_buf().join(self.component_as_os_str()),
             None => PathBuf::from(self.component_as_os_str())
         }
     }
 
     pub fn to_string_lossy(&self) -> String {
-        self.to_std_path().to_string_lossy().to_string()
+        self.to_path_buf().to_string_lossy().to_string()
     }
 
     pub fn display(&self) -> &Self {
@@ -182,7 +193,7 @@ impl Hash for Path {
 
 impl Display for Path {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        f.pad(format!("{}", self.to_std_path().display()).as_str())
+        f.pad(format!("{}", self.to_path_buf().display()).as_str())
     }
 }
 
@@ -200,7 +211,7 @@ mod test {
     use super::*;
 
     fn test_convert(s: &str) {
-        assert_eq!(PathBuf::from(s), Path::from(s).to_std_path());
+        assert_eq!(PathBuf::from(s), Path::from(s).to_path_buf());
     }
 
     #[test]
@@ -217,12 +228,14 @@ mod test {
         test_convert("foo/bar/baz");
     }
 
+
+
     #[test]
     fn file_name() {
-        assert_eq!(Path::from("foo").file_name(), Some(OsStr::new("foo")));
-        assert_eq!(Path::from("foo/bar").file_name(), Some(OsStr::new("bar")));
-        assert_eq!(Path::from("/foo").file_name(), Some(OsStr::new("foo")));
-        assert_eq!(Path::from("/foo/bar").file_name(), Some(OsStr::new("bar")));
+        assert_eq!(Path::from("foo").file_name(), Some(CString::new("foo").unwrap().as_c_str()));
+        assert_eq!(Path::from("foo/bar").file_name(), Some(CString::new("bar").unwrap().as_c_str()));
+        assert_eq!(Path::from("/foo").file_name(), Some(CString::new("foo").unwrap().as_c_str()));
+        assert_eq!(Path::from("/foo/bar").file_name(), Some(CString::new("bar").unwrap().as_c_str()));
         assert_eq!(Path::from("/").file_name(), None);
         assert_eq!(Path::from(".").file_name(), None);
         assert_eq!(Path::from("..").file_name(), None);
@@ -238,10 +251,10 @@ mod test {
     #[test]
     fn share_parents() {
         let parent: Arc<Path> = Arc::new(Path::from("/parent"));
-        let child1 = parent.join("c1");
-        let child2 = parent.join("c2");
-        assert_eq!(PathBuf::from("/parent/c1"), child1.to_std_path());
-        assert_eq!(PathBuf::from("/parent/c2"), child2.to_std_path());
+        let child1 = parent.join(Path::from("c1"));
+        let child2 = parent.join(Path::from("c2"));
+        assert_eq!(PathBuf::from("/parent/c1"), child1.to_path_buf());
+        assert_eq!(PathBuf::from("/parent/c2"), child2.to_path_buf());
     }
 
 }

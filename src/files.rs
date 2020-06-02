@@ -216,14 +216,14 @@ impl FileInfo {
 
 /// Returns file information for the given path.
 pub fn file_info(file: Path) -> io::Result<FileInfo> {
-    let metadata = std::fs::metadata(&file.to_std_path())?;
+    let metadata = std::fs::metadata(&file.to_path_buf())?;
     Ok(FileInfo::for_file(file, &metadata))
 }
 
 /// Returns file information for the given path.
 /// On failure, logs an error to stderr and returns `None`.
 pub fn file_info_or_log_err(file: Path, log: &Log) -> Option<FileInfo> {
-    match std::fs::metadata(&file.to_std_path()) {
+    match std::fs::metadata(&file.to_path_buf()) {
         Ok(metadata) => Some(FileInfo::for_file(file, &metadata)),
         Err(e) if e.kind() == ErrorKind::NotFound => None,
         Err(e) => {
@@ -340,7 +340,7 @@ fn open(path: &Path, offset: FilePos, len: FileLen) -> io::Result<File> {
 /// Opens a file for read. On unix systems passes O_NOATIME flag to drastically improve
 /// performance of reading small files.
 fn open_noatime(path: &Path) -> io::Result<File> {
-    let path = path.to_std_path();
+    let path = path.to_path_buf();
     let mut options = OpenOptions::new();
     options.read(true);
     if cfg!(unix) {

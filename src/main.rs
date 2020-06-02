@@ -209,7 +209,7 @@ fn write_report(ctx: &mut AppCtx, groups: &mut Vec<FileGroup>) {
 
     groups.retain(|g| g.files.len() < ctx.config.rf_under());
     groups.par_sort_by_key(|g| Reverse(g.len));
-    //groups.par_iter_mut().for_each(|g| g.files.sort());
+    groups.par_iter_mut().for_each(|g| g.files.sort());
 
     // No progress bar when we write to terminal
     if stdout.is_term() {
