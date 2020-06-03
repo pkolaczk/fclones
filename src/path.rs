@@ -9,6 +9,7 @@ use std::sync::Arc;
 use nom::lib::std::fmt::Formatter;
 use serde::{Serialize, Serializer};
 use smallvec::SmallVec;
+use nix::NixPath;
 
 /// Memory-efficient path representation.
 /// When storing multiple paths with common parent, the standard PathBuf would keep
@@ -102,10 +103,10 @@ impl Path {
     /// Converts this path to a standard library path buffer.
     /// We need this to be able to use this path with other standard library I/O functions.
     pub fn to_path_buf(&self) -> PathBuf {
-        match &self.parent {
-            Some(p) => p.to_path_buf().join(self.component_as_os_str()),
-            None => PathBuf::from(self.component_as_os_str())
-        }
+        let mut result = PathBuf::from(OsString::with_capacity(self.capacity()));
+        self.for_each_component(|c| result.push(
+            OsStr::from_bytes(c.to_bytes())));
+        result
     }
 
     /// Converts this path to an UTF encoded string.
@@ -133,17 +134,32 @@ impl Path {
         }
     }
 
-    fn component_as_os_str(&self) -> &OsStr {
-        OsStr::from_bytes(self.component.as_bytes())
-    }
-
     /// Flattens this path to a vector of strings
-    pub fn components(self: &Path) -> SmallVec<[&CStr;16]> {
+    fn components(&self) -> SmallVec<[&CStr;16]> {
         let mut result = match &self.parent {
             Some(p) => p.components(),
             None => SmallVec::new()
         };
         result.push(&self.component);
+        result
+    }
+
+
+    /// Executes a function for each component, left to right
+    fn for_each_component<F: FnMut(&CStr)>(&self, mut f: F) {
+        self.for_each_component_ref(&mut f)
+    }
+
+    /// Executes a function for each component, left to right
+    fn for_each_component_ref<F: FnMut(&CStr)>(&self, f: &mut F) {
+        &self.parent.iter().for_each(|p| p.for_each_component_ref(f));
+        (f)(self.component.as_c_str())
+    }
+
+    /// Estimates size of this path in bytes
+    fn capacity(&self) -> usize {
+        let mut result: usize = 0;
+        self.for_each_component(|c| result += c.len() + 1);
         result
     }
 
@@ -173,6 +189,7 @@ impl Path {
         }
         result
     }
+
 }
 
 impl AsRef<Path> for Path {
