@@ -422,7 +422,7 @@ mod test {
         let test_root = PathBuf::from(test_root);
         remove_dir_all(&test_root).ok();
         create_dir_all(&test_root).unwrap();
-        (test_code)(&test_root);
+        (test_code)(&test_root.canonicalize().unwrap());
         remove_dir_all(&test_root).unwrap();
     }
 

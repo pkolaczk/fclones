@@ -52,7 +52,6 @@ impl PathSelector {
     }
 
     /// Returns true if the given path fully matches this selector.
-    /// The path must be absolute.
     pub fn matches_full_path(&self, path: &Path) -> bool {
         self.with_absolute_path(path, |path| {
             let name = path.file_name()
@@ -129,14 +128,16 @@ mod test {
 
     #[test]
     fn match_all() {
-
+        let selector = PathSelector::new(Path::from("/test"));
+        assert!(selector.matches_full_path(&Path::from("/test/foo/bar")));
+        assert!(selector.matches_full_path(&Path::from("/test/foo/bar/baz")));
+        assert!(selector.matches_full_path(&Path::from("/test/anything123")));
     }
 
     #[test]
     fn include_absolute() {
         let selector = PathSelector::new(Path::from("/test"))
             .include_paths(vec![Pattern::glob("/test/foo/**").unwrap()]);
-        assert!(selector.matches_full_path(&Path::from("/test/foo/")));
         assert!(selector.matches_full_path(&Path::from("/test/foo/bar")));
         assert!(selector.matches_full_path(&Path::from("/test/foo/bar/baz")));
         assert!(!selector.matches_full_path(&Path::from("/test/bar")));
@@ -148,10 +149,8 @@ mod test {
             .include_paths(vec![Pattern::glob("foo/**").unwrap()]);
 
         // matching:
-        assert!(selector.matches_full_path(&Path::from("/test/foo/")));
         assert!(selector.matches_full_path(&Path::from("/test/foo/bar")));
         assert!(selector.matches_full_path(&Path::from("/test/foo/bar/baz")));
-        assert!(selector.matches_full_path(&Path::from("foo/")));
         assert!(selector.matches_full_path(&Path::from("foo/bar")));
         assert!(selector.matches_full_path(&Path::from("foo/bar/baz")));
 
@@ -167,10 +166,8 @@ mod test {
             .include_paths(vec![Pattern::glob("foo/**").unwrap()]);
 
         // matching:
-        assert!(selector.matches_full_path(&Path::from("/foo/")));
         assert!(selector.matches_full_path(&Path::from("/foo/bar")));
         assert!(selector.matches_full_path(&Path::from("/foo/bar/baz")));
-        assert!(selector.matches_full_path(&Path::from("foo/")));
         assert!(selector.matches_full_path(&Path::from("foo/bar")));
         assert!(selector.matches_full_path(&Path::from("foo/bar/baz")));
 
@@ -187,12 +184,10 @@ mod test {
             .exclude_paths(vec![Pattern::glob("/foo/b*/**").unwrap()]);
 
         // matching:
-        assert!(selector.matches_full_path(&Path::from("/foo/")));
         assert!(selector.matches_full_path(&Path::from("/foo/foo")));
         assert!(selector.matches_full_path(&Path::from("/foo/foo/foo")));
 
         // not matching:
-        assert!(!selector.matches_full_path(&Path::from("/foo/bar/")));
         assert!(!selector.matches_full_path(&Path::from("/foo/bar/baz")));
         assert!(!selector.matches_full_path(&Path::from("/test/bar")));
     }
