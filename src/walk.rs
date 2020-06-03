@@ -82,6 +82,8 @@ impl<'a> Walk<'a> {
     }
 
     /// Walks multiple directories recursively in parallel and sends found files to `consumer`.
+    /// Input paths can be relative to the current working directory,
+    /// but produced paths are absolute.
     /// The `consumer` must be able to receive items from many threads.
     /// Inaccessible files are skipped, but errors are printed to stderr.
     /// The order of files is not specified and may be different every time.
@@ -89,34 +91,36 @@ impl<'a> Walk<'a> {
     /// # Example
     /// ```
     /// use fclones::walk::*;
-    /// use std::fs::{File, create_dir_all, remove_dir_all, create_dir};
-    /// use std::path::Path;
-    /// use std::sync::Mutex;
     /// use fclones::path::Path;
+    /// use std::fs::{File, create_dir_all, remove_dir_all, create_dir};
+    /// use std::path::PathBuf;
+    /// use std::sync::Mutex;
+    /// use std::env::current_dir;
     ///
-    /// let test_root = Path::from("target/test/walk/");
+    /// let test_root = current_dir().unwrap().join(PathBuf::from("target/test/walk/"));
     /// let dir1 = test_root.join("dir1");
     /// let dir2 = test_root.join("dir2");
     /// let dir3 = dir2.join("dir3");
-    /// let file11 = dir1.join("file11.txt");
-    /// let file12 = dir1.join("file12.txt");
-    /// let file2 = dir2.join("file2.txt");
-    /// let file3 = dir3.join("file3.txt");
     ///
     /// remove_dir_all(&test_root).ok();
     /// create_dir_all(&test_root).unwrap();
     /// create_dir(&dir1).unwrap();
     /// create_dir(&dir2).unwrap();
     /// create_dir(&dir3).unwrap();
+    ///
+    /// let file11 = dir1.join("file11.txt");
+    /// let file12 = dir1.join("file12.txt");
+    /// let file2 = dir2.join("file2.txt");
+    /// let file3 = dir3.join("file3.txt");
     /// File::create(&file11).unwrap();
     /// File::create(&file12).unwrap();
     /// File::create(&file2).unwrap();
     /// File::create(&file3).unwrap();
     ///
-    /// let receiver = Mutex::new(Vec::<Path>::new());
+    /// let receiver = Mutex::new(Vec::<PathBuf>::new());
     /// let mut walk = Walk::new();
-    /// walk.run(vec![test_root.clone()], |path| {
-    ///     receiver.lock().unwrap().push(path)
+    /// walk.run(vec![Path::from(&test_root)], |path| {
+    ///     receiver.lock().unwrap().push(path.to_path_buf())
     /// });
     ///
     /// let mut results = receiver.lock().unwrap();
@@ -282,11 +286,6 @@ impl<'a> Walk<'a> {
         } else {
             path.canonicalize().unwrap_or(path)
         }
-    }
-
-    /// Returns a path relative to the base dir.
-    fn relative(&self, path: Path) -> Path {
-        path.strip_prefix(&self.base_dir).unwrap_or(path)
     }
 
     /// Logs an error

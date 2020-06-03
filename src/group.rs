@@ -165,7 +165,7 @@ pub trait SplitGroups<G, H> {
     ///
     /// fn hash(len: FileLen, hash: Option<FileHash>, path: &Path) -> Option<FileHash> {
     ///     let mut hasher = Hasher128::new();
-    ///     hasher.write(path.to_string().unwrap().as_bytes());
+    ///     hasher.write(path.to_string().as_bytes());
     ///     Some(FileHash(hasher.finish_ext()))
     /// }
     ///

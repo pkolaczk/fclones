@@ -387,19 +387,20 @@ fn scan<F: FnMut(&[u8]) -> ()>(file: &mut File, len: FileLen, mut consumer: F) -
 /// ```
 /// use fclones::files::{file_hash, FileLen, FilePos};
 /// use fclones::path::Path;
-/// use std::fs::{File, create_dir_all};
 /// use std::io::Write;
+/// use std::fs::{File, create_dir_all};
+/// use std::path::PathBuf;
 ///
-/// let test_root = Path::from("target/test/file_hash/");
+/// let test_root = PathBuf::from("target/test/file_hash/");
 /// create_dir_all(&test_root).unwrap();
 /// let file1 = test_root.join("file1");
 /// File::create(&file1).unwrap().write_all(b"Test file 1");
 /// let file2 = test_root.join("file2");
 /// File::create(&file2).unwrap().write_all(b"Test file 2");
 ///
-/// let hash1 = file_hash(&file1, FilePos(0), FileLen::MAX, |_|{}).unwrap();
-/// let hash2 = file_hash(&file2, FilePos(0), FileLen::MAX, |_|{}).unwrap();
-/// let hash3 = file_hash(&file2, FilePos(0), FileLen(8), |_|{}).unwrap();
+/// let hash1 = file_hash(&Path::from(&file1), FilePos(0), FileLen::MAX, |_|{}).unwrap();
+/// let hash2 = file_hash(&Path::from(&file2), FilePos(0), FileLen::MAX, |_|{}).unwrap();
+/// let hash3 = file_hash(&Path::from(&file2), FilePos(0), FileLen(8), |_|{}).unwrap();
 /// assert_ne!(hash1, hash2);
 /// assert_ne!(hash2, hash3);
 /// ```
