@@ -65,6 +65,11 @@ impl<T, K, V, F> GroupMap<T, K, V, F>
             .or_insert(vec![])
             .push(new_item);
     }
+
+    /// Returns number of groups larger than given min_size
+    pub fn group_count(&self, min_size: usize) -> usize {
+        self.groups.iter().filter(|g| g.1.len() >= min_size).count()
+    }
 }
 
 impl<T, K, V, F> IntoIterator for GroupMap<T, K, V, F>

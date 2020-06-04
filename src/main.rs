@@ -19,6 +19,7 @@ use fclones::pattern::ESCAPE_CHAR;
 use fclones::report::Reporter;
 use fclones::walk::Walk;
 use indoc::indoc;
+use std::sync::Mutex;
 
 const MIN_PREFIX_LEN: FileLen = FileLen(4096);
 const MAX_PREFIX_LEN: FileLen = FileLen(2 * MIN_PREFIX_LEN.0);
@@ -41,13 +42,13 @@ fn configure_thread_pool(parallelism: usize) {
 
 /// Unless `duplicate_links` is set to true,
 /// remove duplicated `FileInfo` entries with the same inode and device id from the list.
-fn remove_duplicate_links_if_needed(config: &Config, files: Vec<FileInfo>) -> Vec<FileInfo> {
-    if config.duplicate_links {
+fn prune_links_if_needed(ctx: &AppCtx, files: Vec<Path>) -> Vec<Path> {
+    if ctx.config.no_prune_links {
         files
     } else {
         files
             .into_iter()
-            .unique_by(|info| (info.dev_id, info.file_id))
+            .unique_by(|path| file_id_or_log_err(&path, &ctx.log))
             .collect()
     }
 }
@@ -57,7 +58,7 @@ fn scan_files(ctx: &mut AppCtx) -> Vec<Vec<FileInfo>> {
     let base_dir = Path::from(current_dir().unwrap_or_default());
     let path_selector = ctx.config.path_selector(&ctx.log, &base_dir);
     let file_collector = ThreadLocal::new();
-    let spinner = ctx.log.spinner("[1/6] Scanning files");
+    let spinner = ctx.log.spinner("[1/7] Scanning files");
     let spinner_tick = &|_: &Path| { spinner.tick() };
 
     let config = ctx.config;
@@ -97,9 +98,9 @@ fn scan_files(ctx: &mut AppCtx) -> Vec<Vec<FileInfo>> {
 fn group_by_size(ctx: &mut AppCtx, files: Vec<Vec<FileInfo>>) -> Vec<FileGroup> {
     let file_count: usize = files.iter().map(|v| v.len()).sum();
     let progress = ctx.log.progress_bar(
-        "[2/6] Grouping by size", file_count as u64);
+        "[2/7] Grouping by size", file_count as u64);
 
-    let mut groups = GroupMap::new(|info: FileInfo| (info.len, info));
+    let mut groups = GroupMap::new(|info: FileInfo| (info.len, info.path));
     for files in files.into_iter() {
         for file in files.into_iter() {
             progress.tick();
@@ -112,12 +113,7 @@ fn group_by_size(ctx: &mut AppCtx, files: Vec<Vec<FileInfo>>) -> Vec<FileGroup> 
     let groups: Vec<_> = groups
         .into_iter()
         .filter(|(_, files)| files.len() >= rf_over)
-        .map(|(l, files)| (l, remove_duplicate_links_if_needed(&ctx.config, files)))
-        .map(|(l, files)| FileGroup {
-            len: l,
-            hash: None,
-            files: files.into_iter().map(|info| info.path).collect()
-        })
+        .map(|(l, files)| FileGroup { len: l, hash: None, files })
         .collect();
 
     let count: usize = groups.selected_count(rf_over, rf_under);
@@ -126,13 +122,37 @@ fn group_by_size(ctx: &mut AppCtx, files: Vec<Vec<FileInfo>>) -> Vec<FileGroup> 
     groups
 }
 
-fn group_by_prefix(ctx: &mut AppCtx, groups: Vec<FileGroup>) -> Vec<FileGroup>
-{
+fn prune_hard_links(ctx: &mut AppCtx, groups: Vec<FileGroup>) -> Vec<FileGroup> {
+    if ctx.config.no_prune_links {
+        return groups;
+    }
+
+    let file_count: usize = groups.total_count();
+    let progress = ctx.log.progress_bar(
+        "[3/7] Pruning hard links", file_count as u64);
+
+    let rf_over = ctx.config.rf_over();
+    let rf_under = ctx.config.rf_under();
+
+    let groups: Vec<_> = groups
+        .into_par_iter()
+        .inspect(|g| progress.inc(g.files.len()))
+        .map(|mut g| { g.files = prune_links_if_needed(&ctx, g.files); g })
+        .filter(|g| g.files.len() >= rf_over)
+        .collect();
+
+    let count: usize = groups.selected_count(rf_over, rf_under);
+    let bytes: FileLen = groups.selected_size(rf_over, rf_under);
+    ctx.log.info(format!("Found {} ({}) candidates after pruning hard-links", count, bytes));
+    groups
+}
+
+fn group_by_prefix(ctx: &mut AppCtx, groups: Vec<FileGroup>) -> Vec<FileGroup> {
     let remaining_files = groups.iter()
         .filter(|g| g.files.len() > 1)
         .total_count();
     let progress = ctx.log.progress_bar(
-        "[3/6] Grouping by prefix", remaining_files as u64);
+        "[4/7] Grouping by prefix", remaining_files as u64);
 
     let rf_over = ctx.config.rf_over();
     let rf_under = ctx.config.rf_under();
@@ -157,7 +177,7 @@ fn group_by_suffix(ctx: &mut AppCtx, groups: Vec<FileGroup>) -> Vec<FileGroup>
         .total_count();
 
     let progress = ctx.log.progress_bar(
-        "[4/6] Grouping by suffix", remaining_files as u64);
+        "[5/7] Grouping by suffix", remaining_files as u64);
 
     let rf_over = ctx.config.rf_over();
     let rf_under = ctx.config.rf_under();
@@ -183,7 +203,7 @@ fn group_by_contents(ctx: &mut AppCtx, groups: Vec<FileGroup>) -> Vec<FileGroup>
     let bytes_to_scan = groups.iter()
         .filter(|&g| (needs_processing)(g.len) && g.files.len() > 1)
         .total_size();
-    let progress = ctx.log.bytes_progress_bar("[5/6] Grouping by contents", bytes_to_scan.0);
+    let progress = ctx.log.bytes_progress_bar("[6/7] Grouping by contents", bytes_to_scan.0);
     let rf_over = ctx.config.rf_over();
     let rf_under = ctx.config.rf_under();
 
@@ -205,7 +225,7 @@ fn write_report(ctx: &mut AppCtx, groups: &mut Vec<FileGroup>) {
     let stdout = Term::stdout();
     let remaining_files = groups.total_count();
     let progress = ctx.log.progress_bar(
-        "[6/6] Writing report", remaining_files as u64);
+        "[7/7] Writing report", remaining_files as u64);
 
     groups.retain(|g| g.files.len() < ctx.config.rf_under());
     groups.par_sort_by_key(|g| Reverse(g.len));
@@ -267,7 +287,8 @@ fn main() {
 
     let matching_files = scan_files(&mut ctx);
     let size_groups = group_by_size(&mut ctx, matching_files);
-    let prefix_groups = group_by_prefix(&mut ctx, size_groups);
+    let size_groups_pruned = prune_hard_links(&mut ctx, size_groups);
+    let prefix_groups = group_by_prefix(&mut ctx, size_groups_pruned);
     let suffix_groups = group_by_suffix(&mut ctx, prefix_groups);
     let mut contents_groups= group_by_contents(&mut ctx, suffix_groups);
     write_report(&mut ctx, &mut contents_groups)

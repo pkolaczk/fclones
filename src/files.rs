@@ -1,7 +1,7 @@
 use core::fmt;
 use std::cmp::min;
 use std::fmt::Display;
-use std::fs::{File, Metadata, OpenOptions};
+use std::fs::{File, Metadata, OpenOptions, metadata};
 use std::hash::{Hash, Hasher};
 use std::io;
 use std::io::{ErrorKind, Read, Seek, SeekFrom};
@@ -184,31 +184,14 @@ impl Display for FileLen {
 /// We don't want to keep unused metadata in memory.
 pub struct FileInfo {
     pub path: Path,
-    pub file_id: u64,
-    pub dev_id: u64,
     pub len: FileLen,
 }
 
 impl FileInfo {
-
-    #[cfg(unix)]
     fn for_file(path: Path, metadata: &Metadata) -> FileInfo {
         use std::os::unix::fs::MetadataExt;
         FileInfo {
             path,
-            file_id: metadata.ino(),
-            dev_id: metadata.dev(),
-            len: FileLen(metadata.len())
-        }
-    }
-
-    #[cfg(windows)]
-    fn from_metadata(path: PathBuf, metadata: &Metadata) -> FileInfo {
-        use std::os::windows::fs::MetadataExt;
-        FileInfo {
-            path,
-            file_id: metadata.file_index().expect(fmt!("Not a file: {}", path)),
-            dev_id: metadata.volume_serial_number().expect(fmt!("Not a file: {}", path)),
             len: FileLen(metadata.len())
         }
     }
@@ -231,6 +214,34 @@ pub fn file_info_or_log_err(file: Path, log: &Log) -> Option<FileInfo> {
             None
         }
     }
+}
+
+/// Useful for identifying files in presence of hardlinks
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+pub struct FileId {
+    pub inode: u64,
+    pub device: u64,
+}
+
+#[cfg(unix)]
+pub fn file_id(file: &Path) -> io::Result<FileId> {
+    use std::os::unix::fs::MetadataExt;
+    let metadata = std::fs::metadata(&file.to_path_buf())?;
+    Ok(FileId { inode: metadata.ino(), device: metadata.dev() })
+}
+
+#[cfg(unix)]
+pub fn file_id_or_log_err(file: &Path, log: &Log) -> Option<FileId> {
+    use std::os::unix::fs::MetadataExt;
+    match std::fs::metadata(&file.to_path_buf()) {
+        Ok(metadata) => Some(FileId { inode: metadata.ino(), device: metadata.dev() }),
+        Err(e) if e.kind() == ErrorKind::NotFound => None,
+        Err(e) => {
+            log.err(format!("Failed to read metadata of {}: {}", file.display(), e));
+            None
+        }
+    }
+
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
