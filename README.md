@@ -65,13 +65,36 @@ List more options:
     
 ## Supported Platforms
 The code has been tested only on Linux, but should be straightforward to 
-compile to other operating systems. PRs are welcome.     
+compile to other operating systems. Help testing / porting to other platforms is welcome.     
+        
     
 ## Building 
 1. [Install Rust](https://www.rust-lang.org/tools/install)
 2. Run `cargo build --release`
 
 The build will write the binary to `./target/release/fclones`. 
+    
+## The Algorithm
+Files are processed in several stages. Each stage except the last one is parallel, but 
+the previous stage must complete fully before the next one is started.
+1. Scan input files and filter files matching the selection criteria. Walk directories recursively if requested. 
+   Follow symbolic links if requested. For files that match the selection criteria, read their size.
+2. Group collected files by size by storing them in a hash-map. Remove groups smaller than the desired lower-bound 
+   (default 2). 
+3. In each group, remove duplicate files with the same inode id. The same file could be reached through different
+   paths when hardlinks are present. This step can be optionally skipped.
+4. For each remaining file, compute a 128-bit hash of a tiny block of initial data. Put files with different hashes 
+   into separate groups. Prune result groups if needed. 
+5. For each remaining file, compute a hash of a tiny block of data at the end of the file. 
+   Put files with different hashes into separate groups. Prune small groups if needed.
+6. For each remaining file, compute a hash of the whole contents of the file. Note that for small files
+   we might have already computed a full contents hash in step 4, therefore these files can be safely
+   omitted. Same as in steps 4 and 5, split groups and remove the ones that are too small.
+7. Write report to the stdout.          
+    
+Note that there is no byte-by-byte comparison of files anywhere. A fast but good 128-bit T1HA hash function
+is used and you don't need to worry about hash collisions. At 10^15 files, the probability of collision is
+0.000000001, without taking into account the requirement for the files to also match by size.
     
 ## Benchmarks
 
@@ -89,15 +112,18 @@ with `echo 3 > /proc/sys/vm/drop_caches`.
 ### Results
 Wall clock time and peak memory (RSS) were obtained from `/usr/bin/time -V` command.
 
-Program             | Command              | Cold Cache Time | Hot Cache Time | Peak Memory
---------------------|----------------------|----------------:|---------------:|-------------:
-fclones 0.1.0       | `fclones -R -t 32 ~` |   **0:31.01**   | 0:11.94        |  203 MB
-fclones 0.1.0       | `fclones -R ~`       |   0:56.70       | **0:11.57**    |  **150 MB**
-jdupes 1.14         | `jdupes -R ~`        |   5:19.08       | 3:26.42        |  386 MB
-rdfind 1.4.1        | `rdfind ~`           |   5:26.80       | 3:29.34        |  534 MB
-fdupes 1.6.1        | `fdupes -R ~`        |   7:48.82       | 6:25.02        |  393 MB
-fdupes-java 1.3.0  | `java -Dfdupes.parallelism=8 -jar fdupes-java-1.3.1.jar ~`  |   &gt; 20:00.00    |  | 4.2 GB |   
+Program      |  Version  | Language | Threads | Cold Cache Time | Hot Cache Time | Peak Memory
+-------------|-----------|----------|--------:|----------------:|---------------:|-------------:
+fclones      |  0.1.0    | Rust     | 32      | **0:31.01**     | 0:11.94        |  203 MB
+fclones      |  0.1.0    | Rust     | 8       |   0:56.70       | **0:11.57**    |  **150 MB**
+jdupes       |  1.14     | C        | 1       |   5:19.08       | 3:26.42        |  386 MB
+rdfind       |  1.4.1    | C++      | 1       |   5:26.80       | 3:29.34        |  534 MB
+fdupes       |  1.6.1    | C        | 1       |   7:48.82       | 6:25.02        |  393 MB
+fdupes-java  |  1.3.1    | Java     | 8       |   far too long  |                |  4.2 GB    
 
-`fdupes-java` did not finish the test, I interrupted it after 20 minutes.
+
+`fdupes-java` did not finish the test. I interrupted it after 20 minutes while
+it was still computing MD5 in stage 2/3. Unfortunately `fdupes-java` doesn't display
+a useful progress bar, so it is not possible to estimate how long it would take.
 
       
