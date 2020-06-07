@@ -277,7 +277,7 @@ impl Serialize for FileHash {
 }
 /// Size of the temporary buffer used for file read operations.
 /// There is one such buffer per thread.
-pub const BUF_LEN: usize = 8192;
+pub const BUF_LEN: usize = 64 * 1024;
 
 fn to_off_t(offset: u64) -> i64 {
     min(i64::MAX as u64, offset) as i64
@@ -298,15 +298,15 @@ fn fadvise(file: &File, offset: FilePos, len: FileLen, advice: PosixFadviseAdvic
 /// If we know we'll be reading just one buffer, non zero read-ahead would be a cache waste.
 /// On non-Unix systems, does nothing.
 /// Failures are not signalled to the caller, but a warning is printed to stderr.
-fn configure_readahead(file: &File, offset: FilePos, len: FileLen) {
+fn configure_readahead(file: &File, offset: FilePos, len: FileLen, cache_policy: Caching) {
     if cfg!(unix) {
         let advise = |advice: PosixFadviseAdvice| {
             fadvise(file, offset, len, advice)
         };
-        if len.0 <= BUF_LEN as u64 {
-            advise(PosixFadviseAdvice::POSIX_FADV_RANDOM)
-        } else {
-            advise(PosixFadviseAdvice::POSIX_FADV_SEQUENTIAL)
+        match cache_policy {
+            Caching::Default => {},
+            Caching::Random => advise(PosixFadviseAdvice::POSIX_FADV_RANDOM),
+            Caching::Sequential => advise(PosixFadviseAdvice::POSIX_FADV_SEQUENTIAL),
         };
     }
 }
@@ -336,11 +336,23 @@ fn evict_page_cache_if_low_mem(file: &mut File, len: FileLen) {
     }
 }
 
+/// Determines how page cache should be used when computing a file hash.
+#[derive(Debug, Copy, Clone)]
+pub enum Caching {
+    /// Don't send any special cache advice to the OS
+    Default,
+    /// Prefetch as much data as possible into cache, to speed up sequential access
+    Sequential,
+    /// Don't prefetch data into RAM, but keep read data in cache. Use when reading a tiny part
+    /// of the file.
+    Random,
+}
+
 /// Opens a file and positions it at the given offset.
 /// Additionally, sends the advice to the operating system about how many bytes will be read.
-fn open(path: &Path, offset: FilePos, len: FileLen) -> io::Result<File> {
+fn open(path: &Path, offset: FilePos, len: FileLen, cache_policy: Caching) -> io::Result<File> {
     let mut file = open_noatime(&path)?;
-    configure_readahead(&file, offset, len);
+    configure_readahead(&file, offset, len, cache_policy);
     if offset > FilePos::zero() {
         file.seek(offset.into())?;
     }
@@ -395,7 +407,7 @@ fn scan<F: FnMut(&[u8]) -> ()>(file: &mut File, len: FileLen, mut consumer: F) -
 ///
 /// # Example
 /// ```
-/// use fclones::files::{file_hash, FileLen, FilePos};
+/// use fclones::files::{file_hash, FileLen, FilePos, Caching};
 /// use fclones::path::Path;
 /// use std::io::Write;
 /// use std::fs::{File, create_dir_all};
@@ -408,17 +420,21 @@ fn scan<F: FnMut(&[u8]) -> ()>(file: &mut File, len: FileLen, mut consumer: F) -
 /// let file2 = test_root.join("file2");
 /// File::create(&file2).unwrap().write_all(b"Test file 2");
 ///
-/// let hash1 = file_hash(&Path::from(&file1), FilePos(0), FileLen::MAX, |_|{}).unwrap();
-/// let hash2 = file_hash(&Path::from(&file2), FilePos(0), FileLen::MAX, |_|{}).unwrap();
-/// let hash3 = file_hash(&Path::from(&file2), FilePos(0), FileLen(8), |_|{}).unwrap();
+/// let hash1 = file_hash(&Path::from(&file1), FilePos(0), FileLen::MAX, Caching::Default, |_|{}).unwrap();
+/// let hash2 = file_hash(&Path::from(&file2), FilePos(0), FileLen::MAX, Caching::Default, |_|{}).unwrap();
+/// let hash3 = file_hash(&Path::from(&file2), FilePos(0), FileLen(8), Caching::Default, |_|{}).unwrap();
 /// assert_ne!(hash1, hash2);
 /// assert_ne!(hash2, hash3);
 /// ```
-pub fn file_hash(path: &Path, offset: FilePos, len: FileLen, progress: impl Fn(usize))
-    -> io::Result<FileHash>
+pub fn file_hash(path: &Path,
+                 offset: FilePos,
+                 len: FileLen,
+                 cache_policy: Caching,
+                 progress: impl Fn(usize))
+                 -> io::Result<FileHash>
 {
     let mut hasher = Hasher128::new();
-    let mut file = open(path, offset, len)?;
+    let mut file = open(path, offset, len, cache_policy)?;
     scan(&mut file, len, |buf| {
         let mut block_hasher = Hasher128::new();
         block_hasher.write(buf);
@@ -435,11 +451,12 @@ pub fn file_hash_or_log_err(
     path: &Path,
     offset: FilePos,
     len: FileLen,
+    caching: Caching,
     progress: impl Fn(usize),
     log: &Log)
     -> Option<FileHash>
 {
-    match file_hash(path, offset, len, progress) {
+    match file_hash(path, offset, len, caching, progress) {
         Ok(hash) => Some(hash),
         Err(e) if e.kind() == ErrorKind::NotFound =>
             None,

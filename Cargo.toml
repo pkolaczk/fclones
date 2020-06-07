@@ -1,7 +1,7 @@
 [package]
 name = "fclones"
 description = "Finds duplicate, unique, under- or over-replicated files"
-version = "0.1.0"
+version = "0.1.1"
 authors = ["Piotr Kołaczkowski <pkolaczk@gmail.com>"]
 edition = "2018"
 license = "MIT"

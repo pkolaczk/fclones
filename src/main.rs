@@ -21,8 +21,8 @@ use fclones::walk::Walk;
 use indoc::indoc;
 
 const MIN_PREFIX_LEN: FileLen = FileLen(4096);
-const MAX_PREFIX_LEN: FileLen = FileLen(2 * MIN_PREFIX_LEN.0);
-const SUFFIX_LEN: FileLen = FileLen(4096);
+const MAX_PREFIX_LEN: FileLen = FileLen(4 * MIN_PREFIX_LEN.0);
+const SUFFIX_LEN: FileLen = MIN_PREFIX_LEN;
 
 
 struct AppCtx<'a> {
@@ -159,7 +159,8 @@ fn group_by_prefix(ctx: &mut AppCtx, groups: Vec<FileGroup>) -> Vec<FileGroup> {
     let groups: Vec<_> = groups.split(rf_over + 1, |len, _hash, path| {
         progress.tick();
         let prefix_len = if len <= MAX_PREFIX_LEN { len } else { MIN_PREFIX_LEN };
-        file_hash_or_log_err(path, FilePos(0), prefix_len, |_| {}, &ctx.log)
+        let caching = if len <= MAX_PREFIX_LEN { Caching::Default } else { Caching::Random };
+        file_hash_or_log_err(path, FilePos(0), prefix_len, caching, |_| {}, &ctx.log)
     });
 
     let count = groups.selected_count(rf_over, rf_under);
@@ -184,7 +185,12 @@ fn group_by_suffix(ctx: &mut AppCtx, groups: Vec<FileGroup>) -> Vec<FileGroup>
     let groups: Vec<_> = groups.split(rf_over + 1, |len, hash, path| {
         if (needs_processing)(len) {
             progress.tick();
-            file_hash_or_log_err(path, (len - SUFFIX_LEN).as_pos(), SUFFIX_LEN, |_|{}, &ctx.log)
+            file_hash_or_log_err(
+                path,
+                (len - SUFFIX_LEN).as_pos(),
+                SUFFIX_LEN,
+                Caching::Default,
+                |_| {}, &ctx.log)
         } else {
             hash
         }
@@ -208,7 +214,13 @@ fn group_by_contents(ctx: &mut AppCtx, groups: Vec<FileGroup>) -> Vec<FileGroup>
 
     let groups: Vec<_> = groups.split(rf_over + 1, |len, hash, path| {
         if (needs_processing)(len) {
-            file_hash_or_log_err(path, FilePos(0), len, |delta| progress.inc(delta), &ctx.log)
+            file_hash_or_log_err(
+                path,
+                FilePos(0),
+                len,
+                Caching::Sequential,
+                |delta| progress.inc(delta),
+                &ctx.log)
         } else {
             hash
         }
