@@ -20,10 +20,10 @@ arg_enum! {
 }
 
 
-/// Searches filesystem(s) and reports over- or under-replicated files
+/// Finds duplicate, unique, under- or over-replicated files
 #[derive(Debug, StructOpt)]
 #[structopt(
-name = "File Clones Finder",
+name = "File Clones",
 setting(AppSettings::ColoredHelp),
 setting(AppSettings::DeriveDisplayOrder),
 )]

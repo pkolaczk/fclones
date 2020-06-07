@@ -1,9 +1,11 @@
 [package]
 name = "fclones"
-description = "File Clones Finder"
+description = "Finds duplicate, unique, under- or over-replicated files"
 version = "0.1.0"
 authors = ["Piotr Kołaczkowski <pkolaczk@gmail.com>"]
 edition = "2018"
+license = "MIT"
+readme = "README.md"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
@@ -32,3 +34,21 @@ thread_local = "1.0.1"
 [target.'cfg(unix)'.dependencies]
 nix = "0.17.0"
 libc = "0.2.69"
+
+[package.metadata.deb]
+maintainer = "Piotr Kołaczkowski <pkolaczk@gmail.com>"
+copyright = "2020, Piotr Kołaczkowski <pkolaczk@gmail.com>"
+license-file = ["LICENSE", "4"]
+extended-description = """\
+A simple command-line utility program that finds duplicate, unique, under- or over-replicated files.\
+Contrary to fdupes or rdfind, fclones processes files in parallel, which makes it very efficient on SSDs.
+fclones communicates through standard Unix streams and it can write reports in human- and machine-friendly formats,
+therefore you can easily combine it with other tools.
+"""
+depends = "$auto"
+section = "utility"
+priority = "optional"
+assets = [
+    ["target/release/fclones", "usr/bin/", "755"],
+    ["README.md", "usr/share/doc/fclones/README", "644"],
+]
