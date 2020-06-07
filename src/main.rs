@@ -19,7 +19,6 @@ use fclones::pattern::ESCAPE_CHAR;
 use fclones::report::Reporter;
 use fclones::walk::Walk;
 use indoc::indoc;
-use std::sync::Mutex;
 
 const MIN_PREFIX_LEN: FileLen = FileLen(4096);
 const MAX_PREFIX_LEN: FileLen = FileLen(2 * MIN_PREFIX_LEN.0);

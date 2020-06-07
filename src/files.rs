@@ -1,7 +1,7 @@
 use core::fmt;
 use std::cmp::min;
 use std::fmt::Display;
-use std::fs::{File, Metadata, OpenOptions, metadata};
+use std::fs::{File, Metadata, OpenOptions};
 use std::hash::{Hash, Hasher};
 use std::io;
 use std::io::{ErrorKind, Read, Seek, SeekFrom};
@@ -189,7 +189,6 @@ pub struct FileInfo {
 
 impl FileInfo {
     fn for_file(path: Path, metadata: &Metadata) -> FileInfo {
-        use std::os::unix::fs::MetadataExt;
         FileInfo {
             path,
             len: FileLen(metadata.len())
