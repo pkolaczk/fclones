@@ -41,13 +41,18 @@ fn configure_thread_pool(parallelism: usize) {
 
 /// Unless `duplicate_links` is set to true,
 /// remove duplicated `FileInfo` entries with the same inode and device id from the list.
-fn prune_links_if_needed(ctx: &AppCtx, files: Vec<Path>) -> Vec<Path> {
+fn prune_links_if_needed(ctx: &AppCtx, files: Vec<FileInfoNoLen>) -> Vec<FileInfoNoLen> {
     if ctx.config.no_prune_links {
+        files
+    } else if files.iter().unique_by(|i| i.id_hash).count() == files.len() {
         files
     } else {
         files
             .into_iter()
-            .unique_by(|path| file_id_or_log_err(&path, &ctx.log))
+            // need to unpack the struct before accessing path reference
+            .map(|i| (i.path, i.id_hash))
+            .unique_by(|(p, _)| file_id_or_log_err(p, &ctx.log))
+            .map(|(path, id_hash)| FileInfoNoLen { path, id_hash })
             .collect()
     }
 }
@@ -75,7 +80,7 @@ fn scan_files(ctx: &mut AppCtx) -> Vec<Vec<FileInfo>> {
     walk.run(ctx.config.input_paths(), |path| {
         file_info_or_log_err(path, &ctx.log)
             .into_iter()
-            .filter(|info| info.len >= min_size && info.len <= max_size)
+            .filter(|info| { let l = info.len; l >= min_size && l <= max_size })
             .for_each(|info| {
                 let vec = file_collector.get_or(|| RefCell::new(Vec::new()));
                 vec.borrow_mut().push(info);
@@ -94,12 +99,12 @@ fn scan_files(ctx: &mut AppCtx) -> Vec<Vec<FileInfo>> {
     files
 }
 
-fn group_by_size(ctx: &mut AppCtx, files: Vec<Vec<FileInfo>>) -> Vec<FileGroup> {
+fn group_by_size(ctx: &mut AppCtx, files: Vec<Vec<FileInfo>>) -> Vec<FileGroup<FileInfoNoLen>> {
     let file_count: usize = files.iter().map(|v| v.len()).sum();
     let progress = ctx.log.progress_bar(
         "[2/7] Grouping by size", file_count as u64);
 
-    let mut groups = GroupMap::new(|info: FileInfo| (info.len, info.path));
+    let mut groups = GroupMap::new(|info: FileInfo| (info.len, info.drop_len()));
     for files in files.into_iter() {
         for file in files.into_iter() {
             progress.tick();
@@ -121,10 +126,20 @@ fn group_by_size(ctx: &mut AppCtx, files: Vec<Vec<FileInfo>>) -> Vec<FileGroup> 
     groups
 }
 
-fn prune_hard_links(ctx: &mut AppCtx, groups: Vec<FileGroup>) -> Vec<FileGroup> {
-    if ctx.config.no_prune_links {
-        return groups;
+fn to_group_of_paths(f: FileGroup<FileInfoNoLen>) -> FileGroup<Path> {
+    FileGroup {
+        len: f.len,
+        hash: None,
+        files: f.files.into_iter().map(|i| i.path).collect()
     }
+}
+
+/// Drops file id hashes from file info and returns groups of paths
+fn drop_hard_link_info(groups: Vec<FileGroup<FileInfoNoLen>>) -> Vec<FileGroup<Path>> {
+    groups.into_par_iter().map(to_group_of_paths).collect()
+}
+
+fn prune_hard_links(ctx: &mut AppCtx, groups: Vec<FileGroup<FileInfoNoLen>>) -> Vec<FileGroup<Path>> {
 
     let file_count: usize = groups.total_count();
     let progress = ctx.log.progress_bar(
@@ -136,8 +151,12 @@ fn prune_hard_links(ctx: &mut AppCtx, groups: Vec<FileGroup>) -> Vec<FileGroup> 
     let groups: Vec<_> = groups
         .into_par_iter()
         .inspect(|g| progress.inc(g.files.len()))
-        .map(|mut g| { g.files = prune_links_if_needed(&ctx, g.files); g })
+        .map(|mut g| {
+            g.files = prune_links_if_needed(&ctx, g.files);
+            g
+        })
         .filter(|g| g.files.len() >= rf_over)
+        .map(to_group_of_paths)
         .collect();
 
     let count: usize = groups.selected_count(rf_over, rf_under);
@@ -146,7 +165,7 @@ fn prune_hard_links(ctx: &mut AppCtx, groups: Vec<FileGroup>) -> Vec<FileGroup> 
     groups
 }
 
-fn group_by_prefix(ctx: &mut AppCtx, groups: Vec<FileGroup>) -> Vec<FileGroup> {
+fn group_by_prefix(ctx: &mut AppCtx, groups: Vec<FileGroup<Path>>) -> Vec<FileGroup<Path>> {
     let remaining_files = groups.iter()
         .filter(|g| g.files.len() > 1)
         .total_count();
@@ -169,7 +188,7 @@ fn group_by_prefix(ctx: &mut AppCtx, groups: Vec<FileGroup>) -> Vec<FileGroup> {
     groups
 }
 
-fn group_by_suffix(ctx: &mut AppCtx, groups: Vec<FileGroup>) -> Vec<FileGroup>
+fn group_by_suffix(ctx: &mut AppCtx, groups: Vec<FileGroup<Path>>) -> Vec<FileGroup<Path>>
 {
     let needs_processing = |len: FileLen| len >= MAX_PREFIX_LEN + SUFFIX_LEN;
     let remaining_files = groups.iter()
@@ -202,7 +221,7 @@ fn group_by_suffix(ctx: &mut AppCtx, groups: Vec<FileGroup>) -> Vec<FileGroup>
     groups
 }
 
-fn group_by_contents(ctx: &mut AppCtx, groups: Vec<FileGroup>) -> Vec<FileGroup>
+fn group_by_contents(ctx: &mut AppCtx, groups: Vec<FileGroup<Path>>) -> Vec<FileGroup<Path>>
 {
     let needs_processing = |len: FileLen| len >= MAX_PREFIX_LEN;
     let bytes_to_scan = groups.iter()
@@ -232,7 +251,7 @@ fn group_by_contents(ctx: &mut AppCtx, groups: Vec<FileGroup>) -> Vec<FileGroup>
     groups
 }
 
-fn write_report(ctx: &mut AppCtx, groups: &mut Vec<FileGroup>) {
+fn write_report(ctx: &mut AppCtx, groups: &mut Vec<FileGroup<Path>>) {
     let stdout = Term::stdout();
     let remaining_files = groups.total_count();
     let progress = ctx.log.progress_bar(
@@ -298,7 +317,12 @@ fn main() {
 
     let matching_files = scan_files(&mut ctx);
     let size_groups = group_by_size(&mut ctx, matching_files);
-    let size_groups_pruned = prune_hard_links(&mut ctx, size_groups);
+    let size_groups_pruned =
+        if ctx.config.no_prune_links {
+            drop_hard_link_info(size_groups)
+        } else {
+            prune_hard_links(&mut ctx, size_groups)
+        };
     let prefix_groups = group_by_prefix(&mut ctx, size_groups_pruned);
     let suffix_groups = group_by_suffix(&mut ctx, prefix_groups);
     let mut contents_groups= group_by_contents(&mut ctx, suffix_groups);

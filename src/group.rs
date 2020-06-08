@@ -7,7 +7,6 @@ use rayon::iter::{IntoParallelIterator, ParallelIterator};
 use serde::*;
 
 use crate::files::{FileHash, FileLen};
-use crate::path::Path;
 
 /// Groups items by key.
 /// After all items have been added, this structure can be transformed into
@@ -87,12 +86,11 @@ impl<T, K, V, F> IntoIterator for GroupMap<T, K, V, F>
 
 /// Represents a group of files that have something in common, e.g. same size or same hash
 #[derive(Serialize, Debug)]
-pub struct FileGroup {
+pub struct FileGroup<F> {
     pub len: FileLen,
     pub hash: Option<FileHash>,
-    pub files: Vec<Path>
+    pub files: Vec<F>
 }
-
 
 /// Computes metrics for reporting summaries of each processing stage.
 pub trait GroupedFileSetMetrics {
@@ -115,8 +113,9 @@ pub trait GroupedFileSetMetrics {
 }
 
 
-impl<'a, I> GroupedFileSetMetrics for I
-    where I: IntoIterator<Item=&'a FileGroup> + 'a
+impl<'a, I, F> GroupedFileSetMetrics for I
+    where I: IntoIterator<Item=&'a FileGroup<F>> + 'a,
+          F: 'a
 {
     fn total_count(self) -> usize {
         self.into_iter().map(|g| g.files.len()).sum()
@@ -184,12 +183,13 @@ pub trait SplitGroups<G, H> {
     fn split(self, min_group_size: usize, hash: H) -> Vec<G>;
 }
 
-impl<H> SplitGroups<FileGroup, H> for Vec<FileGroup>
-    where H: Fn(FileLen, Option<FileHash>, &Path) -> Option<FileHash> + Sync + Send
+impl<H, F> SplitGroups<FileGroup<F>, H> for Vec<FileGroup<F>>
+    where H: Fn(FileLen, Option<FileHash>, &F) -> Option<FileHash> + Sync + Send,
+          F: Send
 {
-    fn split(self, min_group_size: usize, hash: H) -> Vec<FileGroup> {
+    fn split(self, min_group_size: usize, hash: H) -> Vec<FileGroup<F>> {
         self.into_par_iter()
-            .flat_map(|g: FileGroup| {
+            .flat_map(|g: FileGroup<F>| {
                 if g.files.len() <= 1 {
                     vec![g]
                 } else {
@@ -201,20 +201,21 @@ impl<H> SplitGroups<FileGroup, H> for Vec<FileGroup>
     }
 }
 
-fn split_single<H>(g: FileGroup, hash: &H) -> Vec<FileGroup>
-where H: Fn(FileLen, Option<FileHash>, &Path) -> Option<FileHash> + Sync + Send
+fn split_single<H, F>(g: FileGroup<F>, hash: &H) -> Vec<FileGroup<F>>
+    where H: Fn(FileLen, Option<FileHash>, &F) -> Option<FileHash> + Sync + Send,
+          F: Send
 {
     let file_len = g.len;
     let file_hash = g.hash;
     let mut hashed = g.files
         .into_par_iter()
-        .filter_map(|p: Path| (hash)(file_len, file_hash, &p).map(|h: FileHash| (h, p)))
+        .filter_map(|f: F| (hash)(file_len, file_hash, &f).map(|h: FileHash| (h, f)))
         .collect::<Vec<_>>();
 
     hashed.sort_by_key(|(h, _p)| h.0);
     hashed
         .into_iter()
-        .group_by(|(h, _p)| *h)
+        .group_by(|(h, _)| *h)
         .into_iter()
         .map(|(hash, group)| FileGroup {
             len: file_len,

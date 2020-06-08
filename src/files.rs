@@ -8,12 +8,14 @@ use std::io::{ErrorKind, Read, Seek, SeekFrom};
 use std::iter::Sum;
 use std::ops::{Add, Mul, Sub};
 #[cfg(unix)]
+use std::os::unix::fs::MetadataExt;
+#[cfg(unix)]
 use std::os::unix::fs::OpenOptionsExt;
 #[cfg(unix)]
 use std::os::unix::io::*;
 
 use bytesize::ByteSize;
-use fasthash::{FastHasher, HasherExt, t1ha2::Hasher128};
+use fasthash::{FastHasher, HasherExt, Murmur3Hasher, t1ha2::Hasher128};
 #[cfg(unix)]
 use nix::fcntl::*;
 use serde::*;
@@ -182,17 +184,31 @@ impl Display for FileLen {
 
 /// Keeps metadata of the file that we are interested in.
 /// We don't want to keep unused metadata in memory.
+#[repr(packed(4))]
 pub struct FileInfo {
     pub path: Path,
     pub len: FileLen,
+    pub id_hash: u32,
+}
+
+/// An even more packed file information, without length
+#[repr(packed(4))]
+pub struct FileInfoNoLen {
+    pub path: Path,
+    pub id_hash: u32
 }
 
 impl FileInfo {
     fn for_file(path: Path, metadata: &Metadata) -> FileInfo {
         FileInfo {
             path,
-            len: FileLen(metadata.len())
+            len: FileLen(metadata.len()),
+            id_hash: FileId { inode: metadata.ino(), device: metadata.dev() }.hash()
         }
+    }
+    /// Removes the length field from the information and returns a smaller structure
+    pub fn drop_len(self) -> FileInfoNoLen {
+        FileInfoNoLen { path: self.path, id_hash: self.id_hash }
     }
 }
 
@@ -222,16 +238,23 @@ pub struct FileId {
     pub device: u64,
 }
 
+impl FileId {
+    pub fn hash(&self) -> u32 {
+        let mut hasher: Murmur3Hasher = Default::default();
+        self.inode.hash(&mut hasher);
+        self.device.hash(&mut hasher);
+        hasher.finish() as u32
+    }
+}
+
 #[cfg(unix)]
 pub fn file_id(file: &Path) -> io::Result<FileId> {
-    use std::os::unix::fs::MetadataExt;
     let metadata = std::fs::metadata(&file.to_path_buf())?;
     Ok(FileId { inode: metadata.ino(), device: metadata.dev() })
 }
 
 #[cfg(unix)]
 pub fn file_id_or_log_err(file: &Path, log: &Log) -> Option<FileId> {
-    use std::os::unix::fs::MetadataExt;
     match std::fs::metadata(&file.to_path_buf()) {
         Ok(metadata) => Some(FileId { inode: metadata.ino(), device: metadata.dev() }),
         Err(e) if e.kind() == ErrorKind::NotFound => None,
@@ -277,7 +300,7 @@ impl Serialize for FileHash {
 }
 /// Size of the temporary buffer used for file read operations.
 /// There is one such buffer per thread.
-pub const BUF_LEN: usize = 64 * 1024;
+pub const BUF_LEN: usize = 16 * 1024;
 
 fn to_off_t(offset: u64) -> i64 {
     min(i64::MAX as u64, offset) as i64

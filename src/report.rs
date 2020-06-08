@@ -7,6 +7,7 @@ use console::style;
 use crate::group::FileGroup;
 use crate::progress::FastProgressBar;
 use serde::{Serialize, Serializer};
+use crate::path::Path;
 
 pub struct Reporter<W: Write> {
     out: W,
@@ -31,7 +32,7 @@ impl<W: Write> Reporter<W> {
     ///     ...
     ///     <path N>
     /// ```
-    pub fn write_as_text(&mut self, results: &Vec<FileGroup>) -> io::Result<()> {
+    pub fn write_as_text(&mut self, results: &Vec<FileGroup<Path>>) -> io::Result<()> {
         for g in results {
             let len = style(format!("{:8}", g.len)).yellow().bold();
             let hash =
@@ -56,7 +57,7 @@ impl<W: Write> Reporter<W> {
     /// - file hash (may be empty)
     /// - number of files in the group
     /// - file paths - each file in a separate column
-    pub fn write_as_csv(&mut self, results: &Vec<FileGroup>) -> io::Result<()> {
+    pub fn write_as_csv(&mut self, results: &Vec<FileGroup<Path>>) -> io::Result<()> {
         let mut wtr = csv::WriterBuilder::new()
             .delimiter(b',')
             .quote_style(csv::QuoteStyle::Necessary)
@@ -99,7 +100,7 @@ impl<W: Write> Reporter<W> {
     ///   }
     /// ]
     /// ```
-    pub fn write_as_json(&mut self, results: &Vec<FileGroup>) -> io::Result<()> {
+    pub fn write_as_json(&mut self, results: &Vec<FileGroup<Path>>) -> io::Result<()> {
         let wrapper = VecWrapper { vec: results, progress: self.progress.as_ref() };
         serde_json::to_writer_pretty(&mut self.out, &wrapper)?;
         Ok(())
@@ -112,7 +113,7 @@ struct VecWrapper<'a, T> {
     progress: &'a FastProgressBar
 }
 
-impl Serialize for VecWrapper<'_, FileGroup> {
+impl Serialize for VecWrapper<'_, FileGroup<Path>> {
     fn serialize<S>(&self, serializer: S) -> Result<<S as Serializer>::Ok, <S as Serializer>::Error>
         where S: Serializer
     {
