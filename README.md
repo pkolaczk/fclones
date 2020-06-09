@@ -112,14 +112,14 @@ with `echo 3 > /proc/sys/vm/drop_caches`.
 ### Results
 Wall clock time and peak memory (RSS) were obtained from `/usr/bin/time -V` command.
 
-Program      |  Version  | Language | Threads | Cold Cache Time | Hot Cache Time | Peak Memory
--------------|-----------|----------|--------:|----------------:|---------------:|-------------:
-fclones      |  0.1.0    | Rust     | 32      | **0:31.01**     | 0:11.94        |  203 MB
-fclones      |  0.1.0    | Rust     | 8       |   0:56.70       | **0:11.57**    |  **150 MB**
-jdupes       |  1.14     | C        | 1       |   5:19.08       | 3:26.42        |  386 MB
-rdfind       |  1.4.1    | C++      | 1       |   5:26.80       | 3:29.34        |  534 MB
-fdupes       |  1.6.1    | C        | 1       |   7:48.82       | 6:25.02        |  393 MB
-fdupes-java  |  1.3.1    | Java     | 8       |   far too long  |                |  4.2 GB    
+Program                                                |  Version  | Language | Threads | Cold Cache Time | Hot Cache Time | Peak Memory
+-------------------------------------------------------|-----------|----------|--------:|----------------:|---------------:|-------------:
+fclones                                                |  0.1.0    | Rust     | 32      | **0:31.01**     | 0:11.94        |  203 MB
+fclones                                                |  0.1.0    | Rust     | 8       |   0:56.70       | **0:11.57**    |  **150 MB**
+[jdupes](https://github.com/jbruchon/jdupes)           |  1.14     | C        | 1       |   5:19.08       | 3:26.42        |  386 MB
+[rdfind](https://github.com/pauldreik/rdfind)          |  1.4.1    | C++      | 1       |   5:26.80       | 3:29.34        |  534 MB
+[fdupes](https://github.com/adrianlopezroche/fdupes)   |  1.6.1    | C        | 1       |   7:48.82       | 6:25.02        |  393 MB
+[fdupes-java](https://github.com/cbismuth/fdupes-java) |  1.3.1    | Java     | 8       |   far too long  |                |  4.2 GB    
 
 
 `fdupes-java` did not finish the test. I interrupted it after 20 minutes while
