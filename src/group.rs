@@ -224,11 +224,3 @@ fn split_single<H, F>(g: FileGroup<F>, hash: &H) -> Vec<FileGroup<F>>
         })
         .collect()
 }
-
-#[cfg(test)]
-mod test {
-
-
-
-
-}

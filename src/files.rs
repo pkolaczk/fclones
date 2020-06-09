@@ -40,7 +40,7 @@ impl FilePos {
 
 impl Display for FilePos {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        write!(f, "{:x}", self.0)
+        write!(f, "{}", self.0)
     }
 }
 
@@ -105,7 +105,7 @@ impl Sub<FileLen> for FilePos {
 /// use fclones::files::{FileLen, FilePos};
 /// assert_eq!(FilePos(1000) + FileLen(64), FilePos(1064));
 /// ```
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, Serialize)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, Serialize, Default)]
 pub struct FileLen(pub u64);
 
 impl FileLen {

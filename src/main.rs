@@ -25,9 +25,9 @@ const MAX_PREFIX_LEN: FileLen = FileLen(4 * MIN_PREFIX_LEN.0);
 const SUFFIX_LEN: FileLen = MIN_PREFIX_LEN;
 
 
-struct AppCtx<'a> {
-    config: &'a Config,
-    log: &'a mut Log,
+struct AppCtx {
+    config: Config,
+    log: Log,
 }
 
 
@@ -65,7 +65,7 @@ fn scan_files(ctx: &mut AppCtx) -> Vec<Vec<FileInfo>> {
     let spinner = ctx.log.spinner("[1/7] Scanning files");
     let spinner_tick = &|_: &Path| { spinner.tick() };
 
-    let config = ctx.config;
+    let config = &ctx.config;
     let min_size = config.min_size;
     let max_size = config.max_size.unwrap_or(FileLen::MAX);
 
@@ -122,7 +122,7 @@ fn group_by_size(ctx: &mut AppCtx, files: Vec<Vec<FileInfo>>) -> Vec<FileGroup<F
 
     let count: usize = groups.selected_count(rf_over, rf_under);
     let bytes: FileLen = groups.selected_size(rf_over, rf_under);
-    ctx.log.info(format!("Found {} ({}) candidates by grouping by size", count, bytes));
+    ctx.log.info(format!("Found {} ({}) candidates after grouping by size", count, bytes));
     groups
 }
 
@@ -184,13 +184,13 @@ fn group_by_prefix(ctx: &mut AppCtx, groups: Vec<FileGroup<Path>>) -> Vec<FileGr
 
     let count = groups.selected_count(rf_over, rf_under);
     let bytes = groups.selected_size(rf_over, rf_under);
-    ctx.log.info(format!("Found {} ({}) candidates by grouping by prefix", count, bytes));
+    ctx.log.info(format!("Found {} ({}) candidates after grouping by prefix", count, bytes));
     groups
 }
 
 fn group_by_suffix(ctx: &mut AppCtx, groups: Vec<FileGroup<Path>>) -> Vec<FileGroup<Path>>
 {
-    let needs_processing = |len: FileLen| len >= MAX_PREFIX_LEN + SUFFIX_LEN;
+    let needs_processing = |len: FileLen| len >= MAX_PREFIX_LEN + SUFFIX_LEN * 2;
     let remaining_files = groups.iter()
         .filter(|&g| (needs_processing)(g.len) && g.files.len() > 1)
         .total_count();
@@ -217,7 +217,7 @@ fn group_by_suffix(ctx: &mut AppCtx, groups: Vec<FileGroup<Path>>) -> Vec<FileGr
 
     let count = groups.selected_count(rf_over, rf_under);
     let bytes = groups.selected_size(rf_over, rf_under);
-    ctx.log.info(format!("Found {} ({}) candidates by grouping by suffix", count, bytes));
+    ctx.log.info(format!("Found {} ({}) candidates after grouping by suffix", count, bytes));
     groups
 }
 
@@ -256,10 +256,6 @@ fn write_report(ctx: &mut AppCtx, groups: &mut Vec<FileGroup<Path>>) {
     let remaining_files = groups.total_count();
     let progress = ctx.log.progress_bar(
         "[7/7] Writing report", remaining_files as u64);
-
-    groups.retain(|g| g.files.len() < ctx.config.rf_under());
-    groups.par_sort_by_key(|g| Reverse(g.len));
-    groups.par_iter_mut().for_each(|g| g.files.sort());
 
     // No progress bar when we write to terminal
     if stdout.is_term() {
@@ -311,10 +307,16 @@ fn main() {
     let config: Config = Config::from_clap(&clap.get_matches());
 
     configure_thread_pool(config.threads);
-    
-    let mut log = Log::new();
-    let mut ctx = AppCtx { log: &mut log, config: &config };
 
+    let log = Log::new();
+    let mut ctx = AppCtx { log, config };
+
+    let mut contents_groups = process(&mut ctx);
+    write_report(&mut ctx, &mut contents_groups)
+}
+
+// Extracted for testing
+fn process(mut ctx: &mut AppCtx) -> Vec<FileGroup<Path>> {
     let matching_files = scan_files(&mut ctx);
     let size_groups = group_by_size(&mut ctx, matching_files);
     let size_groups_pruned =
@@ -325,6 +327,169 @@ fn main() {
         };
     let prefix_groups = group_by_prefix(&mut ctx, size_groups_pruned);
     let suffix_groups = group_by_suffix(&mut ctx, prefix_groups);
-    let mut contents_groups= group_by_contents(&mut ctx, suffix_groups);
-    write_report(&mut ctx, &mut contents_groups)
+    let mut contents_groups = group_by_contents(&mut ctx, suffix_groups);
+    contents_groups.retain(|g| g.files.len() < ctx.config.rf_under());
+    contents_groups.par_sort_by_key(|g| Reverse(g.len));
+    contents_groups.par_iter_mut().for_each(|g| g.files.sort());
+    contents_groups
+}
+
+
+#[cfg(test)]
+mod test {
+    use std::io::Write;
+    use std::path::PathBuf;
+
+    use fclones::path::Path;
+    use fclones::util::test::*;
+
+    use super::*;
+    use std::fs::{OpenOptions, hard_link};
+
+    #[test]
+    fn identical_small_files() {
+        with_dir("target/test/main/identical_small_files", |root| {
+            let file1 = root.join("file1");
+            let file2 = root.join("file2");
+            write_test_file(&file1, b"aaa", b"", b"");
+            write_test_file(&file2, b"aaa", b"", b"");
+
+            let mut ctx = test_ctx();
+            ctx.config.paths = vec![file1, file2];
+            let results = process(&mut ctx);
+            assert_eq!(results.len(), 1);
+            assert_eq!(results[0].len, FileLen(3));
+            assert_eq!(results[0].files.len(), 2);
+        });
+    }
+
+    #[test]
+    fn identical_large_files() {
+        with_dir("target/test/main/identical_large_files", |root| {
+            let file1 = root.join("file1");
+            let file2 = root.join("file2");
+            write_test_file(&file1, &[0; MAX_PREFIX_LEN.0 as usize], &[1; 4096], &[2; 4096]);
+            write_test_file(&file2, &[0; MAX_PREFIX_LEN.0 as usize], &[1; 4096], &[2; 4096]);
+
+            let mut ctx = test_ctx();
+            ctx.config.paths = vec![file1, file2];
+
+            let results = process(&mut ctx);
+            assert_eq!(results.len(), 1);
+            assert_eq!(results[0].files.len(), 2);
+        });
+    }
+
+    #[test]
+    fn files_differing_by_size() {
+        with_dir("target/test/main/files_differing_by_size", |root| {
+            let file1 = root.join("file1");
+            let file2 = root.join("file2");
+            write_test_file(&file1, b"aaaa", b"", b"");
+            write_test_file(&file2, b"aaa", b"", b"");
+
+            let mut ctx = test_ctx();
+            ctx.config.paths = vec![file1.clone(), file2.clone()];
+            ctx.config.rf_over = Some(0);
+
+            let results = process(&mut ctx);
+            assert_eq!(results.len(), 2);
+            assert_eq!(results[0].files, vec![Path::from(file1.canonicalize().unwrap())]);
+            assert_eq!(results[1].files, vec![Path::from(file2.canonicalize().unwrap())]);
+        });
+    }
+
+    #[test]
+    fn files_differing_by_prefix() {
+        with_dir("target/test/main/files_differing_by_prefix", |root| {
+            let file1 = root.join("file1");
+            let file2 = root.join("file2");
+            write_test_file(&file1, b"aaa", b"", b"");
+            write_test_file(&file2, b"bbb", b"", b"");
+
+            let mut ctx = test_ctx();
+            ctx.config.paths = vec![file1.clone(), file2.clone()];
+            ctx.config.unique = true;
+
+            let results = process(&mut ctx);
+            assert_eq!(results.len(), 2);
+            assert_eq!(results[0].files.len(), 1);
+            assert_eq!(results[1].files.len(), 1);
+        });
+    }
+
+    #[test]
+    fn files_differing_by_suffix() {
+        with_dir("target/test/main/files_differing_by_suffix", |root| {
+            let file1 = root.join("file1");
+            let file2 = root.join("file2");
+            let prefix = [0; MAX_PREFIX_LEN.0 as usize];
+            let mid = [1; (MAX_PREFIX_LEN.0 + 2 * SUFFIX_LEN.0) as usize];
+            write_test_file(&file1, &prefix, &mid, b"suffix1");
+            write_test_file(&file2, &prefix, &mid, b"suffix2");
+
+            let mut ctx = test_ctx();
+            ctx.config.paths = vec![file1.clone(), file2.clone()];
+            ctx.config.unique = true;
+
+            let results = process(&mut ctx);
+            assert_eq!(results.len(), 2);
+            assert_eq!(results[0].files.len(), 1);
+            assert_eq!(results[1].files.len(), 1);
+        });
+    }
+
+    #[test]
+    fn files_differing_by_middle() {
+        with_dir("target/test/main/files_differing_by_middle", |root| {
+            let file1 = root.join("file1");
+            let file2 = root.join("file2");
+            let prefix = [0; MAX_PREFIX_LEN.0 as usize];
+            let suffix = [1; (SUFFIX_LEN.0 * 2) as usize];
+            write_test_file(&file1, &prefix, b"middle1", &suffix);
+            write_test_file(&file2, &prefix, b"middle2", &suffix);
+
+            let mut ctx = test_ctx();
+            ctx.config.paths = vec![file1.clone(), file2.clone()];
+            ctx.config.unique = true;
+
+            let results = process(&mut ctx);
+            assert_eq!(results.len(), 2);
+            assert_eq!(results[0].files.len(), 1);
+            assert_eq!(results[1].files.len(), 1);
+        });
+    }
+
+
+    #[test]
+    fn hard_links() {
+        with_dir("target/test/main/hard_links", |root| {
+            let file1 = root.join("file1");
+            let file2 = root.join("file2");
+            write_test_file(&file1, b"aaa", b"", b"");
+            hard_link(&file1, &file2).unwrap();
+
+            let mut ctx = test_ctx();
+            ctx.config.paths = vec![file1.clone(), file2.clone()];
+            ctx.config.unique = true;
+
+            let results = process(&mut ctx);
+            assert_eq!(results.len(), 1);
+            assert_eq!(results[0].files.len(), 1);
+        });
+    }
+
+    fn write_test_file(path: &PathBuf, prefix: &[u8], mid: &[u8], suffix: &[u8]) {
+        let mut file = OpenOptions::new().write(true).create(true).open(&path).unwrap();
+        file.write(prefix).unwrap();
+        file.write(mid).unwrap();
+        file.write(suffix).unwrap();
+    }
+
+    fn test_ctx() -> AppCtx {
+        let mut log = Log::new();
+        log.no_progress = true;
+        let config: Config = Default::default();
+        AppCtx { log, config }
+    }
 }

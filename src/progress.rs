@@ -123,6 +123,15 @@ impl FastProgressBar {
         FastProgressBar::wrap(inner)
     }
 
+    /// Creates a new invisible progress bar.
+    /// This is useful when you need to disable progress bar, but you need to pass an instance
+    /// of a `ProgressBar` to something that expects it.
+    pub fn new_hidden() -> FastProgressBar {
+        let inner = ProgressBar::new(u64::MAX);
+        inner.set_draw_target(ProgressDrawTarget::hidden());
+        FastProgressBar::wrap(inner)
+    }
+
     fn update_progress(&self) {
         let value = self.counter.get() as u64;
         self.progress_bar.set_position(value);

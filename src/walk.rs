@@ -297,11 +297,12 @@ impl<'a> Walk<'a> {
 
 #[cfg(test)]
 mod test {
-    use std::fs::{create_dir, create_dir_all, File, remove_dir_all};
     use std::path::PathBuf;
     use std::sync::Mutex;
 
+    use crate::util::test::*;
     use super::*;
+    use std::fs::{create_dir, File};
 
     #[test]
     fn list_files() {
@@ -415,15 +416,6 @@ mod test {
         });
     }
 
-    fn with_dir<F>(test_root: &str, test_code: F)
-        where F: FnOnce(&PathBuf)
-    {
-        let test_root = PathBuf::from(test_root);
-        remove_dir_all(&test_root).ok();
-        create_dir_all(&test_root).unwrap();
-        (test_code)(&test_root.canonicalize().unwrap());
-        remove_dir_all(&test_root).unwrap();
-    }
 
     fn run_walk(walk: Walk, root: PathBuf) -> Vec<PathBuf> {
         let results = Mutex::new(Vec::new());

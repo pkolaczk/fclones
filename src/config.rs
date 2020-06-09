@@ -19,9 +19,16 @@ arg_enum! {
     }
 }
 
+impl Default for OutputFormat {
+    fn default() -> OutputFormat {
+        OutputFormat::Text
+    }
+}
+
+
 
 /// Finds duplicate, unique, under- or over-replicated files
-#[derive(Debug, StructOpt)]
+#[derive(Debug, StructOpt, Default)]
 #[structopt(
 name = "File Clones",
 setting(AppSettings::ColoredHelp),
@@ -148,7 +155,9 @@ impl Config {
     }
 
     pub fn search_type(&self) -> &'static str {
-        if self.rf_under.is_some() { "under-replicated" } else { "over-replicated" }
+        if self.unique { "unique" }
+        else if self.rf_under.is_some() { "under-replicated" }
+        else { "over-replicated" }
     }
 
     /// Returns an iterator over the input paths.
