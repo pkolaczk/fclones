@@ -16,8 +16,6 @@ use std::os::unix::io::*;
 
 use bytesize::ByteSize;
 use fasthash::{FastHasher, HasherExt, Murmur3Hasher, t1ha2::Hasher128};
-#[cfg(unix)]
-use nix::fcntl::*;
 use serde::*;
 use smallvec::alloc::fmt::Formatter;
 use smallvec::alloc::str::FromStr;
@@ -309,9 +307,9 @@ fn to_off_t(offset: u64) -> i64 {
 /// Wrapper for `posix_fadvise`. Ignores errors.
 /// This method is used to advise the system, so its failure is not critical to the result of
 /// the program. At worst, failure could hurt performance.
-#[cfg(unix)]
-fn fadvise(file: &File, offset: FilePos, len: FileLen, advice: PosixFadviseAdvice) {
-    let _ = posix_fadvise(file.as_raw_fd(),
+#[cfg(target_os = "linux")]
+fn fadvise(file: &File, offset: FilePos, len: FileLen, advice: nix::fcntl::PosixFadviseAdvice) {
+    let _ = nix::fcntl::posix_fadvise(file.as_raw_fd(),
                           to_off_t(offset.into()),
                           to_off_t(len.into()),
                           advice);
@@ -322,7 +320,8 @@ fn fadvise(file: &File, offset: FilePos, len: FileLen, advice: PosixFadviseAdvic
 /// On non-Unix systems, does nothing.
 /// Failures are not signalled to the caller, but a warning is printed to stderr.
 fn configure_readahead(file: &File, offset: FilePos, len: FileLen, cache_policy: Caching) {
-    if cfg!(unix) {
+    #[cfg(target_os="linux")] {
+        use nix::fcntl::*;
         let advise = |advice: PosixFadviseAdvice| {
             fadvise(file, offset, len, advice)
         };
@@ -337,7 +336,8 @@ fn configure_readahead(file: &File, offset: FilePos, len: FileLen, cache_policy:
 /// Tells the system to remove given file fragment from the page cache.
 /// On non-Unix systems, does nothing.
 fn evict_page_cache(file: &File, offset: FilePos, len: FileLen) {
-    if cfg!(unix) {
+    #[cfg(target_os="linux")] {
+        use nix::fcntl::*;
         fadvise(file, offset, len, PosixFadviseAdvice::POSIX_FADV_DONTNEED);
     }
 }
@@ -347,14 +347,16 @@ fn evict_page_cache(file: &File, offset: FilePos, len: FileLen) {
 /// This program is likely to be used only once, so there is little value in keeping its
 /// data cached for further use.
 fn evict_page_cache_if_low_mem(file: &mut File, len: FileLen) {
-    let buf_len: FileLen = BUF_LEN.into();
-    if len > buf_len * 2 {
-        let free_ratio = match mem_info() {
-            Ok(mem) => mem.free as f32 / mem.total as f32,
-            Err(_) => 0.0
-        };
-        if free_ratio < 0.05 {
-            evict_page_cache(&file, FilePos::zero() + buf_len, len - buf_len * 2);
+    #[cfg(target_os="linux")] {
+        let buf_len: FileLen = BUF_LEN.into();
+        if len > buf_len * 2 {
+            let free_ratio = match mem_info() {
+                Ok(mem) => mem.free as f32 / mem.total as f32,
+                Err(_) => 0.0
+            };
+            if free_ratio < 0.05 {
+                evict_page_cache(&file, FilePos::zero() + buf_len, len - buf_len * 2);
+            }
         }
     }
 }
@@ -388,13 +390,14 @@ fn open_noatime(path: &Path) -> io::Result<File> {
     let path = path.to_path_buf();
     let mut options = OpenOptions::new();
     options.read(true);
-    if cfg!(unix) {
+    #[cfg(target_os="linux")] {
         let mut noatime_opts = options.clone();
         noatime_opts.custom_flags(libc::O_NOATIME);
         noatime_opts.open(&path)
             // opening with O_NOATIME may fail in some cases for security reasons
             .or_else(|_| options.open(&path))
-    } else {
+    }
+    #[cfg(not(target_os="linux"))]{
         options.open(&path)
     }
 }
