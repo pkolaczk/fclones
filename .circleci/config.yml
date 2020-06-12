@@ -28,26 +28,14 @@ jobs:
           command: |
             export PATH=~/.cargo/bin:$PATH
             rustup component add clippy
-            cargo clippy --all -- -D warnings
+            cargo clippy --all -- -D warnings -D rust-2018-idioms
       - run:
           name: Test
           command: |
             export PATH=~/.cargo/bin:$PATH
             export RUST_BACKTRACE=1
             cargo test
-      - run:
-          name: Coverage
-          command: |
-            export PATH=~/.cargo/bin:$PATH
-            # install kcov
-            cargo install cargo-kcov
-            cargo kcov --print-install-kcov-sh | sh
-            echo "Install kcov successfully"
-            # coverage
-            cargo kcov --all -v
-            bash <(curl -s https://codecov.io/bash)
-            echo "Upload code coverage successfully"
-      
+
 workflows:
   version: 2.1
   build:
