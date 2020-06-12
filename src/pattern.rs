@@ -61,10 +61,10 @@ enum Scope {
 }
 
 #[cfg(unix)]
-pub const ESCAPE_CHAR: &'static str = "\\";
+pub const ESCAPE_CHAR: &str = "\\";
 
 #[cfg(windows)]
-pub const ESCAPE_CHAR: &'static str = "^";
+pub const ESCAPE_CHAR: &str = "^";
 
 impl Pattern {
     /// Creates `Pattern` instance from raw regular expression. Supports PCRE syntax.
