@@ -1,5 +1,3 @@
-extern crate nom;
-
 use std::path::MAIN_SEPARATOR;
 use std::sync::Arc;
 

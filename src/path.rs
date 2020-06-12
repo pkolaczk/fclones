@@ -195,7 +195,7 @@ impl AsRef<Path> for Path {
 }
 
 /// Converts std path Component to a new CString
-fn component_to_c_string(c: &Component) -> CString {
+fn component_to_c_string(c: &Component<'_>) -> CString {
     CString::new(c.as_os_str().as_bytes()).unwrap()
 }
 
