@@ -1,4 +1,5 @@
-# fclones - Find Redundant or Under-replicated Files
+# FClones - Find Duplicate, Unique, Under- or Over-replicated Files
+[![CircleCI](https://circleci.com/gh/pkolaczk/fclones.svg?style=shield)](https://circleci.com/gh/pkolaczk/fclones)
 
 Sometimes you accidentally copied your files in too many places - `fclones` will find them even if the duplicates
 got different names. It can also be used to find unique or under-replicated files, e.g. to check if your 
