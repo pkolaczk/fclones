@@ -1,11 +1,11 @@
 use std::env::current_dir;
-use std::fs::{DirEntry, FileType, read_link, ReadDir, symlink_metadata};
+use std::fs::{read_link, symlink_metadata, DirEntry, FileType, ReadDir};
 use std::hash::Hash;
 use std::io;
 use std::sync::Arc;
 
 use dashmap::DashSet;
-use fasthash::{FastHasher, HasherExt, t1ha2::Hasher128};
+use fasthash::{t1ha2::Hasher128, FastHasher, HasherExt};
 use rayon::Scope;
 
 use crate::log::Log;
@@ -14,7 +14,10 @@ use crate::selector::PathSelector;
 
 #[derive(Debug)]
 enum EntryType {
-    File, Dir, SymLink, Other
+    File,
+    Dir,
+    SymLink,
+    Other,
 }
 
 /// A path to a file, directory or symbolic link.
@@ -26,17 +29,32 @@ struct Entry {
 }
 
 impl Entry {
-
     pub fn new(file_type: FileType, path: Path) -> Entry {
-        if file_type.is_symlink() { Entry { tpe: EntryType::SymLink, path }}
-        else if file_type.is_file() { Entry { tpe: EntryType::File, path }}
-        else if file_type.is_dir() { Entry { tpe: EntryType::Dir, path }}
-        else { Entry { tpe: EntryType::Other, path }}
+        if file_type.is_symlink() {
+            Entry {
+                tpe: EntryType::SymLink,
+                path,
+            }
+        } else if file_type.is_file() {
+            Entry {
+                tpe: EntryType::File,
+                path,
+            }
+        } else if file_type.is_dir() {
+            Entry {
+                tpe: EntryType::Dir,
+                path,
+            }
+        } else {
+            Entry {
+                tpe: EntryType::Other,
+                path,
+            }
+        }
     }
 
     pub fn from_path(path: Path) -> io::Result<Entry> {
-        symlink_metadata(&path.to_path_buf())
-            .map(|meta| Entry::new(meta.file_type(), path))
+        symlink_metadata(&path.to_path_buf()).map(|meta| Entry::new(meta.file_type(), path))
     }
 
     pub fn from_dir_entry(base: &Arc<Path>, dir_entry: DirEntry) -> io::Result<Entry> {
@@ -61,11 +79,10 @@ pub struct Walk<'a> {
 /// Private shared state scoped to a single `run` invocation.
 struct WalkState<F> {
     pub consumer: F,
-    pub visited: DashSet<u128>
+    pub visited: DashSet<u128>,
 }
 
 impl<'a> Walk<'a> {
-
     /// Creates a default walk with empty root dirs, no link following and logger set to sdterr
     pub fn new() -> Walk<'a> {
         let base_dir = Path::from(&current_dir().unwrap_or_default());
@@ -76,7 +93,7 @@ impl<'a> Walk<'a> {
             skip_hidden: false,
             follow_links: false,
             path_selector: PathSelector::new(base_dir),
-            on_visit: &|_|{},
+            on_visit: &|_| {},
             log: None,
         }
     }
@@ -130,13 +147,15 @@ impl<'a> Walk<'a> {
     /// remove_dir_all(&test_root).ok();
     /// ```
     pub fn run<I, F>(&self, roots: I, consumer: F)
-        where
-            I: IntoIterator<Item=Path> + Send,
-            F: Fn(Path) + Sync + Send,
+    where
+        I: IntoIterator<Item = Path> + Send,
+        F: Fn(Path) + Sync + Send,
     {
-
-        let state = WalkState { consumer, visited: DashSet::new() };
-        rayon::scope( |scope| {
+        let state = WalkState {
+            consumer,
+            visited: DashSet::new(),
+        };
+        rayon::scope(|scope| {
             for p in roots.into_iter() {
                 let p = self.absolute(p);
                 scope.spawn(|scope| self.visit_path(p, scope, 0, &state))
@@ -145,9 +164,15 @@ impl<'a> Walk<'a> {
     }
 
     /// Visits path of any type (can be a symlink target, file or dir)
-    fn visit_path<'s, 'w, F>
-    (&'s self, path: Path, scope: &Scope<'w>, level: usize, state: &'w WalkState<F>)
-        where F: Fn(Path) + Sync + Send, 's: 'w
+    fn visit_path<'s, 'w, F>(
+        &'s self,
+        path: Path,
+        scope: &Scope<'w>,
+        level: usize,
+        state: &'w WalkState<F>,
+    ) where
+        F: Fn(Path) + Sync + Send,
+        's: 'w,
     {
         if self.path_selector.matches_dir(&path) {
             Entry::from_path(path.clone())
@@ -168,8 +193,15 @@ impl<'a> Walk<'a> {
 
     /// Visits a path that was already converted to an `Entry` so the entry type is known.
     /// Faster than `visit_path` because it doesn't need to call `stat` internally.
-    fn visit_entry<'s, 'w, F>(&'s self, entry: Entry, scope: &Scope<'w>, level: usize, state: &'w WalkState<F>)
-        where F: Fn(Path) + Sync + Send, 's: 'w
+    fn visit_entry<'s, 'w, F>(
+        &'s self,
+        entry: Entry,
+        scope: &Scope<'w>,
+        level: usize,
+        state: &'w WalkState<F>,
+    ) where
+        F: Fn(Path) + Sync + Send,
+        's: 'w,
     {
         // For progress reporting
         (self.on_visit)(&entry.path);
@@ -178,7 +210,7 @@ impl<'a> Walk<'a> {
         if self.skip_hidden {
             if let Some(name) = entry.path.file_name() {
                 if name.to_string_lossy().starts_with(".") {
-                    return
+                    return;
                 }
             }
         }
@@ -186,23 +218,21 @@ impl<'a> Walk<'a> {
         // Skip already visited paths. We're checking only when follow_links is true,
         // because inserting into a shared hash set is costly.
         if self.follow_links && !state.visited.insert(Self::path_hash(&entry.path)) {
-            return
+            return;
         }
 
         match entry.tpe {
-            EntryType::File =>
-                self.visit_file(entry.path, state),
-            EntryType::Dir =>
-                self.visit_dir(entry.path, scope, level, state),
-            EntryType::SymLink =>
-                self.visit_link(&entry.path, scope, level, state),
+            EntryType::File => self.visit_file(entry.path, state),
+            EntryType::Dir => self.visit_dir(entry.path, scope, level, state),
+            EntryType::SymLink => self.visit_link(&entry.path, scope, level, state),
             EntryType::Other => {}
         }
     }
 
     /// If file matches selection criteria, sends it to the consumer
     fn visit_file<F>(&self, path: Path, state: &WalkState<F>)
-        where F: Fn(Path) + Sync + Send
+    where
+        F: Fn(Path) + Sync + Send,
     {
         if self.path_selector.matches_full_path(&path) {
             (state.consumer)(path)
@@ -211,37 +241,44 @@ impl<'a> Walk<'a> {
 
     /// Resolves a symbolic link.
     /// If `follow_links` is set to false, does nothing.
-    fn visit_link<'s, 'w, F>
-    (&'s self, path: &Path, scope: &Scope<'w>, level: usize, state: &'w WalkState<F>)
-        where F: Fn(Path) + Sync + Send, 's: 'w
+    fn visit_link<'s, 'w, F>(
+        &'s self,
+        path: &Path,
+        scope: &Scope<'w>,
+        level: usize,
+        state: &'w WalkState<F>,
+    ) where
+        F: Fn(Path) + Sync + Send,
+        's: 'w,
     {
         if self.follow_links {
             match self.resolve_link(&path) {
-                Ok(target) =>
-                    self.visit_path(target, scope, level, state),
-                Err(e) =>
-                    self.log_err(format!("Failed to read link {}: {}", path.display(), e))
+                Ok(target) => self.visit_path(target, scope, level, state),
+                Err(e) => self.log_err(format!("Failed to read link {}: {}", path.display(), e)),
             }
         }
     }
 
     /// Reads the contents of the directory pointed to by `path`
     /// and recursively visits each child entry
-    fn visit_dir<'s, 'w, F>
-    (&'s self, path: Path, scope: &Scope<'w>, level: usize, state: &'w WalkState<F>)
-        where F: Fn(Path) + Sync + Send, 's: 'w
+    fn visit_dir<'s, 'w, F>(
+        &'s self,
+        path: Path,
+        scope: &Scope<'w>,
+        level: usize,
+        state: &'w WalkState<F>,
+    ) where
+        F: Fn(Path) + Sync + Send,
+        's: 'w,
     {
         if self.recursive && level <= self.depth && self.path_selector.matches_dir(&path) {
             match std::fs::read_dir(path.to_path_buf()) {
                 Ok(rd) => {
                     for entry in Self::sorted_entries(path, rd) {
-                        scope.spawn(move |s| {
-                            self.visit_entry(entry, s, level + 1, state)
-                        })
+                        scope.spawn(move |s| self.visit_entry(entry, s, level + 1, state))
                     }
-                },
-                Err(e) =>
-                    self.log_err(format!("Failed to read dir {}: {}", path.display(), e))
+                }
+                Err(e) => self.log_err(format!("Failed to read dir {}: {}", path.display(), e)),
             }
         }
     }
@@ -269,12 +306,11 @@ impl<'a> Walk<'a> {
     /// Returns the absolute target path of a symbolic link
     fn resolve_link(&self, link: &Path) -> io::Result<Path> {
         let target = Path::from(read_link(link.to_path_buf())?);
-        let resolved =
-            if target.is_relative() {
-                link.parent().unwrap().join(target)
-            } else {
-                target
-            };
+        let resolved = if target.is_relative() {
+            link.parent().unwrap().join(target)
+        } else {
+            target
+        };
         Ok(self.absolute(resolved))
     }
 
@@ -294,14 +330,13 @@ impl<'a> Walk<'a> {
     }
 }
 
-
 #[cfg(test)]
 mod test {
     use std::path::PathBuf;
     use std::sync::Mutex;
 
-    use crate::util::test::*;
     use super::*;
+    use crate::util::test::*;
     use std::fs::{create_dir, File};
 
     #[test]
@@ -416,11 +451,11 @@ mod test {
         });
     }
 
-
     fn run_walk(walk: Walk, root: PathBuf) -> Vec<PathBuf> {
         let results = Mutex::new(Vec::new());
-        walk.run(vec![Path::from(root)], |path|
-            results.lock().unwrap().push(path.to_path_buf()));
+        walk.run(vec![Path::from(root)], |path| {
+            results.lock().unwrap().push(path.to_path_buf())
+        });
 
         let mut results = results.into_inner().unwrap();
         results.sort();

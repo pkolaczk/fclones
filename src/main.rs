@@ -24,12 +24,10 @@ const MIN_PREFIX_LEN: FileLen = FileLen(4096);
 const MAX_PREFIX_LEN: FileLen = FileLen(4 * MIN_PREFIX_LEN.0);
 const SUFFIX_LEN: FileLen = MIN_PREFIX_LEN;
 
-
 struct AppCtx {
     config: Config,
     log: Log,
 }
-
 
 /// Configures global thread pool to use desired number of threads
 fn configure_thread_pool(parallelism: usize) {
@@ -63,7 +61,7 @@ fn scan_files(ctx: &mut AppCtx) -> Vec<Vec<FileInfo>> {
     let path_selector = ctx.config.path_selector(&ctx.log, &base_dir);
     let file_collector = ThreadLocal::new();
     let spinner = ctx.log.spinner("[1/7] Scanning files");
-    let spinner_tick = &|_: &Path| { spinner.tick() };
+    let spinner_tick = &|_: &Path| spinner.tick();
 
     let config = &ctx.config;
     let min_size = config.min_size;
@@ -73,36 +71,43 @@ fn scan_files(ctx: &mut AppCtx) -> Vec<Vec<FileInfo>> {
     walk.recursive = config.recursive;
     walk.depth = config.depth.unwrap_or(usize::MAX);
     walk.skip_hidden = config.skip_hidden;
-    walk.follow_links =  config.follow_links;
+    walk.follow_links = config.follow_links;
     walk.path_selector = path_selector;
     walk.log = Some(&ctx.log);
     walk.on_visit = spinner_tick;
     walk.run(ctx.config.input_paths(), |path| {
         file_info_or_log_err(path, &ctx.log)
             .into_iter()
-            .filter(|info| { let l = info.len; l >= min_size && l <= max_size })
+            .filter(|info| {
+                let l = info.len;
+                l >= min_size && l <= max_size
+            })
             .for_each(|info| {
                 let vec = file_collector.get_or(|| RefCell::new(Vec::new()));
                 vec.borrow_mut().push(info);
             });
     });
 
-    ctx.log.info(format!("Scanned {} file entries", spinner.position()));
+    ctx.log
+        .info(format!("Scanned {} file entries", spinner.position()));
 
-    let files: Vec<_> = file_collector.into_iter()
-        .map(|r| r.into_inner()).collect();
+    let files: Vec<_> = file_collector.into_iter().map(|r| r.into_inner()).collect();
 
     let file_count: usize = files.iter().map(|v| v.len()).sum();
     let total_size: u64 = files.iter().flat_map(|v| v.iter().map(|i| i.len.0)).sum();
-    ctx.log.info(format!("Found {} ({}) files matching selection criteria",
-                         file_count, FileLen(total_size)));
+    ctx.log.info(format!(
+        "Found {} ({}) files matching selection criteria",
+        file_count,
+        FileLen(total_size)
+    ));
     files
 }
 
 fn group_by_size(ctx: &mut AppCtx, files: Vec<Vec<FileInfo>>) -> Vec<FileGroup<FileInfoNoLen>> {
     let file_count: usize = files.iter().map(|v| v.len()).sum();
-    let progress = ctx.log.progress_bar(
-        "[2/7] Grouping by size", file_count as u64);
+    let progress = ctx
+        .log
+        .progress_bar("[2/7] Grouping by size", file_count as u64);
 
     let mut groups = GroupMap::new(|info: FileInfo| (info.len, info.drop_len()));
     for files in files.into_iter() {
@@ -117,12 +122,19 @@ fn group_by_size(ctx: &mut AppCtx, files: Vec<Vec<FileInfo>>) -> Vec<FileGroup<F
     let groups: Vec<_> = groups
         .into_iter()
         .filter(|(_, files)| files.len() >= rf_over)
-        .map(|(l, files)| FileGroup { len: l, hash: None, files })
+        .map(|(l, files)| FileGroup {
+            len: l,
+            hash: None,
+            files,
+        })
         .collect();
 
     let count: usize = groups.selected_count(rf_over, rf_under);
     let bytes: FileLen = groups.selected_size(rf_over, rf_under);
-    ctx.log.info(format!("Found {} ({}) candidates after grouping by size", count, bytes));
+    ctx.log.info(format!(
+        "Found {} ({}) candidates after grouping by size",
+        count, bytes
+    ));
     groups
 }
 
@@ -130,7 +142,7 @@ fn to_group_of_paths(f: FileGroup<FileInfoNoLen>) -> FileGroup<Path> {
     FileGroup {
         len: f.len,
         hash: None,
-        files: f.files.into_iter().map(|i| i.path).collect()
+        files: f.files.into_iter().map(|i| i.path).collect(),
     }
 }
 
@@ -139,11 +151,14 @@ fn drop_hard_link_info(groups: Vec<FileGroup<FileInfoNoLen>>) -> Vec<FileGroup<P
     groups.into_par_iter().map(to_group_of_paths).collect()
 }
 
-fn prune_hard_links(ctx: &mut AppCtx, groups: Vec<FileGroup<FileInfoNoLen>>) -> Vec<FileGroup<Path>> {
-
+fn prune_hard_links(
+    ctx: &mut AppCtx,
+    groups: Vec<FileGroup<FileInfoNoLen>>,
+) -> Vec<FileGroup<Path>> {
     let file_count: usize = groups.total_count();
-    let progress = ctx.log.progress_bar(
-        "[3/7] Pruning hard links", file_count as u64);
+    let progress = ctx
+        .log
+        .progress_bar("[3/7] Pruning hard links", file_count as u64);
 
     let rf_over = ctx.config.rf_over();
     let rf_under = ctx.config.rf_under();
@@ -161,42 +176,56 @@ fn prune_hard_links(ctx: &mut AppCtx, groups: Vec<FileGroup<FileInfoNoLen>>) -> 
 
     let count: usize = groups.selected_count(rf_over, rf_under);
     let bytes: FileLen = groups.selected_size(rf_over, rf_under);
-    ctx.log.info(format!("Found {} ({}) candidates after pruning hard-links", count, bytes));
+    ctx.log.info(format!(
+        "Found {} ({}) candidates after pruning hard-links",
+        count, bytes
+    ));
     groups
 }
 
 fn group_by_prefix(ctx: &mut AppCtx, groups: Vec<FileGroup<Path>>) -> Vec<FileGroup<Path>> {
-    let remaining_files = groups.iter()
-        .filter(|g| g.files.len() > 1)
-        .total_count();
-    let progress = ctx.log.progress_bar(
-        "[4/7] Grouping by prefix", remaining_files as u64);
+    let remaining_files = groups.iter().filter(|g| g.files.len() > 1).total_count();
+    let progress = ctx
+        .log
+        .progress_bar("[4/7] Grouping by prefix", remaining_files as u64);
 
     let rf_over = ctx.config.rf_over();
     let rf_under = ctx.config.rf_under();
 
     let groups: Vec<_> = groups.split(rf_over + 1, |len, _hash, path| {
         progress.tick();
-        let prefix_len = if len <= MAX_PREFIX_LEN { len } else { MIN_PREFIX_LEN };
-        let caching = if len <= MAX_PREFIX_LEN { Caching::Default } else { Caching::Random };
+        let prefix_len = if len <= MAX_PREFIX_LEN {
+            len
+        } else {
+            MIN_PREFIX_LEN
+        };
+        let caching = if len <= MAX_PREFIX_LEN {
+            Caching::Default
+        } else {
+            Caching::Random
+        };
         file_hash_or_log_err(path, FilePos(0), prefix_len, caching, |_| {}, &ctx.log)
     });
 
     let count = groups.selected_count(rf_over, rf_under);
     let bytes = groups.selected_size(rf_over, rf_under);
-    ctx.log.info(format!("Found {} ({}) candidates after grouping by prefix", count, bytes));
+    ctx.log.info(format!(
+        "Found {} ({}) candidates after grouping by prefix",
+        count, bytes
+    ));
     groups
 }
 
-fn group_by_suffix(ctx: &mut AppCtx, groups: Vec<FileGroup<Path>>) -> Vec<FileGroup<Path>>
-{
+fn group_by_suffix(ctx: &mut AppCtx, groups: Vec<FileGroup<Path>>) -> Vec<FileGroup<Path>> {
     let needs_processing = |len: FileLen| len >= MAX_PREFIX_LEN + SUFFIX_LEN * 2;
-    let remaining_files = groups.iter()
+    let remaining_files = groups
+        .iter()
         .filter(|&g| (needs_processing)(g.len) && g.files.len() > 1)
         .total_count();
 
-    let progress = ctx.log.progress_bar(
-        "[5/7] Grouping by suffix", remaining_files as u64);
+    let progress = ctx
+        .log
+        .progress_bar("[5/7] Grouping by suffix", remaining_files as u64);
 
     let rf_over = ctx.config.rf_over();
     let rf_under = ctx.config.rf_under();
@@ -209,7 +238,9 @@ fn group_by_suffix(ctx: &mut AppCtx, groups: Vec<FileGroup<Path>>) -> Vec<FileGr
                 (len - SUFFIX_LEN).as_pos(),
                 SUFFIX_LEN,
                 Caching::Default,
-                |_| {}, &ctx.log)
+                |_| {},
+                &ctx.log,
+            )
         } else {
             hash
         }
@@ -217,17 +248,22 @@ fn group_by_suffix(ctx: &mut AppCtx, groups: Vec<FileGroup<Path>>) -> Vec<FileGr
 
     let count = groups.selected_count(rf_over, rf_under);
     let bytes = groups.selected_size(rf_over, rf_under);
-    ctx.log.info(format!("Found {} ({}) candidates after grouping by suffix", count, bytes));
+    ctx.log.info(format!(
+        "Found {} ({}) candidates after grouping by suffix",
+        count, bytes
+    ));
     groups
 }
 
-fn group_by_contents(ctx: &mut AppCtx, groups: Vec<FileGroup<Path>>) -> Vec<FileGroup<Path>>
-{
+fn group_by_contents(ctx: &mut AppCtx, groups: Vec<FileGroup<Path>>) -> Vec<FileGroup<Path>> {
     let needs_processing = |len: FileLen| len >= MAX_PREFIX_LEN;
-    let bytes_to_scan = groups.iter()
+    let bytes_to_scan = groups
+        .iter()
         .filter(|&g| (needs_processing)(g.len) && g.files.len() > 1)
         .total_size();
-    let progress = ctx.log.bytes_progress_bar("[6/7] Grouping by contents", bytes_to_scan.0);
+    let progress = ctx
+        .log
+        .bytes_progress_bar("[6/7] Grouping by contents", bytes_to_scan.0);
     let rf_over = ctx.config.rf_over();
     let rf_under = ctx.config.rf_under();
 
@@ -239,7 +275,8 @@ fn group_by_contents(ctx: &mut AppCtx, groups: Vec<FileGroup<Path>>) -> Vec<File
                 len,
                 Caching::Sequential,
                 |delta| progress.inc(delta),
-                &ctx.log)
+                &ctx.log,
+            )
         } else {
             hash
         }
@@ -247,15 +284,21 @@ fn group_by_contents(ctx: &mut AppCtx, groups: Vec<FileGroup<Path>>) -> Vec<File
 
     let count = groups.selected_count(rf_over, rf_under);
     let bytes = groups.selected_size(rf_over, rf_under);
-    ctx.log.info(format!("Found {} ({}) {} files", count, bytes, ctx.config.search_type()));
+    ctx.log.info(format!(
+        "Found {} ({}) {} files",
+        count,
+        bytes,
+        ctx.config.search_type()
+    ));
     groups
 }
 
 fn write_report(ctx: &mut AppCtx, groups: &mut Vec<FileGroup<Path>>) {
     let stdout = Term::stdout();
     let remaining_files = groups.total_count();
-    let progress = ctx.log.progress_bar(
-        "[7/7] Writing report", remaining_files as u64);
+    let progress = ctx
+        .log
+        .progress_bar("[7/7] Writing report", remaining_files as u64);
 
     // No progress bar when we write to terminal
     if stdout.is_term() {
@@ -270,7 +313,7 @@ fn write_report(ctx: &mut AppCtx, groups: &mut Vec<FileGroup<Path>>) {
     };
     match result {
         Ok(()) => (),
-        Err(e) => ctx.log.err(format!("Failed to write report: {}", e))
+        Err(e) => ctx.log.err(format!("Failed to write report: {}", e)),
     }
 }
 
@@ -280,11 +323,14 @@ fn paint_help(s: &str) -> String {
     let title_regex = Regex::new(r"(?m)^# *(.*?)$").unwrap();
     let s = escape_regex.replace_all(s.as_ref(), ESCAPE_CHAR);
     let s = code_regex.replace_all(s.as_ref(), style("$1").green().to_string().as_str());
-    title_regex.replace_all(s.as_ref(), style("$1").yellow().to_string().as_str()).to_string()
+    title_regex
+        .replace_all(s.as_ref(), style("$1").yellow().to_string().as_str())
+        .to_string()
 }
 
 fn main() {
-    let after_help = &paint_help(indoc!("
+    let after_help = &paint_help(indoc!(
+        "
     # PATTERN SYNTAX:
         Options `-n` `-p` and `-e` accept extended glob patterns.
         The following wildcards can be used:
@@ -301,7 +347,8 @@ fn main() {
         `*(a|b)` matches any number of occurrences of the patterns given inside the brackets
         `!(a|b)` matches anything that doesn't match any of the patterns given inside the brackets
         `{escape}`      escapes wildcards, e.g. `{escape}?` would match `?` literally
-    "));
+    "
+    ));
 
     let clap = Config::clap().after_help(after_help.as_str());
     let config: Config = Config::from_clap(&clap.get_matches());
@@ -319,12 +366,11 @@ fn main() {
 fn process(mut ctx: &mut AppCtx) -> Vec<FileGroup<Path>> {
     let matching_files = scan_files(&mut ctx);
     let size_groups = group_by_size(&mut ctx, matching_files);
-    let size_groups_pruned =
-        if ctx.config.no_prune_links {
-            drop_hard_link_info(size_groups)
-        } else {
-            prune_hard_links(&mut ctx, size_groups)
-        };
+    let size_groups_pruned = if ctx.config.no_prune_links {
+        drop_hard_link_info(size_groups)
+    } else {
+        prune_hard_links(&mut ctx, size_groups)
+    };
     let prefix_groups = group_by_prefix(&mut ctx, size_groups_pruned);
     let suffix_groups = group_by_suffix(&mut ctx, prefix_groups);
     let mut contents_groups = group_by_contents(&mut ctx, suffix_groups);
@@ -333,7 +379,6 @@ fn process(mut ctx: &mut AppCtx) -> Vec<FileGroup<Path>> {
     contents_groups.par_iter_mut().for_each(|g| g.files.sort());
     contents_groups
 }
-
 
 #[cfg(test)]
 mod test {
@@ -344,7 +389,7 @@ mod test {
     use fclones::util::test::*;
 
     use super::*;
-    use std::fs::{OpenOptions, hard_link};
+    use std::fs::{hard_link, OpenOptions};
 
     #[test]
     fn identical_small_files() {
@@ -368,8 +413,18 @@ mod test {
         with_dir("target/test/main/identical_large_files", |root| {
             let file1 = root.join("file1");
             let file2 = root.join("file2");
-            write_test_file(&file1, &[0; MAX_PREFIX_LEN.0 as usize], &[1; 4096], &[2; 4096]);
-            write_test_file(&file2, &[0; MAX_PREFIX_LEN.0 as usize], &[1; 4096], &[2; 4096]);
+            write_test_file(
+                &file1,
+                &[0; MAX_PREFIX_LEN.0 as usize],
+                &[1; 4096],
+                &[2; 4096],
+            );
+            write_test_file(
+                &file2,
+                &[0; MAX_PREFIX_LEN.0 as usize],
+                &[1; 4096],
+                &[2; 4096],
+            );
 
             let mut ctx = test_ctx();
             ctx.config.paths = vec![file1, file2];
@@ -394,8 +449,14 @@ mod test {
 
             let results = process(&mut ctx);
             assert_eq!(results.len(), 2);
-            assert_eq!(results[0].files, vec![Path::from(file1.canonicalize().unwrap())]);
-            assert_eq!(results[1].files, vec![Path::from(file2.canonicalize().unwrap())]);
+            assert_eq!(
+                results[0].files,
+                vec![Path::from(file1.canonicalize().unwrap())]
+            );
+            assert_eq!(
+                results[1].files,
+                vec![Path::from(file2.canonicalize().unwrap())]
+            );
         });
     }
 
@@ -460,7 +521,6 @@ mod test {
         });
     }
 
-
     #[test]
     fn hard_links() {
         with_dir("target/test/main/hard_links", |root| {
@@ -480,7 +540,11 @@ mod test {
     }
 
     fn write_test_file(path: &PathBuf, prefix: &[u8], mid: &[u8], suffix: &[u8]) {
-        let mut file = OpenOptions::new().write(true).create(true).open(&path).unwrap();
+        let mut file = OpenOptions::new()
+            .write(true)
+            .create(true)
+            .open(&path)
+            .unwrap();
         file.write(prefix).unwrap();
         file.write(mid).unwrap();
         file.write(suffix).unwrap();

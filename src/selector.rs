@@ -20,8 +20,6 @@ pub struct PathSelector {
 }
 
 impl PathSelector {
-
-
     /// Creates a new selector that matches all paths.
     pub fn new(base_dir: Path) -> PathSelector {
         PathSelector {
@@ -38,14 +36,16 @@ impl PathSelector {
     }
 
     pub fn include_paths(mut self, pat: Vec<Pattern>) -> PathSelector {
-        self.included_paths = pat.into_iter()
+        self.included_paths = pat
+            .into_iter()
             .map(|p| Self::abs_pattern(&self.base_dir, p))
             .collect();
         self
     }
 
     pub fn exclude_paths(mut self, pat: Vec<Pattern>) -> PathSelector {
-        self.excluded_paths = pat.into_iter()
+        self.excluded_paths = pat
+            .into_iter()
             .map(|p| Self::abs_pattern(&self.base_dir, p))
             .collect();
         self
@@ -54,12 +54,13 @@ impl PathSelector {
     /// Returns true if the given path fully matches this selector.
     pub fn matches_full_path(&self, path: &Path) -> bool {
         self.with_absolute_path(path, |path| {
-            let name = path.file_name()
-                .map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
+            let name = path
+                .file_name()
+                .map(|s| s.to_string_lossy().to_string())
+                .unwrap_or_default();
             let name = name.as_ref();
             let path = path.to_string_lossy();
-            (self.included_names.is_empty()
-                    || self.included_names.iter().any(|p| p.matches(name)))
+            (self.included_names.is_empty() || self.included_names.iter().any(|p| p.matches(name)))
                 && (self.included_paths.is_empty()
                     || self.included_paths.iter().any(|p| p.matches(&path)))
                 && self.excluded_paths.iter().all(|p| !p.matches(&path))
@@ -78,7 +79,10 @@ impl PathSelector {
                 path.push(MAIN_SEPARATOR);
             }
             (self.included_paths.is_empty()
-                || self.included_paths.iter().any(|p| p.matches_partially(&path)))
+                || self
+                    .included_paths
+                    .iter()
+                    .any(|p| p.matches_partially(&path)))
                 && self.excluded_paths.iter().all(|p| !p.matches_prefix(&path))
         })
     }
@@ -88,7 +92,8 @@ impl PathSelector {
     /// If `path` is relative, it would be appended to the `self.base_path` first and a reference
     /// to the temporary result will be provided.
     fn with_absolute_path<F, R>(&self, path: &Path, f: F) -> R
-        where F: Fn(&Path) -> R
+    where
+        F: Fn(&Path) -> R,
     {
         if path.is_absolute() {
             (f)(path)
@@ -112,7 +117,11 @@ impl PathSelector {
 
     /// Appends path separator if the string doesn't end with one already
     fn append_sep(s: String) -> String {
-        if s.ends_with(MAIN_SEPARATOR) { s } else { s + MAIN_SEPARATOR.to_string().as_str() }
+        if s.ends_with(MAIN_SEPARATOR) {
+            s
+        } else {
+            s + MAIN_SEPARATOR.to_string().as_str()
+        }
     }
 
     ///  Returns true if pattern can match absolute paths
@@ -237,5 +246,4 @@ mod test {
         assert!(!selector.matches_dir(&Path::from("/test3/foo")));
         assert!(!selector.matches_dir(&Path::from("/test3/foo/bar/baz")));
     }
-
 }

@@ -10,28 +10,33 @@ pub struct Log {
     program_name: String,
     progress_bar: Weak<FastProgressBar>,
     pub log_stderr_to_stdout: bool,
-    pub no_progress: bool
+    pub no_progress: bool,
 }
 
 impl Log {
-
     pub fn new() -> Log {
         Log {
             progress_bar: Weak::default(),
-            program_name: std::env::current_exe().unwrap()
-                .file_name().unwrap()
-                .to_string_lossy().to_string(),
+            program_name: std::env::current_exe()
+                .unwrap()
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .to_string(),
             log_stderr_to_stdout: false,
-            no_progress: false
+            no_progress: false,
         }
     }
 
     /// Clears any previous progress bar or spinner and installs a new spinner.
     pub fn spinner(&mut self, msg: &str) -> Arc<FastProgressBar> {
         if self.no_progress {
-            return Arc::new(FastProgressBar::new_hidden())
+            return Arc::new(FastProgressBar::new_hidden());
         }
-        self.progress_bar.upgrade().iter().for_each(|pb| pb.finish_and_clear());
+        self.progress_bar
+            .upgrade()
+            .iter()
+            .for_each(|pb| pb.finish_and_clear());
         let result = Arc::new(FastProgressBar::new_spinner(msg));
         self.progress_bar = Arc::downgrade(&result);
         result
@@ -40,7 +45,7 @@ impl Log {
     /// Clears any previous progress bar or spinner and installs a new progress bar.
     pub fn progress_bar(&mut self, msg: &str, len: u64) -> Arc<FastProgressBar> {
         if self.no_progress {
-            return Arc::new(FastProgressBar::new_hidden())
+            return Arc::new(FastProgressBar::new_hidden());
         }
         let result = Arc::new(FastProgressBar::new_progress_bar(msg, len));
         self.progress_bar = Arc::downgrade(&result);
@@ -50,9 +55,12 @@ impl Log {
     /// Clears any previous progress bar or spinner and installs a new progress bar.
     pub fn bytes_progress_bar(&mut self, msg: &str, len: u64) -> Arc<FastProgressBar> {
         if self.no_progress {
-            return Arc::new(FastProgressBar::new_hidden())
+            return Arc::new(FastProgressBar::new_hidden());
         }
-        self.progress_bar.upgrade().iter().for_each(|pb| pb.finish_and_clear());
+        self.progress_bar
+            .upgrade()
+            .iter()
+            .for_each(|pb| pb.finish_and_clear());
         let result = Arc::new(FastProgressBar::new_bytes_progress_bar(msg, len));
         self.progress_bar = Arc::downgrade(&result);
         result
@@ -66,10 +74,8 @@ impl Log {
                 pb.set_draw_target(ProgressDrawTarget::hidden());
                 println!("{}", msg);
                 pb.set_draw_target(ProgressDrawTarget::stderr());
-            },
-            _ =>
-                println!("{}", msg)
-
+            }
+            _ => println!("{}", msg),
         }
     }
 
@@ -77,31 +83,39 @@ impl Log {
     /// Does not interfere with progress bar.
     pub fn eprintln<I: Display>(&self, msg: I) {
         match self.progress_bar.upgrade() {
-            Some(pb) if pb.is_visible() =>
-                pb.println(format!("{}", msg)),
-            _ if self.log_stderr_to_stdout =>
-                println!("{}", msg),
-            _ =>
-                eprintln!("{}", msg),
+            Some(pb) if pb.is_visible() => pb.println(format!("{}", msg)),
+            _ if self.log_stderr_to_stdout => println!("{}", msg),
+            _ => eprintln!("{}", msg),
         }
     }
 
     pub fn info<I: Display>(&self, msg: I) {
-        let msg = format!("{}: {} {}",
-                          self.program_name, style(" info:").for_stderr().green(), msg);
+        let msg = format!(
+            "{}: {} {}",
+            self.program_name,
+            style(" info:").for_stderr().green(),
+            msg
+        );
         self.eprintln(msg);
     }
 
     pub fn warn<I: Display>(&self, msg: I) {
-        let msg = format!("{}: {} {}",
-                          self.program_name, style(" warn:").for_stderr().yellow(), msg);
+        let msg = format!(
+            "{}: {} {}",
+            self.program_name,
+            style(" warn:").for_stderr().yellow(),
+            msg
+        );
         self.eprintln(msg);
     }
 
     pub fn err<I: Display>(&self, msg: I) {
-        let msg = format!("{}: {} {}",
-                          self.program_name, style("error:").for_stderr().red(), msg);
+        let msg = format!(
+            "{}: {} {}",
+            self.program_name,
+            style("error:").for_stderr().red(),
+            msg
+        );
         self.eprintln(msg);
     }
-
 }

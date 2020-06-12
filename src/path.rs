@@ -1,15 +1,15 @@
-use std::{fmt, io};
-use std::ffi::{CStr, CString, OsString, OsStr};
+use std::ffi::{CStr, CString, OsStr, OsString};
 use std::fmt::Display;
 use std::hash::{Hash, Hasher};
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Component, PathBuf};
 use std::sync::Arc;
+use std::{fmt, io};
 
+use nix::NixPath;
 use nom::lib::std::fmt::Formatter;
 use serde::{Serialize, Serializer};
 use smallvec::SmallVec;
-use nix::NixPath;
 
 /// Memory-efficient path representation.
 /// When storing multiple paths with common parent, the standard PathBuf would keep
@@ -23,7 +23,6 @@ pub struct Path {
 }
 
 impl Path {
-
     pub fn canonicalize(&self) -> io::Result<Path> {
         self.to_path_buf().canonicalize().map(|p| Path::from(&p))
     }
@@ -31,7 +30,7 @@ impl Path {
     pub fn is_absolute(&self) -> bool {
         match self.root().component.as_bytes() {
             b"/" => true,
-            _ => false
+            _ => false,
         }
     }
 
@@ -74,7 +73,7 @@ impl Path {
             b"/" => None,
             b".." => None,
             b"." => None,
-            _ => Some(self.component.as_c_str())
+            _ => Some(self.component.as_c_str()),
         }
     }
 
@@ -92,7 +91,7 @@ impl Path {
         let mut base_components = base.components().into_iter().peekable();
         while let (Some(a), Some(b)) = (components.peek(), base_components.peek()) {
             if a != b {
-                return None
+                return None;
             }
             components.next();
             base_components.next();
@@ -104,8 +103,7 @@ impl Path {
     /// We need this to be able to use this path with other standard library I/O functions.
     pub fn to_path_buf(&self) -> PathBuf {
         let mut result = PathBuf::from(OsString::with_capacity(self.capacity()));
-        self.for_each_component(|c| result.push(
-            OsStr::from_bytes(c.to_bytes())));
+        self.for_each_component(|c| result.push(OsStr::from_bytes(c.to_bytes())));
         result
     }
 
@@ -123,27 +121,26 @@ impl Path {
     fn new(component: CString) -> Path {
         Path {
             component,
-            parent: None
+            parent: None,
         }
     }
 
     fn push(self: &Arc<Path>, component: CString) -> Path {
         Path {
             component,
-            parent: Some(self.clone())
+            parent: Some(self.clone()),
         }
     }
 
     /// Flattens this path to a vector of strings
-    fn components(&self) -> SmallVec<[&CStr;16]> {
+    fn components(&self) -> SmallVec<[&CStr; 16]> {
         let mut result = match &self.parent {
             Some(p) => p.components(),
-            None => SmallVec::new()
+            None => SmallVec::new(),
         };
         result.push(&self.component);
         result
     }
-
 
     /// Executes a function for each component, left to right
     fn for_each_component<F: FnMut(&CStr)>(&self, mut f: F) {
@@ -166,15 +163,15 @@ impl Path {
     /// Builds a path from individual string components.
     /// If the component list is empty, returns a path pointing to the current directory (".").
     fn make<'a, I>(components: I) -> Path
-        where I: IntoIterator<Item=&'a CStr> + 'a
+    where
+        I: IntoIterator<Item = &'a CStr> + 'a,
     {
         let mut iter = components.into_iter();
         let first = iter.next();
-        let mut result: Path =
-            match first {
-                None => Path::new(CString::new(".").unwrap()),
-                Some(c) => Path::new(CString::from(c))
-            };
+        let mut result: Path = match first {
+            None => Path::new(CString::new(".").unwrap()),
+            Some(c) => Path::new(CString::from(c)),
+        };
         for c in iter {
             result = Arc::new(result).push(CString::from(c))
         }
@@ -189,7 +186,6 @@ impl Path {
         }
         result
     }
-
 }
 
 impl AsRef<Path> for Path {
@@ -206,11 +202,11 @@ fn component_to_c_string(c: &Component) -> CString {
 impl From<&std::path::Path> for Path {
     fn from(p: &std::path::Path) -> Self {
         let mut components = p.components();
-        let mut result = Path::new(
-            component_to_c_string(&components.next().expect("Empty path not supported")));
+        let mut result = Path::new(component_to_c_string(
+            &components.next().expect("Empty path not supported"),
+        ));
         for c in components {
-            result = Arc::new(result)
-                .push(component_to_c_string(&c))
+            result = Arc::new(result).push(component_to_c_string(&c))
         }
         result
     }
@@ -253,7 +249,6 @@ impl Hash for Path {
     }
 }
 
-
 impl Display for Path {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         f.pad(format!("{}", self.to_path_buf().display()).as_str())
@@ -262,7 +257,9 @@ impl Display for Path {
 
 impl Serialize for Path {
     fn serialize<S>(&self, serializer: S) -> Result<<S as Serializer>::Ok, <S as Serializer>::Error>
-        where S: Serializer {
+    where
+        S: Serializer,
+    {
         serializer.collect_str(self)
     }
 }
@@ -291,10 +288,22 @@ mod test {
 
     #[test]
     fn file_name() {
-        assert_eq!(Path::from("foo").file_name(), Some(CString::new("foo").unwrap().as_c_str()));
-        assert_eq!(Path::from("foo/bar").file_name(), Some(CString::new("bar").unwrap().as_c_str()));
-        assert_eq!(Path::from("/foo").file_name(), Some(CString::new("foo").unwrap().as_c_str()));
-        assert_eq!(Path::from("/foo/bar").file_name(), Some(CString::new("bar").unwrap().as_c_str()));
+        assert_eq!(
+            Path::from("foo").file_name(),
+            Some(CString::new("foo").unwrap().as_c_str())
+        );
+        assert_eq!(
+            Path::from("foo/bar").file_name(),
+            Some(CString::new("bar").unwrap().as_c_str())
+        );
+        assert_eq!(
+            Path::from("/foo").file_name(),
+            Some(CString::new("foo").unwrap().as_c_str())
+        );
+        assert_eq!(
+            Path::from("/foo/bar").file_name(),
+            Some(CString::new("bar").unwrap().as_c_str())
+        );
         assert_eq!(Path::from("/").file_name(), None);
         assert_eq!(Path::from(".").file_name(), None);
         assert_eq!(Path::from("..").file_name(), None);
@@ -302,8 +311,14 @@ mod test {
 
     #[test]
     fn parent() {
-        assert_eq!(Path::from("foo/bar").parent(), Some(&Arc::new(Path::from("foo"))));
-        assert_eq!(Path::from("/foo").parent(), Some(&Arc::new(Path::from("/"))));
+        assert_eq!(
+            Path::from("foo/bar").parent(),
+            Some(&Arc::new(Path::from("foo")))
+        );
+        assert_eq!(
+            Path::from("/foo").parent(),
+            Some(&Arc::new(Path::from("/")))
+        );
         assert_eq!(Path::from("/").parent(), None);
     }
 
@@ -326,11 +341,17 @@ mod test {
 
     #[test]
     fn strip_prefix() {
-        assert_eq!(Path::from("/foo/bar").strip_prefix(&Path::from("/foo")),
-                   Some(Path::from("bar")));
-        assert_eq!(Path::from("/foo/bar").strip_prefix(&Path::from("/foo/bar")),
-                   Some(Path::from(".")));
-        assert_eq!(Path::from("/foo/bar").strip_prefix(&Path::from("/bar")),
-                   None);
+        assert_eq!(
+            Path::from("/foo/bar").strip_prefix(&Path::from("/foo")),
+            Some(Path::from("bar"))
+        );
+        assert_eq!(
+            Path::from("/foo/bar").strip_prefix(&Path::from("/foo/bar")),
+            Some(Path::from("."))
+        );
+        assert_eq!(
+            Path::from("/foo/bar").strip_prefix(&Path::from("/bar")),
+            None
+        );
     }
 }

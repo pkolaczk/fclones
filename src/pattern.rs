@@ -1,21 +1,21 @@
 use std::fmt::{Display, Formatter};
 use std::ops::Add;
-use std::path::{MAIN_SEPARATOR, PathBuf};
+use std::path::{PathBuf, MAIN_SEPARATOR};
 
 use nom::branch::alt;
 use nom::bytes::complete::tag;
 use nom::character::complete::{anychar, none_of};
 use nom::combinator::{cond, map};
-use nom::IResult;
 use nom::multi::{many0, separated_list};
 use nom::sequence::tuple;
+use nom::IResult;
 use pcre2::bytes::{Regex, RegexBuilder};
 use regex::escape;
 
 #[derive(Debug)]
 pub struct PatternError {
     cause: String,
-    input: String
+    input: String,
 }
 
 impl Display for PatternError {
@@ -30,22 +30,26 @@ impl Display for PatternError {
 pub struct Pattern {
     src: String,
     anchored_regex: Regex,
-    prefix_regex: Regex
+    prefix_regex: Regex,
 }
 
 pub struct PatternOpts {
-    case_insensitive: bool
+    case_insensitive: bool,
 }
 
 impl PatternOpts {
     pub fn case_insensitive() -> PatternOpts {
-        PatternOpts { case_insensitive: true }
+        PatternOpts {
+            case_insensitive: true,
+        }
     }
 }
 
 impl Default for PatternOpts {
     fn default() -> PatternOpts {
-        PatternOpts { case_insensitive: false }
+        PatternOpts {
+            case_insensitive: false,
+        }
     }
 }
 
@@ -53,7 +57,7 @@ impl Default for PatternOpts {
 enum Scope {
     TopLevel,
     CurlyBrackets,
-    RoundBrackets
+    RoundBrackets,
 }
 
 #[cfg(unix)]
@@ -63,7 +67,6 @@ pub const ESCAPE_CHAR: &'static str = "\\";
 pub const ESCAPE_CHAR: &'static str = "^";
 
 impl Pattern {
-
     /// Creates `Pattern` instance from raw regular expression. Supports PCRE syntax.
     pub fn regex(pattern: &str) -> Result<Pattern, PatternError> {
         Self::regex_with(pattern, &PatternOpts::default())
@@ -79,9 +82,11 @@ impl Pattern {
 
         // We don't set caseless on builder,
         // because we may wish to concatenate patterns of different case-sensitivities
-        let pattern =
-            if opts.case_insensitive { "(?i)".to_string() + pattern + "(?-i)" }
-            else { pattern.to_string() };
+        let pattern = if opts.case_insensitive {
+            "(?i)".to_string() + pattern + "(?-i)"
+        } else {
+            pattern.to_string()
+        };
 
         let anchored_regex = "^".to_string() + &pattern + "$";
         let anchored_regex = builder.build(anchored_regex.as_str());
@@ -97,8 +102,8 @@ impl Pattern {
             }),
             Err(e) => Err(PatternError {
                 input: pattern.to_string(),
-                cause: e.to_string()
-            })
+                cause: e.to_string(),
+            }),
         }
     }
 
@@ -135,27 +140,35 @@ impl Pattern {
     pub fn glob_with(glob: &str, opts: &PatternOpts) -> Result<Pattern, PatternError> {
         let result: IResult<&str, String> = Self::glob_to_regex(Scope::TopLevel, glob);
         match result {
-            Ok((remaining, regex)) if remaining.is_empty() =>
-                Self::regex_with(regex.as_str(), opts),
+            Ok((remaining, regex)) if remaining.is_empty() => {
+                Self::regex_with(regex.as_str(), opts)
+            }
             Ok((remaining, _)) => Err(PatternError {
                 input: glob.to_string(),
-                cause: format!("Unexpected '{}' at end of input", remaining.chars().next().unwrap())
+                cause: format!(
+                    "Unexpected '{}' at end of input",
+                    remaining.chars().next().unwrap()
+                ),
             }),
             Err(e) => Err(PatternError {
                 input: glob.to_string(),
-                cause: e.to_string()
-            })
+                cause: e.to_string(),
+            }),
         }
     }
 
     /// Returns true if this pattern fully matches the given path
     pub fn matches(&self, path: &str) -> bool {
-        self.anchored_regex.is_match(path.as_bytes()).unwrap_or(false)
+        self.anchored_regex
+            .is_match(path.as_bytes())
+            .unwrap_or(false)
     }
 
     /// Returns true if a prefix of this pattern fully matches the given path
     pub fn matches_partially(&self, path: &str) -> bool {
-        self.anchored_regex.is_partial_match(path.as_bytes()).unwrap_or(false)
+        self.anchored_regex
+            .is_partial_match(path.as_bytes())
+            .unwrap_or(false)
     }
 
     /// Returns true if this pattern fully matches a prefix of the given path
@@ -165,93 +178,95 @@ impl Pattern {
 
     /// Returns true if this pattern fully matches given file path
     pub fn matches_path(&self, path: &PathBuf) -> bool {
-        self.anchored_regex.is_match(path.to_string_lossy().as_bytes()).unwrap_or(false)
+        self.anchored_regex
+            .is_match(path.to_string_lossy().as_bytes())
+            .unwrap_or(false)
     }
 
     /// Parses a UNIX glob and converts it to a regular expression
     fn glob_to_regex(scope: Scope, glob: &str) -> IResult<&str, String> {
         // pass escaped characters as-is:
-        let p_escaped =
-            map(tuple((tag(ESCAPE_CHAR), anychar)), |(_, c)|
-                escape(c.to_string().as_str()));
+        let p_escaped = map(tuple((tag(ESCAPE_CHAR), anychar)), |(_, c)| {
+            escape(c.to_string().as_str())
+        });
 
         fn mk_string(contents: Vec<String>, prefix: &str, sep: &str, suffix: &str) -> String {
             format!("{}{}{}", prefix, contents.join(sep), suffix)
         }
 
         // { glob1, glob2, ..., globN } -> ( regex1, regex2, ..., regexN )
-        let p_alt =
-            map(tuple((
+        let p_alt = map(
+            tuple((
                 tag("{"),
                 separated_list(tag(","), |g| Self::glob_to_regex(Scope::CurlyBrackets, g)),
-                tag("}"))),
-                |(_, list, _)| mk_string(list, "(", "|", ")"));
+                tag("}"),
+            )),
+            |(_, list, _)| mk_string(list, "(", "|", ")"),
+        );
 
-        let p_ext_glob =
-            map(tuple((
+        let p_ext_glob = map(
+            tuple((
                 tag("("),
                 separated_list(tag("|"), |g| Self::glob_to_regex(Scope::RoundBrackets, g)),
-                tag(")"))), |(_, list, _)| list);
+                tag(")"),
+            )),
+            |(_, list, _)| list,
+        );
 
-        let p_ext_optional =
-            map(tuple((tag("?"), |i| p_ext_glob(i))),
-                |(_, g)| mk_string(g, "(", "|", ")?"));
-        let p_ext_many =
-            map(tuple((tag("*"), |i| p_ext_glob(i))),
-                |(_, g)| mk_string(g, "(", "|", ")*"));
-        let p_ext_at_least_once =
-            map(tuple((tag("+"), |i| p_ext_glob(i))),
-                |(_, g)| mk_string(g, "(", "|", ")+"));
-        let p_ext_exactly_once =
-            map(tuple((tag("@"), |i| p_ext_glob(i))),
-                |(_, g)| mk_string(g, "(", "|", ")"));
-        let p_ext_never =
-            map(tuple((tag("!"), |i| p_ext_glob(i))),
-                |(_, g)| mk_string(g, "(?!", "|", ")"));
+        let p_ext_optional = map(tuple((tag("?"), |i| p_ext_glob(i))), |(_, g)| {
+            mk_string(g, "(", "|", ")?")
+        });
+        let p_ext_many = map(tuple((tag("*"), |i| p_ext_glob(i))), |(_, g)| {
+            mk_string(g, "(", "|", ")*")
+        });
+        let p_ext_at_least_once = map(tuple((tag("+"), |i| p_ext_glob(i))), |(_, g)| {
+            mk_string(g, "(", "|", ")+")
+        });
+        let p_ext_exactly_once = map(tuple((tag("@"), |i| p_ext_glob(i))), |(_, g)| {
+            mk_string(g, "(", "|", ")")
+        });
+        let p_ext_never = map(tuple((tag("!"), |i| p_ext_glob(i))), |(_, g)| {
+            mk_string(g, "(?!", "|", ")")
+        });
 
         // ** -> .*
-        let p_double_star =
-            map(tag("**"), |_| ".*".to_string());
+        let p_double_star = map(tag("**"), |_| ".*".to_string());
 
         let escaped_sep = escape(MAIN_SEPARATOR.to_string().as_str());
 
         // * -> [^/]*
-        let p_single_star =
-            map(tag("*"), |_| "[^".to_string() + &escaped_sep + "]*");
+        let p_single_star = map(tag("*"), |_| "[^".to_string() + &escaped_sep + "]*");
 
         // ? -> .
-        let p_question_mark =
-            map(tag("?"), |_| "[^".to_string() + &escaped_sep + "]");
+        let p_question_mark = map(tag("?"), |_| "[^".to_string() + &escaped_sep + "]");
 
         // [ characters ] -> [ characters ]
-        let p_neg_character_set =
-            map(tuple((
-                tag("[!"),
-                many0(none_of("]")),
-                tag("]")
-            )), |(_, characters, _)|
-                    "[^".to_string() + &characters.into_iter().collect::<String>() + "]");
+        let p_neg_character_set = map(
+            tuple((tag("[!"), many0(none_of("]")), tag("]"))),
+            |(_, characters, _)| {
+                "[^".to_string() + &characters.into_iter().collect::<String>() + "]"
+            },
+        );
 
         // [ characters ] -> [ characters ]
-        let p_character_set =
-            map(tuple((
-                tag("["),
-                many0(none_of("]")),
-                tag("]")
-            )), |(_, characters, _)|
-                "[".to_string() + &characters.into_iter().collect::<String>() + "]");
+        let p_character_set = map(
+            tuple((tag("["), many0(none_of("]")), tag("]"))),
+            |(_, characters, _)| {
+                "[".to_string() + &characters.into_iter().collect::<String>() + "]"
+            },
+        );
 
-        let p_separator =
-            map(tag("/"), |_| escaped_sep.clone());
+        let p_separator = map(tag("/"), |_| escaped_sep.clone());
 
         // if we are nested, we can't just pass these through without interpretation
-        let p_any_char =
-            map(tuple((
+        let p_any_char = map(
+            tuple((
                 cond(scope == Scope::TopLevel, anychar),
                 cond(scope == Scope::CurlyBrackets, none_of("{,}")),
-                cond(scope == Scope::RoundBrackets, none_of("(|)"))
-            )), |(a, b, c)|
-                escape(a.or(b).or(c).unwrap().to_string().as_str()));
+                cond(scope == Scope::RoundBrackets, none_of("(|)")),
+            )),
+            |(a, b, c)| escape(a.or(b).or(c).unwrap().to_string().as_str()),
+        );
 
         let p_token = alt((
             p_escaped,
@@ -267,7 +282,8 @@ impl Pattern {
             p_neg_character_set,
             p_character_set,
             p_separator,
-            p_any_char));
+            p_any_char,
+        ));
 
         let parse_all = map(many0(p_token), |s| s.join(""));
         (parse_all)(glob)
@@ -287,7 +303,6 @@ impl ToString for Pattern {
         self.src.clone()
     }
 }
-
 
 #[cfg(test)]
 mod test {
@@ -382,8 +397,10 @@ mod test {
 
     #[test]
     fn literal() {
-        assert_eq!(Pattern::literal("test*?{}\\").to_string(),
-                   "test\\*\\?\\{\\}\\\\")
+        assert_eq!(
+            Pattern::literal("test*?{}\\").to_string(),
+            "test\\*\\?\\{\\}\\\\"
+        )
     }
 
     #[test]

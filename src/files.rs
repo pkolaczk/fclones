@@ -15,7 +15,7 @@ use std::os::unix::fs::OpenOptionsExt;
 use std::os::unix::io::*;
 
 use bytesize::ByteSize;
-use fasthash::{FastHasher, HasherExt, Murmur3Hasher, t1ha2::Hasher128};
+use fasthash::{t1ha2::Hasher128, FastHasher, HasherExt, Murmur3Hasher};
 use serde::*;
 use smallvec::alloc::fmt::Formatter;
 use smallvec::alloc::str::FromStr;
@@ -159,13 +159,12 @@ impl Mul<u64> for FileLen {
 }
 
 impl Sum<FileLen> for FileLen {
-    fn sum<I: Iterator<Item=FileLen>>(iter: I) -> Self {
+    fn sum<I: Iterator<Item = FileLen>>(iter: I) -> Self {
         iter.fold(FileLen(0), |a, b| a + b)
     }
 }
 
 impl FromStr for FileLen {
-
     type Err = <u64 as FromStr>::Err;
 
     // TODO handle units
@@ -193,7 +192,7 @@ pub struct FileInfo {
 #[repr(packed(4))]
 pub struct FileInfoNoLen {
     pub path: Path,
-    pub id_hash: u32
+    pub id_hash: u32,
 }
 
 impl FileInfo {
@@ -201,12 +200,19 @@ impl FileInfo {
         FileInfo {
             path,
             len: FileLen(metadata.len()),
-            id_hash: FileId { inode: metadata.ino(), device: metadata.dev() }.hash()
+            id_hash: FileId {
+                inode: metadata.ino(),
+                device: metadata.dev(),
+            }
+            .hash(),
         }
     }
     /// Removes the length field from the information and returns a smaller structure
     pub fn drop_len(self) -> FileInfoNoLen {
-        FileInfoNoLen { path: self.path, id_hash: self.id_hash }
+        FileInfoNoLen {
+            path: self.path,
+            id_hash: self.id_hash,
+        }
     }
 }
 
@@ -223,7 +229,11 @@ pub fn file_info_or_log_err(file: Path, log: &Log) -> Option<FileInfo> {
         Ok(metadata) => Some(FileInfo::for_file(file, &metadata)),
         Err(e) if e.kind() == ErrorKind::NotFound => None,
         Err(e) => {
-            log.err(format!("Failed to read metadata of {}: {}", file.display(), e));
+            log.err(format!(
+                "Failed to read metadata of {}: {}",
+                file.display(),
+                e
+            ));
             None
         }
     }
@@ -248,20 +258,29 @@ impl FileId {
 #[cfg(unix)]
 pub fn file_id(file: &Path) -> io::Result<FileId> {
     let metadata = std::fs::metadata(&file.to_path_buf())?;
-    Ok(FileId { inode: metadata.ino(), device: metadata.dev() })
+    Ok(FileId {
+        inode: metadata.ino(),
+        device: metadata.dev(),
+    })
 }
 
 #[cfg(unix)]
 pub fn file_id_or_log_err(file: &Path, log: &Log) -> Option<FileId> {
     match std::fs::metadata(&file.to_path_buf()) {
-        Ok(metadata) => Some(FileId { inode: metadata.ino(), device: metadata.dev() }),
+        Ok(metadata) => Some(FileId {
+            inode: metadata.ino(),
+            device: metadata.dev(),
+        }),
         Err(e) if e.kind() == ErrorKind::NotFound => None,
         Err(e) => {
-            log.err(format!("Failed to read metadata of {}: {}", file.display(), e));
+            log.err(format!(
+                "Failed to read metadata of {}: {}",
+                file.display(),
+                e
+            ));
             None
         }
     }
-
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
@@ -291,7 +310,8 @@ impl Display for FileHash {
 
 impl Serialize for FileHash {
     fn serialize<S>(&self, serializer: S) -> Result<<S as Serializer>::Ok, <S as Serializer>::Error>
-        where S: Serializer
+    where
+        S: Serializer,
     {
         serializer.collect_str(self)
     }
@@ -309,10 +329,12 @@ fn to_off_t(offset: u64) -> i64 {
 /// the program. At worst, failure could hurt performance.
 #[cfg(target_os = "linux")]
 fn fadvise(file: &File, offset: FilePos, len: FileLen, advice: nix::fcntl::PosixFadviseAdvice) {
-    let _ = nix::fcntl::posix_fadvise(file.as_raw_fd(),
-                          to_off_t(offset.into()),
-                          to_off_t(len.into()),
-                          advice);
+    let _ = nix::fcntl::posix_fadvise(
+        file.as_raw_fd(),
+        to_off_t(offset.into()),
+        to_off_t(len.into()),
+        advice,
+    );
 }
 
 /// Optimizes file read performance based on how many bytes we are planning to read.
@@ -320,13 +342,12 @@ fn fadvise(file: &File, offset: FilePos, len: FileLen, advice: nix::fcntl::Posix
 /// On non-Unix systems, does nothing.
 /// Failures are not signalled to the caller, but a warning is printed to stderr.
 fn configure_readahead(file: &File, offset: FilePos, len: FileLen, cache_policy: Caching) {
-    #[cfg(target_os="linux")] {
+    #[cfg(target_os = "linux")]
+    {
         use nix::fcntl::*;
-        let advise = |advice: PosixFadviseAdvice| {
-            fadvise(file, offset, len, advice)
-        };
+        let advise = |advice: PosixFadviseAdvice| fadvise(file, offset, len, advice);
         match cache_policy {
-            Caching::Default => {},
+            Caching::Default => {}
             Caching::Random => advise(PosixFadviseAdvice::POSIX_FADV_RANDOM),
             Caching::Sequential => advise(PosixFadviseAdvice::POSIX_FADV_SEQUENTIAL),
         };
@@ -336,7 +357,8 @@ fn configure_readahead(file: &File, offset: FilePos, len: FileLen, cache_policy:
 /// Tells the system to remove given file fragment from the page cache.
 /// On non-Unix systems, does nothing.
 fn evict_page_cache(file: &File, offset: FilePos, len: FileLen) {
-    #[cfg(target_os="linux")] {
+    #[cfg(target_os = "linux")]
+    {
         use nix::fcntl::*;
         fadvise(file, offset, len, PosixFadviseAdvice::POSIX_FADV_DONTNEED);
     }
@@ -347,12 +369,13 @@ fn evict_page_cache(file: &File, offset: FilePos, len: FileLen) {
 /// This program is likely to be used only once, so there is little value in keeping its
 /// data cached for further use.
 fn evict_page_cache_if_low_mem(file: &mut File, len: FileLen) {
-    #[cfg(target_os="linux")] {
+    #[cfg(target_os = "linux")]
+    {
         let buf_len: FileLen = BUF_LEN.into();
         if len > buf_len * 2 {
             let free_ratio = match mem_info() {
                 Ok(mem) => mem.free as f32 / mem.total as f32,
-                Err(_) => 0.0
+                Err(_) => 0.0,
             };
             if free_ratio < 0.05 {
                 evict_page_cache(&file, FilePos::zero() + buf_len, len - buf_len * 2);
@@ -390,14 +413,17 @@ fn open_noatime(path: &Path) -> io::Result<File> {
     let path = path.to_path_buf();
     let mut options = OpenOptions::new();
     options.read(true);
-    #[cfg(target_os="linux")] {
+    #[cfg(target_os = "linux")]
+    {
         let mut noatime_opts = options.clone();
         noatime_opts.custom_flags(libc::O_NOATIME);
-        noatime_opts.open(&path)
+        noatime_opts
+            .open(&path)
             // opening with O_NOATIME may fail in some cases for security reasons
             .or_else(|_| options.open(&path))
     }
-    #[cfg(not(target_os="linux"))]{
+    #[cfg(not(target_os = "linux"))]
+    {
         options.open(&path)
     }
 }
@@ -413,12 +439,11 @@ fn scan<F: FnMut(&[u8]) -> ()>(file: &mut File, len: FileLen, mut consumer: F) -
         let to_read = min(remaining, buf.len() as u64) as usize;
         let buf = &mut buf[..to_read];
         match file.read(buf) {
-            Ok(0) =>
-                break,
+            Ok(0) => break,
             Ok(actual_read) => {
                 read += actual_read as u64;
                 (consumer)(buf);
-            },
+            }
             Err(e) => {
                 return Err(e);
             }
@@ -452,13 +477,13 @@ fn scan<F: FnMut(&[u8]) -> ()>(file: &mut File, len: FileLen, mut consumer: F) -
 /// assert_ne!(hash1, hash2);
 /// assert_ne!(hash2, hash3);
 /// ```
-pub fn file_hash(path: &Path,
-                 offset: FilePos,
-                 len: FileLen,
-                 cache_policy: Caching,
-                 progress: impl Fn(usize))
-                 -> io::Result<FileHash>
-{
+pub fn file_hash(
+    path: &Path,
+    offset: FilePos,
+    len: FileLen,
+    cache_policy: Caching,
+    progress: impl Fn(usize),
+) -> io::Result<FileHash> {
     let mut hasher = Hasher128::new();
     let mut file = open(path, offset, len, cache_policy)?;
     scan(&mut file, len, |buf| {
@@ -479,15 +504,17 @@ pub fn file_hash_or_log_err(
     len: FileLen,
     caching: Caching,
     progress: impl Fn(usize),
-    log: &Log)
-    -> Option<FileHash>
-{
+    log: &Log,
+) -> Option<FileHash> {
     match file_hash(path, offset, len, caching, progress) {
         Ok(hash) => Some(hash),
-        Err(e) if e.kind() == ErrorKind::NotFound =>
-            None,
+        Err(e) if e.kind() == ErrorKind::NotFound => None,
         Err(e) => {
-            log.err(format!("Failed to compute hash of file {}: {}", path.display(), e));
+            log.err(format!(
+                "Failed to compute hash of file {}: {}",
+                path.display(),
+                e
+            ));
             None
         }
     }

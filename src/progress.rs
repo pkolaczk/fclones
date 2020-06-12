@@ -1,9 +1,9 @@
-use indicatif::{ProgressBar, ProgressStyle, ProgressDrawTarget};
-use atomic_counter::{RelaxedCounter, AtomicCounter};
+use atomic_counter::{AtomicCounter, RelaxedCounter};
+use console::style;
+use indicatif::{ProgressBar, ProgressDrawTarget, ProgressStyle};
 use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
-use console::style;
 
 /// A wrapper over `indicatif::ProgressBar` that makes updating its progress lockless.
 /// Unfortunately `indicatif::ProgressBar` wraps state in a `Mutex`, so updates are slow
@@ -31,9 +31,8 @@ use console::style;
 /// ```
 pub struct FastProgressBar {
     counter: Arc<RelaxedCounter>,
-    progress_bar: Arc<ProgressBar>
+    progress_bar: Arc<ProgressBar>,
 }
-
 
 impl FastProgressBar {
     /// Width of the progress bar in characters
@@ -59,7 +58,10 @@ impl FastProgressBar {
                 thread::sleep(Duration::from_millis(Self::REFRESH_PERIOD_MS));
             }
         });
-        FastProgressBar { counter, progress_bar: pb }
+        FastProgressBar {
+            counter,
+            progress_bar: pb,
+        }
     }
 
     /// Generate spinner animation strings.
@@ -83,13 +85,14 @@ impl FastProgressBar {
     /// Create a new preconfigured animated spinner with given message.
     pub fn new_spinner(msg: &str) -> FastProgressBar {
         let inner = ProgressBar::new_spinner();
-        let template = style("{msg:28}").cyan().bold().for_stderr().to_string() +
-            "[{spinner}] {pos:>10}";
+        let template =
+            style("{msg:28}").cyan().bold().for_stderr().to_string() + "[{spinner}] {pos:>10}";
         let tick_strings = Self::gen_tick_strings();
         let tick_strings: Vec<&str> = tick_strings.iter().map(|s| s as &str).collect();
-        inner.set_style(ProgressStyle::default_spinner()
-            .template(template.as_str())
-            .tick_strings(tick_strings.as_slice())
+        inner.set_style(
+            ProgressStyle::default_spinner()
+                .template(template.as_str())
+                .tick_strings(tick_strings.as_slice()),
         );
         inner.set_message(msg);
         Self::wrap(inner)
@@ -98,12 +101,14 @@ impl FastProgressBar {
     /// Create a new preconfigured progress bar with given message.
     pub fn new_progress_bar(msg: &str, len: u64) -> FastProgressBar {
         let inner = ProgressBar::new(len);
-        let template = style("{msg:28}").cyan().bold().for_stderr().to_string() +
-            &"[{bar:WIDTH}] {pos:>10}/{len}".replace("WIDTH", Self::WIDTH.to_string().as_str());
+        let template = style("{msg:28}").cyan().bold().for_stderr().to_string()
+            + &"[{bar:WIDTH}] {pos:>10}/{len}".replace("WIDTH", Self::WIDTH.to_string().as_str());
 
-        inner.set_style(ProgressStyle::default_bar()
-            .template(template.as_str())
-            .progress_chars(Self::PROGRESS_CHARS));
+        inner.set_style(
+            ProgressStyle::default_bar()
+                .template(template.as_str())
+                .progress_chars(Self::PROGRESS_CHARS),
+        );
         inner.set_message(msg);
         FastProgressBar::wrap(inner)
     }
@@ -112,12 +117,15 @@ impl FastProgressBar {
     /// Displays progress in bytes.
     pub fn new_bytes_progress_bar(msg: &str, len: u64) -> FastProgressBar {
         let inner = ProgressBar::new(len);
-        let template = style("{msg:28}").cyan().bold().for_stderr().to_string() +
-            &"[{bar:WIDTH}] {bytes:>10}/{total_bytes}".replace("WIDTH", Self::WIDTH.to_string().as_str());
+        let template = style("{msg:28}").cyan().bold().for_stderr().to_string()
+            + &"[{bar:WIDTH}] {bytes:>10}/{total_bytes}"
+                .replace("WIDTH", Self::WIDTH.to_string().as_str());
 
-        inner.set_style(ProgressStyle::default_bar()
-            .template(template.as_str())
-            .progress_chars(Self::PROGRESS_CHARS));
+        inner.set_style(
+            ProgressStyle::default_bar()
+                .template(template.as_str())
+                .progress_chars(Self::PROGRESS_CHARS),
+        );
         inner.set_message(msg);
 
         FastProgressBar::wrap(inner)

@@ -5,17 +5,16 @@ use std::sync::Arc;
 use console::style;
 
 use crate::group::FileGroup;
+use crate::path::Path;
 use crate::progress::FastProgressBar;
 use serde::{Serialize, Serializer};
-use crate::path::Path;
 
 pub struct Reporter<W: Write> {
     out: W,
-    progress: Arc<FastProgressBar>
+    progress: Arc<FastProgressBar>,
 }
 
 impl<W: Write> Reporter<W> {
-
     pub fn new(out: W, progress: Arc<FastProgressBar>) -> Reporter<W> {
         Reporter { out, progress }
     }
@@ -35,11 +34,10 @@ impl<W: Write> Reporter<W> {
     pub fn write_as_text(&mut self, results: &Vec<FileGroup<Path>>) -> io::Result<()> {
         for g in results {
             let len = style(format!("{:8}", g.len)).yellow().bold();
-            let hash =
-                match g.hash {
-                    None => style("-".repeat(32)).white().dim(),
-                    Some(hash) => style(format!("{}", hash)).blue().bold().bright()
-                };
+            let hash = match g.hash {
+                None => style("-".repeat(32)).white().dim(),
+                Some(hash) => style(format!("{}", hash)).blue().bold().bright(),
+            };
             writeln!(self.out, "{} {}:", len, hash.for_stdout())?;
             for f in g.files.iter() {
                 self.progress.tick();
@@ -68,7 +66,12 @@ impl<W: Write> Reporter<W> {
         for g in results {
             let mut record = csv::StringRecord::new();
             record.push_field(g.len.0.to_string().as_str());
-            record.push_field(g.hash.map(|h| h.to_string()).unwrap_or("".to_string()).as_str());
+            record.push_field(
+                g.hash
+                    .map(|h| h.to_string())
+                    .unwrap_or("".to_string())
+                    .as_str(),
+            );
             record.push_field(g.files.len().to_string().as_str());
             for f in g.files.iter() {
                 record.push_field(f.to_string_lossy().as_ref());
@@ -101,7 +104,10 @@ impl<W: Write> Reporter<W> {
     /// ]
     /// ```
     pub fn write_as_json(&mut self, results: &Vec<FileGroup<Path>>) -> io::Result<()> {
-        let wrapper = VecWrapper { vec: results, progress: self.progress.as_ref() };
+        let wrapper = VecWrapper {
+            vec: results,
+            progress: self.progress.as_ref(),
+        };
         serde_json::to_writer_pretty(&mut self.out, &wrapper)?;
         Ok(())
     }
@@ -110,16 +116,18 @@ impl<W: Write> Reporter<W> {
 /// This wrapper allows us to track progress while we're serializing
 struct VecWrapper<'a, T> {
     vec: &'a Vec<T>,
-    progress: &'a FastProgressBar
+    progress: &'a FastProgressBar,
 }
 
 impl Serialize for VecWrapper<'_, FileGroup<Path>> {
     fn serialize<S>(&self, serializer: S) -> Result<<S as Serializer>::Ok, <S as Serializer>::Error>
-        where S: Serializer
+    where
+        S: Serializer,
     {
-        let i = self.vec.iter()
+        let i = self
+            .vec
+            .iter()
             .inspect(|&g| self.progress.inc(g.files.len()));
         serializer.collect_seq(i)
     }
 }
-
