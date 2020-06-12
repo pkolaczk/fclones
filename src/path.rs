@@ -1,6 +1,6 @@
 use std::ffi::{CStr, CString, OsStr, OsString};
 use std::fmt::Display;
-use std::hash::{Hash, Hasher};
+use std::hash::Hash;
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Component, PathBuf};
 use std::sync::Arc;
@@ -16,7 +16,7 @@ use smallvec::SmallVec;
 /// the parent duplicated in memory, wasting a lot of memory.
 /// This shares the common parent between many paths.
 /// The price is a tiny cost of managing Arc references.
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Debug, Hash, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Path {
     parent: Option<Arc<Path>>,
     component: CString,
@@ -59,7 +59,7 @@ impl Path {
         let mut iter = components.iter();
         let mut result = self.push(CString::from(*iter.next().unwrap()));
 
-        while let Some(&c) = iter.next() {
+        for &c in iter {
             result = Arc::new(result).push(CString::from(c));
         }
         result
@@ -149,7 +149,7 @@ impl Path {
 
     /// Executes a function for each component, left to right
     fn for_each_component_ref<F: FnMut(&CStr)>(&self, f: &mut F) {
-        &self.parent.iter().for_each(|p| p.for_each_component_ref(f));
+        self.parent.iter().for_each(|p| p.for_each_component_ref(f));
         (f)(self.component.as_c_str())
     }
 
@@ -239,13 +239,6 @@ impl From<std::path::PathBuf> for Path {
 impl From<&std::path::PathBuf> for Path {
     fn from(p: &std::path::PathBuf) -> Self {
         Path::from(p.as_path())
-    }
-}
-
-impl Hash for Path {
-    fn hash<H: Hasher>(&self, state: &mut H) {
-        self.component.hash(state);
-        self.parent.hash(state);
     }
 }
 

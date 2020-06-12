@@ -3,7 +3,7 @@ jobs:
   build:
     machine: true
 
-    working_directory: ~/rust-demo
+    working_directory: ~/fclones
 
     steps:
       - checkout

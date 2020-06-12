@@ -75,8 +75,8 @@ impl Pattern {
     /// Creates `Pattern` instance from raw regular expression. Supports PCRE syntax.
     /// Allows to specify case sensitivity
     pub fn regex_with(pattern: &str, opts: &PatternOpts) -> Result<Pattern, PatternError> {
-        let pattern = pattern.trim_start_matches("^");
-        let pattern = pattern.trim_end_matches("$");
+        let pattern = pattern.trim_start_matches('^');
+        let pattern = pattern.trim_end_matches('$');
         let mut builder = RegexBuilder::new();
         builder.jit_if_available(true);
 
@@ -96,12 +96,12 @@ impl Pattern {
 
         match anchored_regex {
             Ok(anchored_regex) => Ok(Pattern {
-                src: pattern.to_owned(),
+                src: pattern,
                 anchored_regex,
                 prefix_regex: prefix_regex.unwrap(),
             }),
             Err(e) => Err(PatternError {
-                input: pattern.to_string(),
+                input: pattern,
                 cause: e.to_string(),
             }),
         }

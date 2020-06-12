@@ -40,9 +40,8 @@ fn configure_thread_pool(parallelism: usize) {
 /// Unless `duplicate_links` is set to true,
 /// remove duplicated `FileInfo` entries with the same inode and device id from the list.
 fn prune_links_if_needed(ctx: &AppCtx, files: Vec<FileInfoNoLen>) -> Vec<FileInfoNoLen> {
-    if ctx.config.no_prune_links {
-        files
-    } else if files.iter().unique_by(|i| i.id_hash).count() == files.len() {
+    // if we allow non-unique, or they are already unique, don't deduplicate
+    if ctx.config.no_prune_links || files.iter().unique_by(|i| i.id_hash).count() == files.len() {
         files
     } else {
         files
@@ -318,10 +317,10 @@ fn write_report(ctx: &mut AppCtx, groups: &mut Vec<FileGroup<Path>>) {
 }
 
 fn paint_help(s: &str) -> String {
-    let escape_regex = Regex::new(r"\{escape}").unwrap();
+    let escape_regex = "{escape}";
     let code_regex = Regex::new(r"`([^`]+)`").unwrap();
     let title_regex = Regex::new(r"(?m)^# *(.*?)$").unwrap();
-    let s = escape_regex.replace_all(s.as_ref(), ESCAPE_CHAR);
+    let s = s.replace(escape_regex, ESCAPE_CHAR);
     let s = code_regex.replace_all(s.as_ref(), style("$1").green().to_string().as_str());
     title_regex
         .replace_all(s.as_ref(), style("$1").yellow().to_string().as_str())

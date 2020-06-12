@@ -108,7 +108,7 @@ pub struct FileLen(pub u64);
 
 impl FileLen {
     pub const MAX: FileLen = FileLen(u64::MAX);
-    pub fn as_pos(&self) -> FilePos {
+    pub fn as_pos(self) -> FilePos {
         FilePos(self.0)
     }
 }

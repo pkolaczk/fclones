@@ -119,3 +119,9 @@ impl Log {
         self.eprintln(msg);
     }
 }
+
+impl Default for Log {
+    fn default() -> Self {
+        Log::new()
+    }
+}

@@ -178,14 +178,13 @@ impl Config {
             Box::new(
                 BufReader::new(stdin())
                     .lines()
-                    .into_iter()
                     .map(|s| Path::from(s.unwrap().as_str())),
             )
         } else {
             Box::new(
                 self.paths
                     .iter()
-                    .map(|p| Path::from(p))
+                    .map(Path::from)
                     .collect::<Vec<_>>()
                     .into_iter(),
             )

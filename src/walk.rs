@@ -209,7 +209,7 @@ impl<'a> Walk<'a> {
         // Skip hidden files
         if self.skip_hidden {
             if let Some(name) = entry.path.file_name() {
-                if name.to_string_lossy().starts_with(".") {
+                if name.to_string_lossy().starts_with('.') {
                     return;
                 }
             }
@@ -291,8 +291,7 @@ impl<'a> Walk<'a> {
         let mut links = vec![];
         let mut dirs = vec![];
         let path = Arc::new(parent);
-        rd.into_iter()
-            .filter_map(|e| e.ok())
+        rd.filter_map(|e| e.ok())
             .filter_map(|e| Entry::from_dir_entry(&path, e).ok())
             .for_each(|e| match e.tpe {
                 EntryType::File => files.push(e),
@@ -327,6 +326,12 @@ impl<'a> Walk<'a> {
     /// Logs an error
     fn log_err(&self, msg: String) {
         self.log.iter().for_each(|l| l.err(&msg))
+    }
+}
+
+impl<'a> Default for Walk<'a> {
+    fn default() -> Self {
+        Self::new()
     }
 }
 

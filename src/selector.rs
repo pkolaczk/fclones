@@ -74,7 +74,7 @@ impl PathSelector {
     /// 2. it doesn't match any of the exclude filters ending with `**` pattern.
     pub fn matches_dir(&self, path: &Path) -> bool {
         self.with_absolute_path(path, |path| {
-            let mut path = path.to_string_lossy().to_string();
+            let mut path = path.to_string_lossy();
             if !path.ends_with(MAIN_SEPARATOR) {
                 path.push(MAIN_SEPARATOR);
             }

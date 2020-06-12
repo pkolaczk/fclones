@@ -31,7 +31,7 @@ impl<W: Write> Reporter<W> {
     ///     ...
     ///     <path N>
     /// ```
-    pub fn write_as_text(&mut self, results: &Vec<FileGroup<Path>>) -> io::Result<()> {
+    pub fn write_as_text(&mut self, results: &[FileGroup<Path>]) -> io::Result<()> {
         for g in results {
             let len = style(format!("{:8}", g.len)).yellow().bold();
             let hash = match g.hash {
@@ -55,7 +55,7 @@ impl<W: Write> Reporter<W> {
     /// - file hash (may be empty)
     /// - number of files in the group
     /// - file paths - each file in a separate column
-    pub fn write_as_csv(&mut self, results: &Vec<FileGroup<Path>>) -> io::Result<()> {
+    pub fn write_as_csv(&mut self, results: &[FileGroup<Path>]) -> io::Result<()> {
         let mut wtr = csv::WriterBuilder::new()
             .delimiter(b',')
             .quote_style(csv::QuoteStyle::Necessary)
@@ -69,7 +69,7 @@ impl<W: Write> Reporter<W> {
             record.push_field(
                 g.hash
                     .map(|h| h.to_string())
-                    .unwrap_or("".to_string())
+                    .unwrap_or_else(|| "".to_string())
                     .as_str(),
             );
             record.push_field(g.files.len().to_string().as_str());
@@ -103,8 +103,8 @@ impl<W: Write> Reporter<W> {
     ///   }
     /// ]
     /// ```
-    pub fn write_as_json(&mut self, results: &Vec<FileGroup<Path>>) -> io::Result<()> {
-        let wrapper = VecWrapper {
+    pub fn write_as_json(&mut self, results: &[FileGroup<Path>]) -> io::Result<()> {
+        let wrapper = SliceWrapper {
             vec: results,
             progress: self.progress.as_ref(),
         };
@@ -114,12 +114,12 @@ impl<W: Write> Reporter<W> {
 }
 
 /// This wrapper allows us to track progress while we're serializing
-struct VecWrapper<'a, T> {
-    vec: &'a Vec<T>,
+struct SliceWrapper<'a, T> {
+    vec: &'a [T],
     progress: &'a FastProgressBar,
 }
 
-impl Serialize for VecWrapper<'_, FileGroup<Path>> {
+impl Serialize for SliceWrapper<'_, FileGroup<Path>> {
     fn serialize<S>(&self, serializer: S) -> Result<<S as Serializer>::Ok, <S as Serializer>::Error>
     where
         S: Serializer,

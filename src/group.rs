@@ -65,7 +65,7 @@ where
     /// Note, this doesn't take `&mut self` so this can be called from safely from many threads.
     pub fn add(&mut self, item: T) {
         let (key, new_item) = (self.split_fn)(item);
-        self.groups.entry(key).or_insert(vec![]).push(new_item);
+        self.groups.entry(key).or_default().push(new_item);
     }
 
     /// Returns number of groups larger than given min_size
