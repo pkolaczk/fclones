@@ -1,9 +1,9 @@
 version: 2.1
+
 jobs:
   build:
-    machine: true
-
-    working_directory: ~/fclones
+    docker:
+      - image: circleci/rust:latest
 
     steps:
       - checkout
@@ -11,28 +11,21 @@ jobs:
           name: Setup build environment
           command: |
             sudo apt-get update
-            sudo apt-get install -y cmake binutils-dev libcurl4-openssl-dev libiberty-dev libelf-dev libdw-dev
-            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- --no-modify-path --default-toolchain none -y;
-            export PATH=~/.cargo/bin:$PATH
-            rustup install stable
-            rustup default stable
+            sudo apt-get install -y git
           no_output_timeout: 1800s
       - run:
           name: Format
           command: |
-            export PATH=~/.cargo/bin:$PATH
             rustup component add rustfmt
             cargo fmt --all -- --check
       - run:
           name: Clippy
           command: |
-            export PATH=~/.cargo/bin:$PATH
             rustup component add clippy
             cargo clippy --all -- -D warnings -D rust-2018-idioms
       - run:
           name: Test
           command: |
-            export PATH=~/.cargo/bin:$PATH
             export RUST_BACKTRACE=1
             cargo test
 
