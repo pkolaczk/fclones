@@ -15,7 +15,7 @@ use std::os::unix::fs::OpenOptionsExt;
 use std::os::unix::io::*;
 
 use bytesize::ByteSize;
-use fasthash::{t1ha2::Hasher128, FastHasher, HasherExt, Murmur3Hasher};
+use metrohash::{MetroHash128, MetroHash64};
 use serde::*;
 use smallvec::alloc::fmt::Formatter;
 use smallvec::alloc::str::FromStr;
@@ -248,7 +248,7 @@ pub struct FileId {
 
 impl FileId {
     pub fn hash(&self) -> u32 {
-        let mut hasher: Murmur3Hasher = Default::default();
+        let mut hasher = MetroHash64::new();
         self.inode.hash(&mut hasher);
         self.device.hash(&mut hasher);
         hasher.finish() as u32
@@ -484,16 +484,15 @@ pub fn file_hash(
     cache_policy: Caching,
     progress: impl Fn(usize),
 ) -> io::Result<FileHash> {
-    let mut hasher = Hasher128::new();
+    let mut hasher = MetroHash128::new();
     let mut file = open(path, offset, len, cache_policy)?;
     scan(&mut file, len, |buf| {
-        let mut block_hasher = Hasher128::new();
-        block_hasher.write(buf);
-        hasher.write_u128(block_hasher.finish_ext());
+        hasher.write(buf);
         (progress)(buf.len());
     })?;
     evict_page_cache_if_low_mem(&mut file, len);
-    Ok(FileHash(hasher.finish_ext()))
+    let (a, b) = hasher.finish128();
+    Ok(FileHash(((a as u128) << 64) | b as u128))
 }
 
 /// Computes the file hash or logs an error and returns none if failed.

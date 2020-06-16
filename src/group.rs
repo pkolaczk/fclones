@@ -155,11 +155,11 @@ pub trait SplitGroups<G, H> {
     ///
     /// # Example
     /// ```
+    /// use metrohash::MetroHash128;
     /// use rayon::iter::ParallelIterator;
-    /// use fclones::files::{FileLen, FileHash};
-    /// use fasthash::spooky::Hasher128;
-    /// use fasthash::{FastHasher, HasherExt};
     /// use std::hash::Hasher;
+    ///
+    /// use fclones::files::{FileLen, FileHash};
     /// use fclones::group::{FileGroup, SplitGroups};
     /// use fclones::path::Path;
     ///
@@ -169,9 +169,9 @@ pub trait SplitGroups<G, H> {
     /// ]};
     ///
     /// fn hash(len: FileLen, hash: Option<FileHash>, path: &Path) -> Option<FileHash> {
-    ///     let mut hasher = Hasher128::new();
+    ///     let mut hasher = MetroHash128::new();
     ///     hasher.write(path.to_string().as_bytes());
-    ///     Some(FileHash(hasher.finish_ext()))
+    ///     Some(FileHash(hasher.finish() as u128))
     /// }
     ///
     /// let mut groups = vec![g].split(1, hash);
