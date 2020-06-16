@@ -1,15 +1,16 @@
-use std::ffi::{CStr, CString, OsStr, OsString};
-use std::fmt::Display;
-use std::hash::Hash;
-use std::os::unix::ffi::OsStrExt;
-use std::path::{Component, PathBuf};
-use std::sync::Arc;
-use std::{fmt, io};
-
+#[cfg(unix)]
 use nix::NixPath;
 use nom::lib::std::fmt::Formatter;
 use serde::{Serialize, Serializer};
 use smallvec::SmallVec;
+use std::ffi::{CStr, CString, OsStr, OsString};
+use std::fmt::Display;
+use std::hash::Hash;
+#[cfg(unix)]
+use std::os::unix::ffi::OsStrExt;
+use std::path::{Component, PathBuf};
+use std::sync::Arc;
+use std::{fmt, io};
 
 /// Memory-efficient path representation.
 /// When storing multiple paths with common parent, the standard PathBuf would keep
