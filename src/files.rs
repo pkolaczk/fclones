@@ -320,6 +320,7 @@ impl Serialize for FileHash {
 /// There is one such buffer per thread.
 pub const BUF_LEN: usize = 16 * 1024;
 
+#[cfg(unix)]
 fn to_off_t(offset: u64) -> libc::off_t {
     min(libc::off_t::MAX as u64, offset) as libc::off_t
 }
