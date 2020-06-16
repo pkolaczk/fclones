@@ -93,8 +93,9 @@ the previous stage must complete fully before the next one is started.
    omitted. Same as in steps 4 and 5, split groups and remove the ones that are too small.
 7. Write report to the stdout.          
     
-Note that there is no byte-by-byte comparison of files anywhere. A fast but good 128-bit T1HA hash function
-is used and you don't need to worry about hash collisions. At 10^15 files, the probability of collision is
+Note that there is no byte-by-byte comparison of files anywhere. A fast and good 128-bit 
+[MetroHash](http://www.jandrewrogers.com/2015/05/27/metrohash/) hash function
+is used and you don't need to worry about hash collisions. At 10<sup>15</sup> files, the probability of collision is
 0.000000001, without taking into account the requirement for the files to also match by size.
     
 ## Benchmarks
