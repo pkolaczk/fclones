@@ -5,7 +5,7 @@ use std::io;
 use std::sync::Arc;
 
 use dashmap::DashSet;
-use fasthash::{t1ha2::Hasher128, FastHasher, HasherExt};
+use metrohash::MetroHash128;
 use rayon::Scope;
 
 use crate::log::Log;
@@ -186,9 +186,10 @@ impl<'a> Walk<'a> {
     /// We need 128-bits so that collisions are not a problem.
     /// Thanks to using a long hash we can be sure collisions won't be a problem.
     fn path_hash(path: &Path) -> u128 {
-        let mut h = Hasher128::new();
+        let mut h = MetroHash128::new();
         path.hash(&mut h);
-        h.finish_ext()
+        let (a, b) = h.finish128();
+        (a as u128) << 64 | b as u128
     }
 
     /// Visits a path that was already converted to an `Entry` so the entry type is known.
