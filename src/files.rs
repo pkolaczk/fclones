@@ -320,8 +320,8 @@ impl Serialize for FileHash {
 /// There is one such buffer per thread.
 pub const BUF_LEN: usize = 16 * 1024;
 
-fn to_off_t(offset: u64) -> i64 {
-    min(i64::MAX as u64, offset) as i64
+fn to_off_t(offset: u64) -> libc::off_t {
+    min(libc::off_t::MAX as u64, offset) as libc::off_t
 }
 
 /// Wrapper for `posix_fadvise`. Ignores errors.
