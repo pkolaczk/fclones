@@ -27,11 +27,16 @@ impl Path {
         self.to_path_buf().canonicalize().map(|p| Path::from(&p))
     }
 
+    #[cfg(unix)]
     pub fn is_absolute(&self) -> bool {
-        match self.root().component.as_bytes() {
-            b"/" => true,
-            _ => false,
-        }
+        let root = self.root().component.as_bytes();
+        root == b"/"
+    }
+
+    #[cfg(windows)]
+    pub fn is_absolute(&self) -> bool {
+        let root = self.root().component.as_bytes();
+        root[root.len() - 1] == b':'
     }
 
     pub fn is_relative(&self) -> bool {
