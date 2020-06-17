@@ -1,16 +1,15 @@
-#[cfg(unix)]
-use nix::NixPath;
-use nom::lib::std::fmt::Formatter;
-use serde::{Serialize, Serializer};
-use smallvec::SmallVec;
-use std::ffi::{CStr, CString, OsStr, OsString};
+use std::ffi::{CStr, CString, OsString};
 use std::fmt::Display;
 use std::hash::Hash;
-#[cfg(unix)]
-use std::os::unix::ffi::OsStrExt;
 use std::path::{Component, PathBuf};
 use std::sync::Arc;
 use std::{fmt, io};
+
+use nom::lib::std::fmt::Formatter;
+use serde::{Serialize, Serializer};
+use smallvec::SmallVec;
+
+use crate::path::string::{c_to_os_str, os_to_c_str};
 
 /// Memory-efficient path representation.
 /// When storing multiple paths with common parent, the standard PathBuf would keep
@@ -104,7 +103,7 @@ impl Path {
     /// We need this to be able to use this path with other standard library I/O functions.
     pub fn to_path_buf(&self) -> PathBuf {
         let mut result = PathBuf::from(OsString::with_capacity(self.capacity()));
-        self.for_each_component(|c| result.push(OsStr::from_bytes(c.to_bytes())));
+        self.for_each_component(|c| result.push(c_to_os_str(c)));
         result
     }
 
@@ -157,7 +156,7 @@ impl Path {
     /// Estimates size of this path in bytes
     fn capacity(&self) -> usize {
         let mut result: usize = 0;
-        self.for_each_component(|c| result += c.len() + 1);
+        self.for_each_component(|c| result += c.to_bytes().len() + 1);
         result
     }
 
@@ -197,7 +196,7 @@ impl AsRef<Path> for Path {
 
 /// Converts std path Component to a new CString
 fn component_to_c_string(c: &Component<'_>) -> CString {
-    CString::new(c.as_os_str().as_bytes()).unwrap()
+    os_to_c_str(c.as_os_str())
 }
 
 impl From<&std::path::Path> for Path {
@@ -255,6 +254,32 @@ impl Serialize for Path {
         S: Serializer,
     {
         serializer.collect_str(self)
+    }
+}
+
+mod string {
+    use std::ffi::{CStr, CString, OsStr, OsString};
+
+    #[cfg(unix)]
+    pub fn c_to_os_str(str: &CStr) -> OsString {
+        use std::os::unix::ffi::OsStrExt;
+        OsStr::from_bytes(str.to_bytes()).to_os_string()
+    }
+
+    #[cfg(unix)]
+    pub fn os_to_c_str(str: &OsStr) -> CString {
+        use std::os::unix::ffi::OsStrExt;
+        CString::new(str.as_bytes()).unwrap()
+    }
+
+    #[cfg(windows)]
+    pub fn c_to_os_str(str: &CStr) -> OsString {
+        OsString::from(str.to_str().unwrap())
+    }
+
+    #[cfg(windows)]
+    pub fn os_to_c_str(str: &OsStr) -> CString {
+        CString::new(str.to_str().unwrap().as_bytes()).unwrap()
     }
 }
 
