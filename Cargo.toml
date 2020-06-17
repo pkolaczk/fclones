@@ -35,6 +35,10 @@ thread_local = "1.0.1"
 nix = "0.17.0"
 libc = "0.2.69"
 
+[target.'cfg(windows)'.dependencies]
+winapi = "0.3.8"
+winapi-util = "0.1.5"
+
 [package.metadata.deb]
 maintainer = "Piotr Kołaczkowski <pkolaczk@gmail.com>"
 copyright = "2020, Piotr Kołaczkowski <pkolaczk@gmail.com>"
