@@ -1,14 +1,12 @@
 use core::fmt;
 use std::cmp::min;
 use std::fmt::Display;
-use std::fs::{File, Metadata, OpenOptions};
+use std::fs::{File, OpenOptions};
 use std::hash::{Hash, Hasher};
 use std::io;
 use std::io::{ErrorKind, Read, Seek, SeekFrom};
 use std::iter::Sum;
 use std::ops::{Add, Mul, Sub};
-#[cfg(unix)]
-use std::os::unix::fs::MetadataExt;
 #[cfg(unix)]
 use std::os::unix::fs::OpenOptionsExt;
 #[cfg(unix)]
@@ -19,7 +17,6 @@ use metrohash::{MetroHash128, MetroHash64};
 use serde::*;
 use smallvec::alloc::fmt::Formatter;
 use smallvec::alloc::str::FromStr;
-use sys_info::mem_info;
 
 use crate::log::Log;
 use crate::path::Path;
@@ -196,17 +193,47 @@ pub struct FileInfoNoLen {
 }
 
 impl FileInfo {
-    fn for_file(path: Path, metadata: &Metadata) -> FileInfo {
-        FileInfo {
-            path,
-            len: FileLen(metadata.len()),
-            id_hash: FileId {
-                inode: metadata.ino(),
-                device: metadata.dev(),
-            }
-            .hash(),
+    #[cfg(unix)]
+    fn new(path: Path) -> io::Result<FileInfo> {
+        use std::os::unix::fs::MetadataExt;
+
+        match std::fs::metadata(&path.to_path_buf()) {
+            Ok(metadata) => Ok(FileInfo {
+                path,
+                len: FileLen(metadata.len()),
+                id_hash: FileId {
+                    inode: metadata.ino() as u128,
+                    device: metadata.dev(),
+                }
+                .hash(),
+            }),
+            Err(e) => Err(io::Error::new(
+                e.kind(),
+                format!("Failed to read metadata of {}: {}", path.display(), e),
+            )),
         }
     }
+
+    #[cfg(windows)]
+    fn new(path: Path) -> io::Result<FileInfo> {
+        let info = File::open(path.to_path_buf()).and_then(|f| winapi_util::file::information(&f));
+        match info {
+            Ok(info) => Ok(FileInfo {
+                path,
+                len: FileLen(info.file_size()),
+                id_hash: FileId {
+                    inode: info.file_index() as u128,
+                    device: info.volume_serial_number() as u64,
+                }
+                .hash(),
+            }),
+            Err(e) => Err(io::Error::new(
+                e.kind(),
+                format!("Failed to read metadata of {}: {}", path.display(), e),
+            )),
+        }
+    }
+
     /// Removes the length field from the information and returns a smaller structure
     pub fn drop_len(self) -> FileInfoNoLen {
         FileInfoNoLen {
@@ -217,23 +244,13 @@ impl FileInfo {
 }
 
 /// Returns file information for the given path.
-pub fn file_info(file: Path) -> io::Result<FileInfo> {
-    let metadata = std::fs::metadata(&file.to_path_buf())?;
-    Ok(FileInfo::for_file(file, &metadata))
-}
-
-/// Returns file information for the given path.
 /// On failure, logs an error to stderr and returns `None`.
 pub fn file_info_or_log_err(file: Path, log: &Log) -> Option<FileInfo> {
-    match std::fs::metadata(&file.to_path_buf()) {
-        Ok(metadata) => Some(FileInfo::for_file(file, &metadata)),
+    match FileInfo::new(file) {
+        Ok(info) => Some(info),
         Err(e) if e.kind() == ErrorKind::NotFound => None,
         Err(e) => {
-            log.err(format!(
-                "Failed to read metadata of {}: {}",
-                file.display(),
-                e
-            ));
+            log.err(e);
             None
         }
     }
@@ -242,11 +259,55 @@ pub fn file_info_or_log_err(file: Path, log: &Log) -> Option<FileInfo> {
 /// Useful for identifying files in presence of hardlinks
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub struct FileId {
-    pub inode: u64,
+    pub inode: u128,
     pub device: u64,
 }
 
 impl FileId {
+    #[cfg(unix)]
+    pub fn new(file: &Path) -> io::Result<FileId> {
+        use std::os::unix::fs::MetadataExt;
+        match std::fs::metadata(&file.to_path_buf()) {
+            Ok(metadata) => Ok(FileId {
+                inode: metadata.ino() as u128,
+                device: metadata.dev(),
+            }),
+            Err(e) => Err(io::Error::new(
+                e.kind(),
+                format!("Failed to read metadata of {}: {}", file.display(), e),
+            )),
+        }
+    }
+
+    #[cfg(windows)]
+    pub fn new(file: &Path) -> io::Result<FileId> {
+        use std::os::windows::io::*;
+        use winapi::ctypes::c_void;
+        use winapi::um::fileapi::FILE_ID_INFO;
+        use winapi::um::minwinbase::FileIdInfo;
+        use winapi::um::winbase::GetFileInformationByHandleEx;
+        let handle = File::open(file.to_path_buf())?.into_raw_handle();
+        unsafe {
+            let mut file_id: FILE_ID_INFO = std::mem::zeroed();
+            let file_id_ptr = (&mut file_id) as *mut _ as *mut c_void;
+            const FILE_ID_SIZE: u32 = std::mem::size_of::<FILE_ID_INFO>() as u32;
+            match GetFileInformationByHandleEx(handle, FileIdInfo, file_id_ptr, FILE_ID_SIZE) {
+                0 => Err(io::Error::new(
+                    ErrorKind::Other,
+                    format!(
+                        "Failed to read file identifier of {}: {}",
+                        file.display(),
+                        io::Error::last_os_error()
+                    ),
+                )),
+                _ => Ok(FileId {
+                    device: file_id.VolumeSerialNumber as u64,
+                    inode: u128::from_be_bytes(file_id.FileId.Identifier),
+                }),
+            }
+        }
+    }
+
     pub fn hash(&self) -> u32 {
         let mut hasher = MetroHash64::new();
         self.inode.hash(&mut hasher);
@@ -255,29 +316,12 @@ impl FileId {
     }
 }
 
-#[cfg(unix)]
-pub fn file_id(file: &Path) -> io::Result<FileId> {
-    let metadata = std::fs::metadata(&file.to_path_buf())?;
-    Ok(FileId {
-        inode: metadata.ino(),
-        device: metadata.dev(),
-    })
-}
-
-#[cfg(unix)]
 pub fn file_id_or_log_err(file: &Path, log: &Log) -> Option<FileId> {
-    match std::fs::metadata(&file.to_path_buf()) {
-        Ok(metadata) => Some(FileId {
-            inode: metadata.ino(),
-            device: metadata.dev(),
-        }),
+    match FileId::new(&file) {
+        Ok(id) => Some(id),
         Err(e) if e.kind() == ErrorKind::NotFound => None,
         Err(e) => {
-            log.err(format!(
-                "Failed to read metadata of {}: {}",
-                file.display(),
-                e
-            ));
+            log.err(e);
             None
         }
     }
@@ -342,6 +386,7 @@ fn fadvise(file: &File, offset: FilePos, len: FileLen, advice: nix::fcntl::Posix
 /// If we know we'll be reading just one buffer, non zero read-ahead would be a cache waste.
 /// On non-Unix systems, does nothing.
 /// Failures are not signalled to the caller, but a warning is printed to stderr.
+#[allow(unused)]
 fn configure_readahead(file: &File, offset: FilePos, len: FileLen, cache_policy: Caching) {
     #[cfg(target_os = "linux")]
     {
@@ -357,6 +402,7 @@ fn configure_readahead(file: &File, offset: FilePos, len: FileLen, cache_policy:
 
 /// Tells the system to remove given file fragment from the page cache.
 /// On non-Unix systems, does nothing.
+#[allow(unused)]
 fn evict_page_cache(file: &File, offset: FilePos, len: FileLen) {
     #[cfg(target_os = "linux")]
     {
@@ -369,9 +415,11 @@ fn evict_page_cache(file: &File, offset: FilePos, len: FileLen) {
 /// The purpose of this method is to be nice to the data cached by other processes.
 /// This program is likely to be used only once, so there is little value in keeping its
 /// data cached for further use.
+#[allow(unused)]
 fn evict_page_cache_if_low_mem(file: &mut File, len: FileLen) {
     #[cfg(target_os = "linux")]
     {
+        use sys_info::mem_info;
         let buf_len: FileLen = BUF_LEN.into();
         if len > buf_len * 2 {
             let free_ratio = match mem_info() {
