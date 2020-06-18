@@ -1,11 +1,12 @@
 use std::ffi::{CStr, CString, OsString};
+use std::fmt;
 use std::fmt::Display;
 use std::hash::Hash;
 use std::path::{Component, PathBuf};
 use std::sync::Arc;
-use std::{fmt, io};
 
 use nom::lib::std::fmt::Formatter;
+use path_clean::PathClean;
 use serde::{Serialize, Serializer};
 use smallvec::SmallVec;
 
@@ -23,8 +24,8 @@ pub struct Path {
 }
 
 impl Path {
-    pub fn canonicalize(&self) -> io::Result<Path> {
-        self.to_path_buf().canonicalize().map(|p| Path::from(&p))
+    pub fn clean(&self) -> Path {
+        Path::from(self.to_path_buf().clean())
     }
 
     #[cfg(unix)]
