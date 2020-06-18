@@ -20,6 +20,7 @@ use smallvec::alloc::str::FromStr;
 
 use crate::log::Log;
 use crate::path::Path;
+use byte_unit::Byte;
 
 /// Represents data position in the file, counted from the beginning of the file, in bytes.
 /// Provides more type safety and nicer formatting over using a raw u64.
@@ -162,11 +163,11 @@ impl Sum<FileLen> for FileLen {
 }
 
 impl FromStr for FileLen {
-    type Err = <u64 as FromStr>::Err;
+    type Err = byte_unit::ByteError;
 
-    // TODO handle units
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        Ok(FileLen(s.parse()?))
+        let b = Byte::from_str(s)?;
+        Ok(FileLen(b.get_bytes() as u64))
     }
 }
 

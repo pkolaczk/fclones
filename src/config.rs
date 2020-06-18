@@ -79,11 +79,11 @@ pub struct Config {
     #[structopt(short="U", long, conflicts_with_all(&["rf-over", "rf-under"]))]
     pub unique: bool,
 
-    /// Minimum file size. Inclusive.
+    /// Minimum file size in bytes. Units like KB, KiB, MB, MiB, GB, GiB are supported. Inclusive.
     #[structopt(short = "s", long, default_value = "1")]
     pub min_size: FileLen,
 
-    /// Maximum file size. Inclusive.
+    /// Maximum file size in bytes. Units like KB, KiB, MB, MiB, GB, GiB are supported. Inclusive.
     #[structopt(long)]
     pub max_size: Option<FileLen>,
 

@@ -50,18 +50,10 @@ Find duplicate files in the current directory, including subdirectories:
 
     fclones . -R
     
-Find duplicate pictures in the current directory:
-
-    fclones . -R --names '*.jpg' '*.png' 
-    
 Find unique files in the current directory and its subdirectories:
     
     fclones . -R --unique 
-        
-Run `fclones` on files selected by `find` (note: this is likely slower than built-in filtering):
 
-    find . -name '*.c' | fclones --stdin
-    
 Find files that have more than 3 replicas:
 
     fclones . -R --rf-over 3
@@ -69,10 +61,29 @@ Find files that have more than 3 replicas:
 Find files that have less than 3 replicas:
 
     fclones . -R --rf-under 3
-    
+
+### Filtering
+Find duplicate files of size at least 100 MB: 
+
+    fclones . -R -s 100M
+
+Find duplicate pictures in the current directory:
+
+    fclones . -R --names '*.jpg' '*.png' 
+                
+Run `fclones` on files selected by `find` (note: this is likely slower than built-in filtering):
+
+    find . -name '*.c' | fclones --stdin
+
 Follow symbolic links, but don't escape out of the home folder:
 
     fclones . -R -L --paths '/home/**'
+    
+Exclude a part of the directory tree from the scan:
+
+    fclones / -R --exclude '/dev/**' '/proc/**'    
+    
+### Other    
     
 List more options:
     
