@@ -62,7 +62,7 @@ pub struct Config {
     /// Treats files reachable from multiple paths through
     /// hard links as duplicates
     #[structopt(short = "H", long)]
-    pub no_prune_links: bool,
+    pub hard_links: bool,
 
     /// Searches for over-replicated files with replication factor above the specified value.
     /// Specifying neither `--rf-over` nor `--rf-under` is equivalent to `--rf-over 1` which would

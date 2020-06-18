@@ -41,17 +41,31 @@ fn configure_thread_pool(parallelism: usize) {
 /// remove duplicated `FileInfo` entries with the same inode and device id from the list.
 fn prune_links_if_needed(ctx: &AppCtx, files: Vec<FileInfoNoLen>) -> Vec<FileInfoNoLen> {
     // if we allow non-unique, or they are already unique, don't deduplicate
-    if ctx.config.no_prune_links || files.iter().unique_by(|i| i.id_hash).count() == files.len() {
+    if ctx.config.hard_links || files.iter().unique_by(|i| i.id_hash).count() == files.len() {
         files
     } else {
-        files
-            .into_iter()
-            // need to unpack the struct before accessing path reference
-            .map(|i| (i.path, i.id_hash))
-            .unique_by(|(p, _)| file_id_or_log_err(p, &ctx.log))
-            .map(|(path, id_hash)| FileInfoNoLen { path, id_hash })
-            .collect()
+        deduplicate(files, |p| file_id_or_log_err(p, &ctx.log))
     }
+}
+
+/// Deduplicates paths (based on the path text, not file contents)
+fn remove_duplicate_paths(files: Vec<FileInfoNoLen>) -> Vec<FileInfoNoLen> {
+    deduplicate(files, |p| p.hash128())
+}
+
+/// Deduplicates a vector of file information objects by given key.
+fn deduplicate<K>(files: Vec<FileInfoNoLen>, key: impl Fn(&Path) -> K) -> Vec<FileInfoNoLen>
+where
+    K: Eq + std::hash::Hash,
+{
+    files
+        .into_iter()
+        // need to unpack the struct before accessing path reference
+        // referencing fields of a packed struct directly is UB, because they may be unaligned
+        .map(|i| (i.path, i.id_hash))
+        .unique_by(|(path, _)| (key)(path))
+        .map(|(path, id_hash)| FileInfoNoLen { path, id_hash })
+        .collect()
 }
 
 /// Walks the directory tree and collects matching files in parallel into a vector
@@ -120,6 +134,7 @@ fn group_by_size(ctx: &mut AppCtx, files: Vec<Vec<FileInfo>>) -> Vec<FileGroup<F
 
     let groups: Vec<_> = groups
         .into_iter()
+        .map(|(l, files)| (l, remove_duplicate_paths(files)))
         .filter(|(_, files)| files.len() >= rf_over)
         .map(|(l, files)| FileGroup {
             len: l,
@@ -365,7 +380,7 @@ fn main() {
 fn process(mut ctx: &mut AppCtx) -> Vec<FileGroup<Path>> {
     let matching_files = scan_files(&mut ctx);
     let size_groups = group_by_size(&mut ctx, matching_files);
-    let size_groups_pruned = if ctx.config.no_prune_links {
+    let size_groups_pruned = if ctx.config.hard_links {
         drop_hard_link_info(size_groups)
     } else {
         prune_hard_links(&mut ctx, size_groups)
@@ -531,6 +546,22 @@ mod test {
             let mut ctx = test_ctx();
             ctx.config.paths = vec![file1.clone(), file2.clone()];
             ctx.config.unique = true;
+
+            let results = process(&mut ctx);
+            assert_eq!(results.len(), 1);
+            assert_eq!(results[0].files.len(), 1);
+        });
+    }
+
+    #[test]
+    fn duplicate_input_files() {
+        with_dir("target/test/main/duplicate_input_files", |root| {
+            let file1 = root.join("file1");
+            write_test_file(&file1, b"foo", b"", b"");
+            let mut ctx = test_ctx();
+            ctx.config.paths = vec![file1.clone(), file1.clone(), file1.clone()];
+            ctx.config.unique = true;
+            ctx.config.hard_links = true;
 
             let results = process(&mut ctx);
             assert_eq!(results.len(), 1);

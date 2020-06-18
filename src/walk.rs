@@ -1,11 +1,9 @@
 use std::env::current_dir;
 use std::fs::{read_link, symlink_metadata, DirEntry, FileType, ReadDir};
-use std::hash::Hash;
 use std::io;
 use std::sync::Arc;
 
 use dashmap::DashSet;
-use metrohash::MetroHash128;
 use rayon::Scope;
 
 use crate::log::Log;
@@ -182,16 +180,6 @@ impl<'a> Walk<'a> {
         }
     }
 
-    /// Computes a 128-bit hash of a full path.
-    /// We need 128-bits so that collisions are not a problem.
-    /// Thanks to using a long hash we can be sure collisions won't be a problem.
-    fn path_hash(path: &Path) -> u128 {
-        let mut h = MetroHash128::new();
-        path.hash(&mut h);
-        let (a, b) = h.finish128();
-        (a as u128) << 64 | b as u128
-    }
-
     /// Visits a path that was already converted to an `Entry` so the entry type is known.
     /// Faster than `visit_path` because it doesn't need to call `stat` internally.
     fn visit_entry<'s, 'w, F>(
@@ -218,7 +206,7 @@ impl<'a> Walk<'a> {
 
         // Skip already visited paths. We're checking only when follow_links is true,
         // because inserting into a shared hash set is costly.
-        if self.follow_links && !state.visited.insert(Self::path_hash(&entry.path)) {
+        if self.follow_links && !state.visited.insert(entry.path.hash128()) {
             return;
         }
 

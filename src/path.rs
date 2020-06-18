@@ -11,6 +11,7 @@ use serde::{Serialize, Serializer};
 use smallvec::SmallVec;
 
 use crate::path::string::{c_to_os_str, os_to_c_str};
+use metrohash::MetroHash128;
 
 /// Memory-efficient path representation.
 /// When storing multiple paths with common parent, the standard PathBuf would keep
@@ -122,6 +123,16 @@ impl Path {
 
     pub fn display(&self) -> &Self {
         &self
+    }
+
+    /// Returns a hash of the full path. Useful for deduplicating paths without making path clones.
+    /// We need 128-bits so that collisions are not a problem.
+    /// Thanks to using a long hash we can be sure collisions won't be a problem.
+    pub fn hash128(&self) -> u128 {
+        let mut hasher = MetroHash128::new();
+        self.hash(&mut hasher);
+        let (a, b) = hasher.finish128();
+        (a as u128) << 64 | (b as u128)
     }
 
     fn new(component: CString) -> Path {
