@@ -306,9 +306,9 @@ impl<'a> Walk<'a> {
     /// Relative paths are resolved against `self.base_dir`.
     fn absolute(&self, path: Path) -> Path {
         if path.is_relative() {
-            self.base_dir.join(path).clean()
+            self.base_dir.join(path).canonicalize()
         } else {
-            path.clean()
+            path.canonicalize()
         }
     }
 

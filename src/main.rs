@@ -569,6 +569,33 @@ mod test {
         });
     }
 
+    #[test]
+    #[cfg(unix)]
+    fn duplicate_input_files_non_canonical() {
+        use std::os::unix::fs::symlink;
+
+        with_dir(
+            "target/test/main/duplicate_input_files_non_canonical",
+            |root| {
+                let dir = root.join("dir");
+                symlink(&root, &dir).unwrap();
+
+                let file1 = root.join("file1");
+                let file2 = root.join("dir/file1");
+                write_test_file(&file1, b"foo", b"", b"");
+
+                let mut ctx = test_ctx();
+                ctx.config.paths = vec![file1.clone(), file2.clone()];
+                ctx.config.unique = true;
+                ctx.config.hard_links = true;
+
+                let results = process(&mut ctx);
+                assert_eq!(results.len(), 1);
+                assert_eq!(results[0].files.len(), 1);
+            },
+        );
+    }
+
     fn write_test_file(path: &PathBuf, prefix: &[u8], mid: &[u8], suffix: &[u8]) {
         let mut file = OpenOptions::new()
             .write(true)

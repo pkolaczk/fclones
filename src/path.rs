@@ -5,13 +5,12 @@ use std::hash::Hash;
 use std::path::{Component, PathBuf};
 use std::sync::Arc;
 
+use metrohash::MetroHash128;
 use nom::lib::std::fmt::Formatter;
-use path_clean::PathClean;
 use serde::{Serialize, Serializer};
 use smallvec::SmallVec;
 
 use crate::path::string::{c_to_os_str, os_to_c_str};
-use metrohash::MetroHash128;
 
 /// Memory-efficient path representation.
 /// When storing multiple paths with common parent, the standard PathBuf would keep
@@ -25,8 +24,12 @@ pub struct Path {
 }
 
 impl Path {
-    pub fn clean(&self) -> Path {
-        Path::from(self.to_path_buf().clean())
+    pub fn canonicalize(&self) -> Path {
+        let path_buf = self.to_path_buf();
+        match dunce::canonicalize(path_buf.clone()) {
+            Ok(p) => Path::from(p),
+            Err(_) => Path::from(path_buf),
+        }
     }
 
     #[cfg(unix)]
