@@ -164,6 +164,8 @@ impl Config {
     pub fn search_type(&self) -> &'static str {
         if self.unique {
             "unique"
+        } else if self.rf_over() == 1 {
+            "duplicate"
         } else if self.rf_under.is_some() {
             "under-replicated"
         } else {
