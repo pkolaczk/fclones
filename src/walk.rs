@@ -314,13 +314,13 @@ impl<'a> Walk<'a> {
         Ok(self.absolute(resolved))
     }
 
-    /// Returns absolute canonical path. Relative paths are resolved against `self.base_dir`.
+    /// Returns absolute path with removed `.` and `..` components.
+    /// Relative paths are resolved against `self.base_dir`.
     fn absolute(&self, path: Path) -> Path {
         if path.is_relative() {
-            let abs_path = self.base_dir.join(path);
-            abs_path.canonicalize().unwrap_or(abs_path)
+            self.base_dir.join(path).clean()
         } else {
-            path.canonicalize().unwrap_or(path)
+            path.clean()
         }
     }
 
