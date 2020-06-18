@@ -65,9 +65,19 @@ List more options:
     fclones -h
     
 ## Supported Platforms
-The code has been tested only on Linux, but should be straightforward to 
-compile to other operating systems. Help testing / porting to other platforms is welcome.     
-        
+The code has been thoroughly tested on Ubuntu Linux 20.04. 
+ 
+OS            |    Architecture       |    Status           | Limitations    
+--------------|-----------------------|---------------------|------------
+Ubuntu 20.04  |  AMD64                | fully supported     |
+Linux         |  ARMv7                | cross-compiles      | 
+Linux         |  ARM64                | cross-compiles      | 
+Mac OS X      |  AMD64                | works               | no page-cache optimisation
+Windows 10    |  AMD64                | works               | no page-cache optimisation
+Wine 5.0      |  AMD64                | mostly works        | no page-cache optimisation, broken progress bar
+
+Help testing / porting to other platforms is welcome.
+Other systems / architectures may work.      
     
 ## Building 
 1. [Install Rust](https://www.rust-lang.org/tools/install)
