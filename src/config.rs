@@ -1,3 +1,4 @@
+use std::io;
 use std::io::{stdin, BufRead, BufReader};
 use std::path::PathBuf;
 use std::process::exit;
@@ -11,6 +12,7 @@ use crate::log::Log;
 use crate::path::Path;
 use crate::pattern::{Pattern, PatternOpts};
 use crate::selector::PathSelector;
+use crate::transform::Transform;
 
 arg_enum! {
     #[derive(Debug, StructOpt)]
@@ -68,6 +70,20 @@ pub struct Config {
     #[structopt(short = "H", long)]
     pub hard_links: bool,
 
+    /// Before matching, transform each file by the specified program.
+    /// The value of this parameter should contain a command: the path to the program
+    /// and optionally its space-separated arguments.
+    /// By default, the file to process will be piped to the standard input of the program and the
+    /// processed data will be read from the standard output.
+    /// If the program does not support piping, but requires its input and/or output file path
+    /// to be specified in the argument list, denote these paths by $IN and $OUT special variables.
+    /// If $IN is specified in the command string, the file will not be piped to the standard input.
+    /// If $OUT is specified in the command string, the result will not be read from
+    /// the standard output, but fclones will set up a named pipe $OUT and read from
+    /// that pipe instead.
+    #[structopt(long, value_name("command"))]
+    pub transform: Option<String>,
+
     /// Searches for over-replicated files with replication factor above the specified value.
     /// Specifying neither `--rf-over` nor `--rf-under` is equivalent to `--rf-over 1` which would
     /// report duplicate files.
@@ -84,23 +100,23 @@ pub struct Config {
     pub unique: bool,
 
     /// Minimum file size in bytes. Units like KB, KiB, MB, MiB, GB, GiB are supported. Inclusive.
-    #[structopt(short = "s", long, default_value = "1")]
+    #[structopt(short = "s", long, default_value = "1", value_name("bytes"))]
     pub min_size: FileLen,
 
     /// Maximum file size in bytes. Units like KB, KiB, MB, MiB, GB, GiB are supported. Inclusive.
-    #[structopt(long)]
+    #[structopt(long, value_name("bytes"))]
     pub max_size: Option<FileLen>,
 
     /// Includes only file names matched fully by any of the given patterns.
-    #[structopt(short = "n", long = "names")]
+    #[structopt(short = "n", long = "names", value_name("pattern"))]
     pub name_patterns: Vec<String>,
 
     /// Includes only paths matched fully by any of the given patterns.
-    #[structopt(short = "p", long = "paths")]
+    #[structopt(short = "p", long = "paths", value_name("pattern"))]
     pub path_patterns: Vec<String>,
 
     /// Excludes paths matched fully by any of the given patterns.
-    #[structopt(short = "e", long = "exclude")]
+    #[structopt(short = "e", long = "exclude", value_name("pattern"))]
     pub exclude_patterns: Vec<String>,
 
     /// Makes pattern matching case-insensitive
@@ -113,7 +129,7 @@ pub struct Config {
 
     /// Parallelism level.
     /// If set to 0, the number of CPU cores reported by the operating system is used.
-    #[structopt(short, long, default_value = "0")]
+    #[structopt(short, long, default_value = "0", value_name("count"))]
     pub threads: usize,
 
     /// A list of input paths. Accepts files and directories.
@@ -148,13 +164,16 @@ impl Config {
     }
 
     pub fn rf_over(&self) -> usize {
-        self.rf_over.unwrap_or_else(|| {
-            if self.rf_under.is_some() || self.unique {
-                0
-            } else {
-                1
-            }
-        })
+        // don't prune small groups if:
+        // - there is transformation defined
+        //   (distinct files can become identical after the transform)
+        // - or we're looking for under-replicated files
+        // - or we're looking for unique files
+        if self.transform.is_some() || self.rf_under.is_some() || self.unique {
+            0
+        } else {
+            self.rf_over.unwrap_or(1)
+        }
     }
 
     pub fn rf_under(&self) -> usize {
@@ -195,5 +214,26 @@ impl Config {
                     .into_iter(),
             )
         }
+    }
+
+    /// Validates the transform command if defined; logs error and exits if broken
+    pub fn check_transform(&self, log: &Log) {
+        self.transform
+            .as_ref()
+            .map(|command| self.build_transform(command, log));
+    }
+
+    /// Constructs the transform object and clears the transform command from this object.
+    pub fn take_transform(&mut self, log: &Log) -> Option<Transform> {
+        self.transform
+            .take()
+            .and_then(|command| self.build_transform(&command, log).ok())
+    }
+
+    fn build_transform(&self, command: &str, log: &Log) -> io::Result<Transform> {
+        Transform::new(command.to_string()).map_err(|e| {
+            log.err(e);
+            exit(1);
+        })
     }
 }
