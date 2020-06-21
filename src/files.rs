@@ -242,6 +242,35 @@ impl FileInfo {
             id_hash: self.id_hash,
         }
     }
+
+    /// Converts to an aligned representation
+    pub fn unpack(self) -> UnpackedFileInfo {
+        UnpackedFileInfo {
+            path: self.path,
+            len: self.len,
+            id_hash: self.id_hash,
+        }
+    }
+}
+
+/// This structure contains the same data as `FileInfo` but is unpacked (aligned)
+/// and allows borrowing fields. Use [unpack](FileInfo::unpack) and [pack](UnpackedFileInfo::pack)
+/// methods to convert between packed and non-packed representations.
+pub struct UnpackedFileInfo {
+    pub path: Path,
+    pub len: FileLen,
+    pub id_hash: u32,
+}
+
+impl UnpackedFileInfo {
+    /// Converts to a non-aligned representation
+    pub fn pack(self) -> FileInfo {
+        FileInfo {
+            path: self.path,
+            len: self.len,
+            id_hash: self.id_hash,
+        }
+    }
 }
 
 /// Returns file information for the given path.
@@ -328,7 +357,7 @@ pub fn file_id_or_log_err(file: &Path, log: &Log) -> Option<FileId> {
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub struct FileHash(pub u128);
 
 pub trait AsFileHash {
@@ -480,7 +509,11 @@ fn open_noatime(path: &Path) -> io::Result<File> {
 
 /// Scans up to `len` bytes in a file and sends data to the given consumer.
 /// Returns the number of bytes successfully read.
-fn scan<F: FnMut(&[u8]) -> ()>(file: &mut File, len: FileLen, mut consumer: F) -> io::Result<u64> {
+fn scan<F: FnMut(&[u8]) -> ()>(
+    stream: &mut impl Read,
+    len: FileLen,
+    mut consumer: F,
+) -> io::Result<u64> {
     let mut buf = [0; BUF_LEN];
     let mut read: u64 = 0;
     let len = len.into();
@@ -488,11 +521,11 @@ fn scan<F: FnMut(&[u8]) -> ()>(file: &mut File, len: FileLen, mut consumer: F) -
         let remaining = len - read;
         let to_read = min(remaining, buf.len() as u64) as usize;
         let buf = &mut buf[..to_read];
-        match file.read(buf) {
+        match stream.read(buf) {
             Ok(0) => break,
             Ok(actual_read) => {
                 read += actual_read as u64;
-                (consumer)(buf);
+                (consumer)(&buf[..actual_read]);
             }
             Err(e) => {
                 return Err(e);
@@ -500,6 +533,24 @@ fn scan<F: FnMut(&[u8]) -> ()>(file: &mut File, len: FileLen, mut consumer: F) -
         }
     }
     Ok(read)
+}
+
+/// Computes the hash value over at most `len` bytes of the stream.
+/// Returns the number of the bytes read and a 128-bit hash value.
+pub fn stream_hash(
+    stream: &mut impl Read,
+    len: FileLen,
+    progress: impl Fn(usize),
+) -> io::Result<(FileLen, FileHash)> {
+    let mut hasher = MetroHash128::new();
+    let mut read_len: FileLen = FileLen(0);
+    scan(stream, len, |buf| {
+        hasher.write(buf);
+        read_len = read_len + FileLen(buf.len() as u64);
+        (progress)(buf.len());
+    })?;
+    let (a, b) = hasher.finish128();
+    Ok((read_len, FileHash(((a as u128) << 64) | b as u128)))
 }
 
 /// Computes hash of initial `len` bytes of a file.
@@ -534,15 +585,10 @@ pub fn file_hash(
     cache_policy: Caching,
     progress: impl Fn(usize),
 ) -> io::Result<FileHash> {
-    let mut hasher = MetroHash128::new();
     let mut file = open(path, offset, len, cache_policy)?;
-    scan(&mut file, len, |buf| {
-        hasher.write(buf);
-        (progress)(buf.len());
-    })?;
+    let hash = stream_hash(&mut file, len, progress)?.1;
     evict_page_cache_if_low_mem(&mut file, len);
-    let (a, b) = hasher.finish128();
-    Ok(FileHash(((a as u128) << 64) | b as u128))
+    Ok(hash)
 }
 
 /// Computes the file hash or logs an error and returns none if failed.

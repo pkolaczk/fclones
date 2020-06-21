@@ -22,6 +22,7 @@ use fclones::path::Path;
 use fclones::pattern::ESCAPE_CHAR;
 use fclones::progress::FastProgressBar;
 use fclones::report::Reporter;
+use fclones::transform::Transform;
 use fclones::walk::Walk;
 use indoc::indoc;
 
@@ -78,7 +79,7 @@ fn scan_files(ctx: &mut AppCtx) -> Vec<Vec<FileInfo>> {
     let base_dir = Path::from(current_dir().unwrap_or_default());
     let path_selector = ctx.config.path_selector(&ctx.log, &base_dir);
     let file_collector = ThreadLocal::new();
-    let spinner = ctx.log.spinner("[1/7] Scanning files");
+    let spinner = ctx.log.spinner("Scanning files");
     let spinner_tick = &|_: &Path| spinner.tick();
 
     let config = &ctx.config;
@@ -123,9 +124,7 @@ fn scan_files(ctx: &mut AppCtx) -> Vec<Vec<FileInfo>> {
 
 fn group_by_size(ctx: &mut AppCtx, files: Vec<Vec<FileInfo>>) -> Vec<FileGroup<FileInfoNoLen>> {
     let file_count: usize = files.iter().map(|v| v.len()).sum();
-    let progress = ctx
-        .log
-        .progress_bar("[2/7] Grouping by size", file_count as u64);
+    let progress = ctx.log.progress_bar("Grouping by size", file_count as u64);
 
     let mut groups = GroupMap::new(|info: FileInfo| (info.len, info.drop_len()));
     for files in files.into_iter() {
@@ -140,7 +139,7 @@ fn group_by_size(ctx: &mut AppCtx, files: Vec<Vec<FileInfo>>) -> Vec<FileGroup<F
     let groups: Vec<_> = groups
         .into_iter()
         .map(|(l, files)| (l, remove_duplicate_paths(files)))
-        .filter(|(_, files)| files.len() >= rf_over)
+        .filter(|(_, files)| files.len() > rf_over)
         .map(|(l, files)| FileGroup {
             len: l,
             hash: None,
@@ -177,7 +176,7 @@ fn prune_hard_links(
     let file_count: usize = groups.total_count();
     let progress = ctx
         .log
-        .progress_bar("[3/7] Pruning hard links", file_count as u64);
+        .progress_bar("Removing same files", file_count as u64);
 
     let rf_over = ctx.config.rf_over();
     let rf_under = ctx.config.rf_under();
@@ -189,7 +188,7 @@ fn prune_hard_links(
             g.files = prune_links_if_needed(&ctx, g.files);
             g
         })
-        .filter(|g| g.files.len() >= rf_over)
+        .filter(|g| g.files.len() > rf_over)
         .map(to_group_of_paths)
         .collect();
 
@@ -202,11 +201,66 @@ fn prune_hard_links(
     groups
 }
 
+/// Transforms files by piping them to an external program and groups them by their hashes
+fn group_transformed(
+    ctx: &mut AppCtx,
+    transform: &Transform,
+    groups: Vec<FileGroup<Path>>,
+) -> Vec<FileGroup<Path>> {
+    let file_count: usize = groups.total_count();
+    let progress = ctx.log.progress_bar("Transforming", file_count as u64);
+
+    let files: Vec<_> = groups
+        .into_par_iter()
+        .flat_map(|g| {
+            g.files
+                .into_par_iter()
+                .inspect(|_| progress.tick())
+                .filter_map(|f: Path| {
+                    let result = transform.run_or_log_err(&f, &ctx.log);
+                    result.map(|(len, hash)| (len, hash, f))
+                })
+                .collect::<Vec<_>>()
+        })
+        .collect();
+
+    drop(progress);
+    let progress = ctx.log.progress_bar("Grouping by hash", files.len() as u64);
+    let mut groups = GroupMap::new(|(len, hash, path)| ((len, hash), path));
+    for f in files {
+        progress.tick();
+        groups.add(f);
+    }
+
+    let rf_over = ctx.config.rf_over();
+    let rf_under = ctx.config.rf_under();
+
+    let groups: Vec<_> = groups
+        .into_iter()
+        .filter(|(_, files)| files.len() > rf_over)
+        .map(|((len, hash), files)| FileGroup {
+            len,
+            hash: Some(hash),
+            files,
+        })
+        .collect();
+
+    let count = groups.selected_count(rf_over, rf_under);
+    let bytes = groups.selected_size(rf_over, rf_under);
+    ctx.log.info(format!(
+        "Found {} ({}) {} files",
+        count,
+        bytes,
+        ctx.config.search_type()
+    ));
+    groups
+}
+
 fn group_by_prefix(ctx: &mut AppCtx, groups: Vec<FileGroup<Path>>) -> Vec<FileGroup<Path>> {
     let remaining_files = groups.iter().filter(|g| g.files.len() > 1).total_count();
     let progress = ctx
         .log
-        .progress_bar("[4/7] Grouping by prefix", remaining_files as u64);
+        .progress_bar("Grouping by prefix", remaining_files as u64);
 
     let rf_over = ctx.config.rf_over();
     let rf_under = ctx.config.rf_under();
@@ -244,7 +298,7 @@ fn group_by_suffix(ctx: &mut AppCtx, groups: Vec<FileGroup<Path>>) -> Vec<FileGr
 
     let progress = ctx
         .log
-        .progress_bar("[5/7] Grouping by suffix", remaining_files as u64);
+        .progress_bar("Grouping by suffix", remaining_files as u64);
 
     let rf_over = ctx.config.rf_over();
     let rf_under = ctx.config.rf_under();
@@ -282,7 +336,7 @@ fn group_by_contents(ctx: &mut AppCtx, groups: Vec<FileGroup<Path>>) -> Vec<File
         .total_size();
     let progress = ctx
         .log
-        .bytes_progress_bar("[6/7] Grouping by contents", bytes_to_scan.0);
+        .bytes_progress_bar("Grouping by contents", bytes_to_scan.0);
     let rf_over = ctx.config.rf_over();
     let rf_under = ctx.config.rf_under();
 
@@ -316,7 +370,7 @@ fn write_report(ctx: &mut AppCtx, groups: &[FileGroup<Path>]) {
     let remaining_files = groups.total_count();
     let progress = ctx
         .log
-        .progress_bar("[7/7] Writing report", remaining_files as u64);
+        .progress_bar("Writing report", remaining_files as u64);
 
     // No progress bar when we write to terminal
     let mut reporter = match &ctx.config.output {
@@ -383,19 +437,19 @@ fn main() {
     # PATTERN SYNTAX:
         Options `-n` `-p` and `-e` accept extended glob patterns.
         The following wildcards can be used:
-        `?`      matches any character except the directory separator
-        `[a-z]`  matches one of the characters or character ranges given in the square brackets
-        `[!a-z]` matches any character that is not given in the square brackets
-        `*`      matches any sequence of characters except the directory separator
-        `**`     matches any sequence of characters
-        `{a,b}`  matches exactly one pattern from the comma-separated patterns given
-               inside the curly brackets
-        `@(a|b)` same as `{a,b}`
-        `?(a|b)` matches at most one occurrence of the pattern inside the brackets
-        `+(a|b)` matches at least occurrence of the patterns given inside the brackets
-        `*(a|b)` matches any number of occurrences of the patterns given inside the brackets
-        `!(a|b)` matches anything that doesn't match any of the patterns given inside the brackets
-        `{escape}`      escapes wildcards, e.g. `{escape}?` would match `?` literally
+        `?`         matches any character except the directory separator
+        `[a-z]`     matches one of the characters or character ranges given in the square brackets
+        `[!a-z]`    matches any character that is not given in the square brackets
+        `*`         matches any sequence of characters except the directory separator
+        `**`        matches any sequence of characters
+        `{a,b}`     matches exactly one pattern from the comma-separated patterns given
+                  inside the curly brackets
+        `@(a|b)`    same as `{a,b}`
+        `?(a|b)`    matches at most one occurrence of the pattern inside the brackets
+        `+(a|b)`    matches at least occurrence of the patterns given inside the brackets
+        `*(a|b)`    matches any number of occurrences of the patterns given inside the brackets
+        `!(a|b)`    matches anything that doesn't match any of the patterns given inside the brackets
+        `{escape}`         escapes wildcards, e.g. `{escape}?` would match `?` literally
     "
     ));
 
@@ -406,6 +460,7 @@ fn main() {
 
     let log = Log::new();
     let mut ctx = AppCtx { log, config };
+    ctx.config.check_transform(&ctx.log);
 
     if let Some(output) = &ctx.config.output {
         // Try to create the output file now and fail early so that
@@ -433,13 +488,19 @@ fn process(mut ctx: &mut AppCtx) -> Vec<FileGroup<Path>> {
     } else {
         prune_hard_links(&mut ctx, size_groups)
     };
-    let prefix_groups = group_by_prefix(&mut ctx, size_groups_pruned);
-    let suffix_groups = group_by_suffix(&mut ctx, prefix_groups);
-    let mut contents_groups = group_by_contents(&mut ctx, suffix_groups);
-    contents_groups.retain(|g| g.files.len() < ctx.config.rf_under());
-    contents_groups.par_sort_by_key(|g| Reverse(g.len));
-    contents_groups.par_iter_mut().for_each(|g| g.files.sort());
-    contents_groups
+
+    let mut groups = match ctx.config.take_transform(&ctx.log) {
+        Some(transform) => group_transformed(ctx, &transform, size_groups_pruned),
+        None => {
+            let prefix_groups = group_by_prefix(&mut ctx, size_groups_pruned);
+            let suffix_groups = group_by_suffix(&mut ctx, prefix_groups);
+            group_by_contents(&mut ctx, suffix_groups)
+        }
+    };
+    groups.retain(|g| g.files.len() < ctx.config.rf_under());
+    groups.par_sort_by_key(|g| Reverse((g.len, g.hash)));
+    groups.par_iter_mut().for_each(|g| g.files.sort());
+    groups
 }
 
 #[cfg(test)]

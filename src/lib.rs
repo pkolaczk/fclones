@@ -7,5 +7,6 @@ pub mod pattern;
 pub mod progress;
 pub mod report;
 pub mod selector;
+pub mod transform;
 pub mod util;
 pub mod walk;
