@@ -3,20 +3,25 @@ use std::io::Write;
 use std::sync::Arc;
 
 use console::style;
+use serde::{Serialize, Serializer};
 
 use crate::group::FileGroup;
 use crate::path::Path;
 use crate::progress::FastProgressBar;
-use serde::{Serialize, Serializer};
 
 pub struct Reporter<W: Write> {
     out: W,
+    color: bool,
     progress: Arc<FastProgressBar>,
 }
 
 impl<W: Write> Reporter<W> {
-    pub fn new(out: W, progress: Arc<FastProgressBar>) -> Reporter<W> {
-        Reporter { out, progress }
+    pub fn new(out: W, color: bool, progress: Arc<FastProgressBar>) -> Reporter<W> {
+        Reporter {
+            out,
+            color,
+            progress,
+        }
     }
 
     /// Writes report in human-readable text format.
@@ -38,7 +43,13 @@ impl<W: Write> Reporter<W> {
                 None => style("-".repeat(32)).white().dim(),
                 Some(hash) => style(format!("{}", hash)).blue().bold().bright(),
             };
-            writeln!(self.out, "{} {}:", len, hash.for_stdout())?;
+
+            writeln!(
+                self.out,
+                "{} {}:",
+                len.force_styling(self.color),
+                hash.force_styling(self.color)
+            )?;
             for f in g.files.iter() {
                 self.progress.tick();
                 writeln!(self.out, "    {}", f.display())?;

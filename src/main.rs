@@ -1,7 +1,11 @@
 use std::cell::RefCell;
 use std::cmp::Reverse;
 use std::env::current_dir;
-use std::io::BufWriter;
+use std::fs::File;
+use std::io::{BufWriter, Write};
+use std::path::PathBuf;
+use std::process::exit;
+use std::sync::Arc;
 
 use console::{style, Term};
 use itertools::Itertools;
@@ -16,6 +20,7 @@ use fclones::group::*;
 use fclones::log::Log;
 use fclones::path::Path;
 use fclones::pattern::ESCAPE_CHAR;
+use fclones::progress::FastProgressBar;
 use fclones::report::Reporter;
 use fclones::walk::Walk;
 use indoc::indoc;
@@ -307,19 +312,18 @@ fn group_by_contents(ctx: &mut AppCtx, groups: Vec<FileGroup<Path>>) -> Vec<File
     groups
 }
 
-fn write_report(ctx: &mut AppCtx, groups: &mut Vec<FileGroup<Path>>) {
-    let stdout = Term::stdout();
+fn write_report(ctx: &mut AppCtx, groups: &[FileGroup<Path>]) {
     let remaining_files = groups.total_count();
     let progress = ctx
         .log
         .progress_bar("[7/7] Writing report", remaining_files as u64);
 
     // No progress bar when we write to terminal
-    if stdout.is_term() {
-        progress.finish_and_clear()
-    }
-    let out = BufWriter::new(stdout);
-    let mut reporter = Reporter::new(out, progress);
+    let mut reporter = match &ctx.config.output {
+        Some(path) => file_reporter(ctx, path, progress),
+        None => stdout_reporter(progress),
+    };
+
     let result = match &ctx.config.format {
         OutputFormat::Text => reporter.write_as_text(groups),
         OutputFormat::Csv => reporter.write_as_csv(groups),
@@ -328,6 +332,37 @@ fn write_report(ctx: &mut AppCtx, groups: &mut Vec<FileGroup<Path>>) {
     match result {
         Ok(()) => (),
         Err(e) => ctx.log.err(format!("Failed to write report: {}", e)),
+    }
+}
+
+/// Creates a reporter that writes to the standard output
+fn stdout_reporter(progress: Arc<FastProgressBar>) -> Reporter<Box<dyn Write>> {
+    let stdout = Term::stdout();
+    let is_term = stdout.is_term();
+    if is_term {
+        progress.finish_and_clear()
+    }
+    let out: Box<dyn Write> = Box::new(BufWriter::new(stdout));
+    Reporter::new(out, is_term, progress)
+}
+
+/// Creates a reporter that writes to the given file.
+/// Writes and error message and exists the application if the file cannot be open.
+fn file_reporter(
+    ctx: &AppCtx,
+    path: &PathBuf,
+    progress: Arc<FastProgressBar>,
+) -> Reporter<Box<dyn Write>> {
+    match File::create(path) {
+        Ok(file) => {
+            let out: Box<dyn Write> = Box::new(BufWriter::new(file));
+            Reporter::new(out, false, progress)
+        }
+        Err(e) => {
+            ctx.log
+                .eprintln(format!("Could not create {}: {}", path.display(), e));
+            exit(1)
+        }
     }
 }
 
@@ -372,8 +407,8 @@ fn main() {
     let log = Log::new();
     let mut ctx = AppCtx { log, config };
 
-    let mut contents_groups = process(&mut ctx);
-    write_report(&mut ctx, &mut contents_groups)
+    let results = process(&mut ctx);
+    write_report(&mut ctx, &results)
 }
 
 // Extracted for testing
@@ -396,14 +431,14 @@ fn process(mut ctx: &mut AppCtx) -> Vec<FileGroup<Path>> {
 
 #[cfg(test)]
 mod test {
-    use std::io::Write;
+    use std::fs::{hard_link, OpenOptions};
+    use std::io::{Read, Write};
     use std::path::PathBuf;
 
     use fclones::path::Path;
     use fclones::util::test::*;
 
     use super::*;
-    use std::fs::{hard_link, OpenOptions};
 
     #[test]
     fn identical_small_files() {
@@ -594,6 +629,31 @@ mod test {
                 assert_eq!(results[0].files.len(), 1);
             },
         );
+    }
+
+    #[test]
+    fn report() {
+        with_dir("target/test/main/report", |root| {
+            let file = root.join("file1");
+            write_test_file(&file, b"foo", b"", b"");
+
+            let report_file = root.join("report.txt");
+            let mut ctx = test_ctx();
+            ctx.config.paths = vec![file.clone()];
+            ctx.config.unique = true;
+            ctx.config.output = Some(report_file.clone());
+
+            let results = process(&mut ctx);
+            write_report(&mut ctx, &results);
+
+            assert!(report_file.exists());
+            let mut report = String::new();
+            File::open(report_file)
+                .unwrap()
+                .read_to_string(&mut report)
+                .unwrap();
+            assert!(report.contains("file1"))
+        });
     }
 
     fn write_test_file(path: &PathBuf, prefix: &[u8], mid: &[u8], suffix: &[u8]) {

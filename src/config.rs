@@ -1,4 +1,5 @@
 use std::io::{stdin, BufRead, BufReader};
+use std::path::PathBuf;
 use std::process::exit;
 
 use clap::arg_enum;
@@ -10,7 +11,6 @@ use crate::log::Log;
 use crate::path::Path;
 use crate::pattern::{Pattern, PatternOpts};
 use crate::selector::PathSelector;
-use std::path::PathBuf;
 
 arg_enum! {
     #[derive(Debug, StructOpt)]
@@ -33,8 +33,12 @@ impl Default for OutputFormat {
     setting(AppSettings::DeriveDisplayOrder)
 )]
 pub struct Config {
+    /// Writes the report to a file instead of the standard output
+    #[structopt(short = "o", long, value_name("path"))]
+    pub output: Option<PathBuf>,
+
     /// Sets output file format
-    #[structopt(short="f", long, possible_values = &OutputFormat::variants(),
+    #[structopt(short = "f", long, possible_values = &OutputFormat::variants(),
     case_insensitive = true, default_value="Text")]
     pub format: OutputFormat,
 
