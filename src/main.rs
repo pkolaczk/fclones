@@ -360,7 +360,7 @@ fn file_reporter(
         }
         Err(e) => {
             ctx.log
-                .eprintln(format!("Could not create {}: {}", path.display(), e));
+                .err(format!("Could not create {}: {}", path.display(), e));
             exit(1)
         }
     }
@@ -406,6 +406,19 @@ fn main() {
 
     let log = Log::new();
     let mut ctx = AppCtx { log, config };
+
+    if let Some(output) = &ctx.config.output {
+        // Try to create the output file now and fail early so that
+        // the user doesn't waste time to only find that the report cannot be written at the end:
+        if let Err(e) = File::create(output) {
+            ctx.log.err(format!(
+                "Cannot create output file {}: {}",
+                output.display(),
+                e
+            ));
+            exit(1);
+        }
+    }
 
     let results = process(&mut ctx);
     write_report(&mut ctx, &results)
