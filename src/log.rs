@@ -5,6 +5,7 @@ use indicatif::ProgressDrawTarget;
 use nom::lib::std::fmt::Display;
 
 use crate::progress::FastProgressBar;
+use chrono::Local;
 
 pub struct Log {
     program_name: String,
@@ -89,10 +90,16 @@ impl Log {
         }
     }
 
+    const TIMESTAMP_FMT: &'static str = "[%Y-%m-%d %H:%M:%S.%3f]";
+
     pub fn info<I: Display>(&self, msg: I) {
+        let timestamp = Local::now();
         let msg = format!(
-            "{}: {} {}",
-            self.program_name,
+            "{} {}: {} {}",
+            style(timestamp.format(Self::TIMESTAMP_FMT))
+                .for_stderr()
+                .green(),
+            style(&self.program_name).for_stderr().yellow(),
             style(" info:").for_stderr().green(),
             msg
         );
@@ -100,9 +107,13 @@ impl Log {
     }
 
     pub fn warn<I: Display>(&self, msg: I) {
+        let timestamp = Local::now();
         let msg = format!(
-            "{}: {} {}",
-            self.program_name,
+            "{} {}: {} {}",
+            style(timestamp.format(Self::TIMESTAMP_FMT))
+                .for_stderr()
+                .green(),
+            style(&self.program_name).for_stderr().yellow(),
             style(" warn:").for_stderr().yellow(),
             msg
         );
@@ -110,9 +121,13 @@ impl Log {
     }
 
     pub fn err<I: Display>(&self, msg: I) {
+        let timestamp = Local::now();
         let msg = format!(
-            "{}: {} {}",
-            self.program_name,
+            "{} {}: {} {}",
+            style(timestamp.format(Self::TIMESTAMP_FMT))
+                .for_stderr()
+                .green(),
+            style(&self.program_name).for_stderr().yellow(),
             style("error:").for_stderr().red(),
             msg
         );
