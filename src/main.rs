@@ -8,6 +8,7 @@ use std::process::exit;
 use std::sync::Arc;
 
 use console::{style, Term};
+use indoc::indoc;
 use itertools::Itertools;
 use rayon::prelude::*;
 use regex::Regex;
@@ -24,7 +25,6 @@ use fclones::progress::FastProgressBar;
 use fclones::report::Reporter;
 use fclones::transform::Transform;
 use fclones::walk::Walk;
-use indoc::indoc;
 
 const MIN_PREFIX_LEN: FileLen = FileLen(4096);
 const MAX_PREFIX_LEN: FileLen = FileLen(4 * MIN_PREFIX_LEN.0);
@@ -432,6 +432,8 @@ fn paint_help(s: &str) -> String {
 }
 
 fn main() {
+    let log = Log::new();
+
     let after_help = &paint_help(indoc!(
         "
     # PATTERN SYNTAX:
@@ -454,11 +456,17 @@ fn main() {
     ));
 
     let clap = Config::clap().after_help(after_help.as_str());
-    let config: Config = Config::from_clap(&clap.get_matches());
+    let matches = clap.get_matches_safe().unwrap_or_else(|e| {
+        // a hack to remove "error: " from the message,
+        // until we switch to Clap 3.x, which will have the `cause` field
+        let r = Regex::new("[^e]*error:[^ ]* ").unwrap();
+        log.err(r.replace(e.message.as_str(), ""));
+        exit(1);
+    });
+    let config: Config = Config::from_clap(&matches);
 
     configure_thread_pool(config.threads);
 
-    let log = Log::new();
     let mut ctx = AppCtx { log, config };
     ctx.config.check_transform(&ctx.log);
 
