@@ -34,8 +34,42 @@ pub struct Output {
 /// Some programs do not accept reading input from the stdin, but prefer to be pointed
 /// to a file by a command-line option - in this case `Named` variant is used.
 enum InputConf {
+    /// Pipe the input file from the given path to the stdin of the child
     StdIn(PathBuf),
+    /// Pass the original path to the file as $IN param
     Named(PathBuf),
+    /// Copy the original file to a temporary location and pass it as $IN param
+    Copied(PathBuf, PathBuf),
+}
+
+impl InputConf {
+    fn input_path(&self) -> &PathBuf {
+        match self {
+            InputConf::StdIn(path) => path,
+            InputConf::Named(path) => path,
+            InputConf::Copied(_src, target) => target,
+        }
+    }
+
+    fn prepare_input_file(&self) -> io::Result<()> {
+        match self {
+            InputConf::StdIn(_path) => Ok(()),
+            InputConf::Named(_path) => Ok(()),
+            InputConf::Copied(src, target) => {
+                std::fs::copy(src, target)?;
+                Ok(())
+            }
+        }
+    }
+
+    /// Removes the temporary file if it was created
+    fn cleanup(&self) -> io::Result<()> {
+        match self {
+            InputConf::StdIn(_) => Ok(()),
+            InputConf::Named(_) => Ok(()),
+            InputConf::Copied(_, target) => std::fs::remove_file(target),
+        }
+    }
 }
 
 /// Controls how we read data out from the child process.
@@ -47,37 +81,67 @@ enum OutputConf {
     StdOut,
     /// Send data through a named pipe
     Named(PathBuf),
+    /// Read data from the same file as the input
+    InPlace(PathBuf),
 }
 
 /// Transforms files through an external program.
 /// The `command_str` field contains a path to a program and its space separated arguments.
 /// The command takes a file given in the `$IN` variable and produces an `$OUT` file.
 pub struct Transform {
+    /// a path to a program and its space separated arguments
     pub command_str: String,
-    pub program: String,
+    /// temporary directory for storing files and named pipes
     pub tmp_dir: PathBuf,
+    /// copy the file into temporary directory before running the transform on it
+    pub copy: bool,
+    /// read output from the same location as the original
+    pub in_place: bool,
+    /// will be set to the name of the program, extracted from the command_str
+    program: String,
 }
 
 impl Transform {
-    pub fn new(command_str: String) -> io::Result<Transform> {
+    pub fn new(command_str: String, in_place: bool) -> io::Result<Transform> {
+        let has_in = RefCell::new(false);
         let has_out = RefCell::new(false);
-        let parsed = Self::parse_command(&command_str, |s: &str| match s {
-            "OUT" if cfg!(windows) => {
-                *has_out.borrow_mut() = true;
-                OsString::from("$OUT")
-            }
-            _ => OsString::from(s),
+
+        let parsed = Self::parse_command(&command_str, |s: &str| {
+            match s {
+                "OUT" if cfg!(windows) => *has_out.borrow_mut() = true,
+                "IN" => *has_in.borrow_mut() = true,
+                _ => {}
+            };
+            OsString::from(s)
         });
 
-        if cfg!(windows) && has_out.into_inner() {
+        let has_in = has_in.into_inner();
+        let has_out = has_out.into_inner();
+
+        if cfg!(windows) && has_out {
             return Err(io::Error::new(
                 io::ErrorKind::Other,
                 "$OUT not supported on Windows yet",
             ));
         }
+        if in_place && has_out {
+            return Err(io::Error::new(
+                io::ErrorKind::Other,
+                "$OUT conflicts with --in-place",
+            ));
+        }
+        if in_place && !has_in {
+            return Err(io::Error::new(
+                io::ErrorKind::Other,
+                "$IN required with --in-place",
+            ));
+        }
 
-        let program = match parsed.first() {
-            Some(p) => p.clone().into_string().unwrap(),
+        let program = parsed
+            .first()
+            .and_then(|p| PathBuf::from(p).file_name().map(|s| s.to_os_string()));
+        let program = match program {
+            Some(p) => p.into_string().unwrap(),
             None => {
                 return Err(io::Error::new(
                     io::ErrorKind::Other,
@@ -103,6 +167,8 @@ impl Transform {
             command_str,
             program,
             tmp_dir: Transform::create_temp_dir()?,
+            copy: has_in,
+            in_place,
         })
     }
 
@@ -120,6 +186,12 @@ impl Transform {
                 ),
             )),
         }
+    }
+
+    /// Creates a new unique random file name in the temporary directory
+    fn random_tmp_file_name(&self) -> PathBuf {
+        self.tmp_dir
+            .join(format!("{:032x}", Uuid::new_v4().as_u128()))
     }
 
     /// Returns the output file path for the given input file path
@@ -168,7 +240,9 @@ impl Transform {
     pub fn run(&self, input: &Path) -> io::Result<Output> {
         let (args, input_conf, output_conf) = self.make_args(&input);
         let mut command = Self::build_command(&args, &input_conf, &output_conf)?;
-        Self::execute(&mut command, &output_conf)
+        let result = Self::execute(&mut command, &output_conf)?;
+        input_conf.cleanup()?;
+        Ok(result)
     }
 
     /// Creates arguments, input and output configuration for processing given input path.
@@ -178,6 +252,11 @@ impl Transform {
         let output_conf = RefCell::<OutputConf>::new(OutputConf::StdOut);
 
         let args = Self::parse_command(self.command_str.as_str(), |arg| match arg {
+            "IN" if self.copy => {
+                let tmp_target = self.random_tmp_file_name();
+                input_conf.replace(InputConf::Copied(input.to_path_buf(), tmp_target.clone()));
+                tmp_target.into_os_string()
+            }
             "IN" => {
                 let input = input.to_path_buf();
                 input_conf.replace(InputConf::Named(input.clone()));
@@ -191,7 +270,14 @@ impl Transform {
             _ => OsString::from(arg),
         });
 
-        (args, input_conf.into_inner(), output_conf.into_inner())
+        let input_conf = input_conf.into_inner();
+        let mut output_conf = output_conf.into_inner();
+
+        if self.in_place {
+            output_conf = OutputConf::InPlace(input_conf.input_path().clone())
+        }
+
+        (args, input_conf, output_conf)
     }
 
     /// Builds the `Command` struct from the parsed arguments
@@ -205,8 +291,9 @@ impl Transform {
         command.args(args);
         command.stderr(Stdio::piped());
 
-        if let InputConf::StdIn(input_path) = input_conf {
-            command.stdin(File::open(&input_path)?);
+        input_conf.prepare_input_file()?;
+        if let InputConf::StdIn(_) = input_conf {
+            command.stdin(File::open(input_conf.input_path())?);
         } else {
             command.stdin(Stdio::null());
         }
@@ -262,10 +349,15 @@ impl Transform {
             str
         });
 
-        let result = if let OutputConf::Named(output) = output_conf {
-            stream_hash(&mut File::open(output)?, FileLen::MAX, |_| {})
-        } else {
-            stream_hash(&mut child_out.unwrap(), FileLen::MAX, |_| {})
+        let result = match output_conf {
+            OutputConf::StdOut => stream_hash(&mut child_out.unwrap(), FileLen::MAX, |_| {}),
+            OutputConf::Named(output) => {
+                stream_hash(&mut File::open(output)?, FileLen::MAX, |_| {})
+            }
+            OutputConf::InPlace(output) => {
+                child.wait()?;
+                stream_hash(&mut File::open(output)?, FileLen::MAX, |_| {})
+            }
         }?;
 
         Ok(Output {
@@ -347,14 +439,14 @@ mod test {
 
     #[test]
     fn empty() {
-        assert!(Transform::new(String::from(" ")).is_err());
+        assert!(Transform::new(String::from(" "), false).is_err());
     }
 
     #[test]
     #[cfg(unix)]
     fn piped() {
         with_dir("target/test/transform/piped/", |root| {
-            let p = Transform::new(String::from("dd")).unwrap();
+            let p = Transform::new(String::from("dd"), false).unwrap();
             let input_path = root.join("input.txt");
             let mut input = File::create(&input_path).unwrap();
             let content = b"content";
@@ -382,7 +474,7 @@ mod test {
     #[cfg(unix)]
     fn parameterized() {
         with_dir("target/test/transform/param/", |root| {
-            let p = Transform::new(String::from("dd if=$IN of=$OUT")).unwrap();
+            let p = Transform::new(String::from("dd if=$IN of=$OUT"), false).unwrap();
             let input_path = root.join("input.txt");
             let mut input = File::create(&input_path).unwrap();
             let content = b"content";

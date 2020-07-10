@@ -83,6 +83,14 @@ Exclude a part of the directory tree from the scan:
 
     fclones / -R --exclude '/dev/**' '/proc/**'    
     
+### Preprocessing files
+Use `--transform` option to safely transform files by an external command.
+By default, the transformation happens on a copy of a file, to avoid accidental data loss.
+
+Strip exif before matching duplicate jpg images:
+
+    fclones . -R --names '*.jpg' --caseless --transform 'exiv2 -d a $IN' --in-place     
+    
 ### Other    
     
 List more options:

@@ -70,19 +70,39 @@ pub struct Config {
     #[structopt(short = "H", long)]
     pub hard_links: bool,
 
-    /// Before matching, transform each file by the specified program.
+    /// Before matching, transforms each file by the specified program.
     /// The value of this parameter should contain a command: the path to the program
-    /// and optionally its space-separated arguments.
+    /// and optionally a list of space-separated arguments.
     /// By default, the file to process will be piped to the standard input of the program and the
     /// processed data will be read from the standard output.
-    /// If the program does not support piping, but requires its input and/or output file path
+    /// If the program does not support piping, but requires its input and/or output file path(s)
     /// to be specified in the argument list, denote these paths by $IN and $OUT special variables.
-    /// If $IN is specified in the command string, the file will not be piped to the standard input.
-    /// If $OUT is specified in the command string, the result will not be read from
-    /// the standard output, but fclones will set up a named pipe $OUT and read from
-    /// that pipe instead.
+    /// If $IN is specified in the command string, the file will not be piped to the standard input,
+    /// but copied first to a temporary location and that temporary location will be substituted
+    /// as the value of $IN when launching the transform command.
+    /// Similarly, if $OUT is specified in the command string, the result will not be read from
+    /// the standard output, but fclones will expect the program to write to a named pipe
+    /// specified by $OUT and will read output from there.
+    /// If the program modifies the original file in-place without writing to the standard output
+    /// nor a distinct file, use --in-place flag.
     #[structopt(long, value_name("command"))]
     pub transform: Option<String>,
+
+    /// Set this flag if the command given to --transform transforms the file in-place,
+    /// i.e. it modifies the original input file instead of writing to the standard output
+    /// or to a new file. This flag tells fclones to read output from the original file
+    /// after the transform command exited.
+    #[structopt(long)]
+    pub in_place: bool,
+
+    /// Doesn't copy the file to a temporary location before transforming,
+    /// when $IN parameter is specified in the --transform command.
+    /// If this flag is present, $IN will point to the original file.
+    /// Caution:
+    /// this option may speed up processing, but it may cause loss of data because it lets
+    /// the transform command to work directly on the original file.
+    #[structopt(long)]
+    pub no_copy: bool,
 
     /// Searches for over-replicated files with replication factor above the specified value.
     /// Specifying neither `--rf-over` nor `--rf-under` is equivalent to `--rf-over 1` which would
@@ -231,9 +251,17 @@ impl Config {
     }
 
     fn build_transform(&self, command: &str, log: &Log) -> io::Result<Transform> {
-        Transform::new(command.to_string()).map_err(|e| {
-            log.err(e);
-            exit(1);
-        })
+        match Transform::new(command.to_string(), self.in_place) {
+            Ok(mut tr) => {
+                if self.no_copy {
+                    tr.copy = false
+                };
+                Ok(tr)
+            }
+            Err(e) => {
+                log.err(e);
+                exit(1);
+            }
+        }
     }
 }
