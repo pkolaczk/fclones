@@ -509,11 +509,7 @@ fn open_noatime(path: &Path) -> io::Result<File> {
 
 /// Scans up to `len` bytes in a file and sends data to the given consumer.
 /// Returns the number of bytes successfully read.
-fn scan<F: FnMut(&[u8])>(
-    stream: &mut impl Read,
-    len: FileLen,
-    mut consumer: F,
-) -> io::Result<u64> {
+fn scan<F: FnMut(&[u8])>(stream: &mut impl Read, len: FileLen, mut consumer: F) -> io::Result<u64> {
     let mut buf = [0; BUF_LEN];
     let mut read: u64 = 0;
     let len = len.into();
