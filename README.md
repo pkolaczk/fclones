@@ -38,13 +38,23 @@ It easily outperforms many other popular duplicate finders by a wide margin (see
   - `JSON`     
 
 ## Usage
-Find duplicate files in the current directory, without descending into subdirectories:
+Find duplicate files in the current directory, without descending into subdirectories 
+(in Unix-like shells with globbing support):
 
     fclones * 
 
-Find common files in two directories, without descending into subdirectories:
+Find duplicate files in the current directory, without descending into subdirectories (portable):
+ 
+    fclones . -R --depth 1 
+
+Find common files in two directories, without descending into subdirectories 
+(in Unix-like shells with globbing support):
 
     fclones dir1/* dir2/*  
+
+Find common files in two directories, without descending into subdirectories (portable):
+
+    fclones dir1 dir2 -R --depth 1  
 
 Find duplicate files in the current directory, including subdirectories:
 
@@ -85,7 +95,7 @@ Exclude a part of the directory tree from the scan:
     
 ### Preprocessing files
 Use `--transform` option to safely transform files by an external command.
-By default, the transformation happens on a copy of a file, to avoid accidental data loss.
+By default, the transformation happens on a copy of file data, to avoid accidental data loss.
 
 Strip exif before matching duplicate jpg images:
 
@@ -97,18 +107,29 @@ List more options:
     
     fclones -h
 
-### Notes
+### Notes on quoting and path globbing
 * On Unix-like systems, when using globs, one must be very careful to avoid accidental expansion of globs by the shell.
-  In many cases having globs expanded by the shell instead of by `fclones` is not what you want. Therefore you
-  need to quote globs:
+  In many cases having globs expanded by the shell instead of by `fclones` is not what you want. In such cases, you
+  need to quote the globs:
     
       fclones . -R --names '*.jpg'       
        
-* On Windows, in the default terminal, quotes are not removed before passing the arguments to the program,
-  and globs are not expanded, therefore you need to pass globs unquoted:
+* On Windows, the default shell doesn't remove quotes before passing the arguments to the program, 
+  therefore you need to pass globs unquoted:
   
       fclones . -R --names *.jpg
-                    
+      
+* On Windows, the default shell doesn't support path globbing, therefore wildcard characters such as * and ? used 
+  in paths will be passed literally, and they are likely to create invalid paths. For example, the following 
+  command that searches for duplicate files in the current directory in Bash, will likely fail in the default
+  Windows shell:
+  
+      fclones *
+      
+  If you need path globbing, and your shell does not support it, 
+  use a combination of recursive search `-R` with `--depth` limit and 
+  built-in path globbing provided by `--names` or `--paths`.     
+                      
 ## Installation
 
 ### Supported Platforms
