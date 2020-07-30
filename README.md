@@ -187,7 +187,7 @@ Each program was executed twice.
 Before the first run, the system page cache was evicted with `echo 3 > /proc/sys/vm/drop_caches` and the second
 run was executed immediately after the first run finished. 
 
-#### Benchmark 1
+### Benchmark 1
 - Model: Dell Precision 5520
 - CPU: Intel(R) Xeon(R) CPU E3-1505M v6 @ 3.00GHz
 - RAM: 32 GB
@@ -209,7 +209,7 @@ fclones                                                |  0.1.0    | Rust     | 
 it was still computing MD5 in stage 2/3. Unfortunately `fdupes-java` doesn't display
 a useful progress bar, so it is not possible to estimate how long it would take.
 
-#### Benchmark 2
+### Benchmark 2
 - Host:
    - Dell Precision 5520
    - CPU: Intel(R) Xeon(R) CPU E3-1505M v6 @ 3.00GHz
