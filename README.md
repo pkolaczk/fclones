@@ -182,20 +182,18 @@ is used and you don't need to worry about hash collisions. At 10<sup>15</sup> fi
 0.000000001, without taking into account the requirement for the files to also match by size.
     
 ## Benchmarks
+Different duplicate finders were given a task to find duplicates in a large set of files.
+Each program was executed twice. 
+Before the first run, the system page cache was evicted with `echo 3 > /proc/sys/vm/drop_caches` and the second
+run was executed immediately after the first run finished. 
 
-Benchmarks were performed by searching for duplicates among 1,583,334 paths containing 317 GB of 
-data in my home folder. Each program was tested twice in a row. Page cache was evicted before the first run
-with `echo 3 > /proc/sys/vm/drop_caches`.
-
-### Test Setup
+#### Benchmark 1
 - Model: Dell Precision 5520
 - CPU: Intel(R) Xeon(R) CPU E3-1505M v6 @ 3.00GHz
 - RAM: 32 GB
-- Storage: NVMe SSD 512 GB 
-- System: Ubuntu Linux 20.04, kernel 5.4.0-33-generic        
-
-### Results
-Wall clock time and peak memory (RSS) were obtained from `/usr/bin/time -V` command.
+- Storage: local NVMe SSD 512 GB 
+- System: Ubuntu Linux 20.04, kernel 5.4.0-33-generic
+- Task: 1,583,334 paths, 317 GB of data       
 
 Program                                                |  Version  | Language | Threads | Cold Cache Time | Hot Cache Time | Peak Memory
 -------------------------------------------------------|-----------|----------|--------:|----------------:|---------------:|-------------:
@@ -211,4 +209,33 @@ fclones                                                |  0.1.0    | Rust     | 
 it was still computing MD5 in stage 2/3. Unfortunately `fdupes-java` doesn't display
 a useful progress bar, so it is not possible to estimate how long it would take.
 
-      
+#### Benchmark 2
+- Host:
+   - Dell Precision 5520
+   - CPU: Intel(R) Xeon(R) CPU E3-1505M v6 @ 3.00GHz
+   - RAM: 32 GB
+   - System: Ubuntu Linux 20.04, kernel 5.4.0-40-generic
+- Storage: 
+  - WD MyCloud EX2 Ultra 
+  - 2x8 TB 5400 RPM WD RED in RAID 1
+  - NFS over a 1 Gbit Ethernet LAN connection    
+- Task: 
+  - 9243 paths 
+  - 166.2 GB data 
+  - 4.2 GB duplicate files
+  - file types: RAWs, JPGs, RawTherapee processing files 
+
+Commands used:
+
+      /usr/bin/time -v fclones -t <num threads> -R <file set root>
+      /usr/bin/time -v jdupes -R -Q <file set root>
+      /usr/bin/time -v fdupes -R <file set root>
+      /usr/bin/time -v rdfind <file set root>
+            
+Program                                                |  Version  | Language | Threads | Cold Cache Time | Hot Cache Time | Peak Memory
+-------------------------------------------------------|-----------|----------|--------:|----------------:|---------------:|-------------:
+fclones                                                |  0.5.0    | Rust     | 8       |   **1:16.07**   | **0:00.74**    |  8.6 MB
+fclones                                                |  0.5.0    | Rust     | 1       |   1:33.03       | 0:06.07        |  7.5 MB
+[rdfind](https://github.com/pauldreik/rdfind)          |  1.4.1    | C++      | 1       |   1:26.42       | 0:21.92        |  7.3 MB
+[jdupes](https://github.com/jbruchon/jdupes)           |  1.14     | C        | 1       |   1:31.22       | 0:07.50        |  3.8 MB
+[fdupes](https://github.com/adrianlopezroche/fdupes)   |  1.6.1    | C        | 1       |   1:39.74       | 0:22.07        |  3.7 MB
