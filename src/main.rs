@@ -28,7 +28,12 @@ use fclones::walk::Walk;
 
 const MIN_PREFIX_LEN: FileLen = FileLen(4096);
 const MAX_PREFIX_LEN: FileLen = FileLen(4 * MIN_PREFIX_LEN.0);
-const SUFFIX_LEN: FileLen = MIN_PREFIX_LEN;
+
+/// Minimum size of a file to be considered for grouping by suffix.
+/// Grouping by suffix is unlikely to remove the file from further processing, so we only do
+/// it for big enough files
+const SUFFIX_THRESHOLD: FileLen = FileLen(4 * 1024 * 1024);
+const SUFFIX_LEN: FileLen = FileLen(4096);
 
 struct AppCtx {
     config: Config,
@@ -290,7 +295,7 @@ fn group_by_prefix(ctx: &mut AppCtx, groups: Vec<FileGroup<Path>>) -> Vec<FileGr
 }
 
 fn group_by_suffix(ctx: &mut AppCtx, groups: Vec<FileGroup<Path>>) -> Vec<FileGroup<Path>> {
-    let needs_processing = |len: FileLen| len >= MAX_PREFIX_LEN + SUFFIX_LEN * 2;
+    let needs_processing = |len: FileLen| len >= SUFFIX_THRESHOLD;
     let remaining_files = groups
         .iter()
         .filter(|&g| (needs_processing)(g.len) && g.files.len() > 1)
