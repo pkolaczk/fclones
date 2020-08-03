@@ -438,7 +438,7 @@ fn paint_help(s: &str) -> String {
 }
 
 fn main() {
-    let log = Log::new();
+    let mut log = Log::new();
 
     let after_help = &paint_help(indoc!(
         "
@@ -470,7 +470,9 @@ fn main() {
         exit(1);
     });
     let config: Config = Config::from_clap(&matches);
-
+    if config.quiet {
+        log.no_progress = true;
+    }
     configure_thread_pool(config.threads);
 
     let mut ctx = AppCtx { log, config };
