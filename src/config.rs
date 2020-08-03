@@ -152,6 +152,10 @@ pub struct Config {
     #[structopt(short, long, default_value = "0", value_name("count"))]
     pub threads: usize,
 
+    /// Suppresses progress reporting
+    #[structopt(short = "Q", long)]
+    pub quiet: bool,
+
     /// A list of input paths. Accepts files and directories.
     #[structopt(parse(from_os_str), required_unless("stdin"))]
     pub paths: Vec<PathBuf>,
