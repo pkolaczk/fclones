@@ -143,7 +143,6 @@ fn group_by_size(ctx: &mut AppCtx, files: Vec<Vec<FileInfo>>) -> Vec<FileGroup<F
 
     let groups: Vec<_> = groups
         .into_iter()
-        .map(|(l, files)| (l, remove_duplicate_paths(files)))
         .filter(|(_, files)| files.len() > rf_over)
         .map(|(l, files)| FileGroup {
             len: l,
@@ -169,12 +168,7 @@ fn to_group_of_paths(f: FileGroup<FileInfoNoLen>) -> FileGroup<Path> {
     }
 }
 
-/// Drops file id hashes from file info and returns groups of paths
-fn drop_hard_link_info(groups: Vec<FileGroup<FileInfoNoLen>>) -> Vec<FileGroup<Path>> {
-    groups.into_par_iter().map(to_group_of_paths).collect()
-}
-
-fn prune_hard_links(
+fn remove_same_files(
     ctx: &mut AppCtx,
     groups: Vec<FileGroup<FileInfoNoLen>>,
 ) -> Vec<FileGroup<Path>> {
@@ -190,6 +184,7 @@ fn prune_hard_links(
         .into_par_iter()
         .inspect(|g| progress.inc(g.files.len()))
         .map(|mut g| {
+            g.files = remove_duplicate_paths(g.files);
             g.files = prune_links_if_needed(&ctx, g.files);
             g
         })
@@ -200,8 +195,14 @@ fn prune_hard_links(
     let count: usize = groups.selected_count(rf_over, rf_under);
     let bytes: FileLen = groups.selected_size(rf_over, rf_under);
     ctx.log.info(format!(
-        "Found {} ({}) candidates after pruning hard-links",
-        count, bytes
+        "Found {} ({}) candidates after grouping by paths {}",
+        count,
+        bytes,
+        if ctx.config.hard_links {
+            ""
+        } else {
+            "and file identifiers"
+        }
     ));
     groups
 }
@@ -496,12 +497,7 @@ fn main() {
 fn process(mut ctx: &mut AppCtx) -> Vec<FileGroup<Path>> {
     let matching_files = scan_files(&mut ctx);
     let size_groups = group_by_size(&mut ctx, matching_files);
-    let size_groups_pruned = if ctx.config.hard_links {
-        drop_hard_link_info(size_groups)
-    } else {
-        prune_hard_links(&mut ctx, size_groups)
-    };
-
+    let size_groups_pruned = remove_same_files(&mut ctx, size_groups);
     let mut groups = match ctx.config.take_transform(&ctx.log) {
         Some(transform) => group_transformed(ctx, &transform, size_groups_pruned),
         None => {
