@@ -12,15 +12,16 @@ use std::os::unix::fs::OpenOptionsExt;
 #[cfg(unix)]
 use std::os::unix::io::*;
 
+use byte_unit::Byte;
 use bytesize::ByteSize;
 use metrohash::{MetroHash128, MetroHash64};
 use serde::*;
 use smallvec::alloc::fmt::Formatter;
 use smallvec::alloc::str::FromStr;
+use sysinfo::{System, SystemExt};
 
 use crate::log::Log;
 use crate::path::Path;
-use byte_unit::Byte;
 
 /// Represents data position in the file, counted from the beginning of the file, in bytes.
 /// Provides more type safety and nicer formatting over using a raw u64.
@@ -449,13 +450,13 @@ fn evict_page_cache(file: &File, offset: FilePos, len: FileLen) {
 fn evict_page_cache_if_low_mem(file: &mut File, len: FileLen) {
     #[cfg(target_os = "linux")]
     {
-        use sys_info::mem_info;
         let buf_len: FileLen = BUF_LEN.into();
         if len > buf_len * 2 {
-            let free_ratio = match mem_info() {
-                Ok(mem) => mem.free as f32 / mem.total as f32,
-                Err(_) => 0.0,
-            };
+            let mut system = System::new();
+            system.refresh_memory();
+            let free_mem = system.get_free_memory();
+            let total_mem = system.get_total_memory();
+            let free_ratio = free_mem as f32 / total_mem as f32;
             if free_ratio < 0.05 {
                 evict_page_cache(&file, FilePos::zero() + buf_len, len - buf_len * 2);
             }
