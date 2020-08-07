@@ -19,6 +19,7 @@ use fclones::config::*;
 use fclones::files::*;
 use fclones::group::*;
 use fclones::log::Log;
+use fclones::partition::Partitions;
 use fclones::path::Path;
 use fclones::pattern::ESCAPE_CHAR;
 use fclones::progress::FastProgressBar;
@@ -38,6 +39,7 @@ const SUFFIX_LEN: FileLen = FileLen(4096);
 struct AppCtx {
     config: Config,
     log: Log,
+    partitions: Partitions,
 }
 
 /// Configures global thread pool to use desired number of threads
@@ -348,6 +350,7 @@ fn group_by_contents(ctx: &mut AppCtx, groups: Vec<FileGroup<Path>>) -> Vec<File
 
     let groups: Vec<_> = groups.split(rf_over + 1, |len, hash, path| {
         if (needs_processing)(len) {
+            let _guard = ctx.partitions.get_by_path(&path).semaphore.access();
             file_hash_or_log_err(
                 path,
                 FilePos(0),
@@ -475,7 +478,11 @@ fn main() {
     }
     configure_thread_pool(config.threads);
 
-    let mut ctx = AppCtx { log, config };
+    let mut ctx = AppCtx {
+        log,
+        config,
+        partitions: Partitions::default(),
+    };
     ctx.config.check_transform(&ctx.log);
 
     if let Some(output) = &ctx.config.output {
@@ -755,7 +762,10 @@ mod test {
     fn test_ctx() -> AppCtx {
         let mut log = Log::new();
         log.no_progress = true;
-        let config: Config = Default::default();
-        AppCtx { log, config }
+        AppCtx {
+            log,
+            config: Default::default(),
+            partitions: Default::default(),
+        }
     }
 }

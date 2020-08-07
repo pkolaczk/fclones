@@ -97,16 +97,30 @@ impl Path {
     /// If base is the same as this path, returns current directory.
     /// If this path doesn't have a `base` prefix, returns `None`.
     pub fn strip_prefix(&self, base: &Path) -> Option<Path> {
-        let mut components = self.components().into_iter().peekable();
+        let mut self_components = self.components().into_iter().peekable();
         let mut base_components = base.components().into_iter().peekable();
-        while let (Some(a), Some(b)) = (components.peek(), base_components.peek()) {
+        while let (Some(a), Some(b)) = (self_components.peek(), base_components.peek()) {
             if a != b {
                 return None;
             }
-            components.next();
+            self_components.next();
             base_components.next();
         }
-        Some(Path::make(components))
+        Some(Path::make(self_components))
+    }
+
+    /// Returns true if self is a prefix of another path
+    pub fn is_prefix_of(&self, other: &Path) -> bool {
+        let mut self_components = self.components().into_iter().peekable();
+        let mut other_components = other.components().into_iter().peekable();
+        while let (Some(a), Some(b)) = (self_components.peek(), other_components.peek()) {
+            if a != b {
+                return false;
+            }
+            self_components.next();
+            other_components.next();
+        }
+        self_components.peek() == None
     }
 
     /// Converts this path to a standard library path buffer.
@@ -160,6 +174,13 @@ impl Path {
         };
         result.push(&self.component);
         result
+    }
+
+    /// Returns the number of components in this path
+    pub fn component_count(&self) -> usize {
+        let mut count = 0;
+        self.for_each_component(|_| count += 1);
+        count
     }
 
     /// Executes a function for each component, left to right
@@ -392,5 +413,12 @@ mod test {
             Path::from("/foo/bar").strip_prefix(&Path::from("/bar")),
             None
         );
+    }
+
+    #[test]
+    fn is_prefix_of() {
+        assert!(Path::from("/foo/bar").is_prefix_of(&Path::from("/foo/bar")));
+        assert!(Path::from("/foo/bar").is_prefix_of(&Path::from("/foo/bar/baz")));
+        assert!(!Path::from("/foo/bar").is_prefix_of(&Path::from("/foo")))
     }
 }
