@@ -19,16 +19,13 @@ use fclones::config::*;
 use fclones::files::*;
 use fclones::group::*;
 use fclones::log::Log;
-use fclones::partition::Partitions;
+use fclones::partition::{Partition, Partitions};
 use fclones::path::Path;
 use fclones::pattern::ESCAPE_CHAR;
 use fclones::progress::FastProgressBar;
 use fclones::report::Reporter;
 use fclones::transform::Transform;
 use fclones::walk::Walk;
-
-const MIN_PREFIX_LEN: FileLen = FileLen(4096);
-const MAX_PREFIX_LEN: FileLen = FileLen(4 * MIN_PREFIX_LEN.0);
 
 /// Minimum size of a file to be considered for grouping by suffix.
 /// Grouping by suffix is unlikely to remove the file from further processing, so we only do
@@ -147,8 +144,11 @@ fn group_by_size(ctx: &mut AppCtx, files: Vec<Vec<FileInfo>>) -> Vec<FileGroup<F
         .into_iter()
         .filter(|(_, files)| files.len() > rf_over)
         .map(|(l, files)| FileGroup {
-            len: l,
-            hash: None,
+            meta: FileGroupMeta {
+                file_len: l,
+                hash: None,
+                prefix_len: FileLen(0),
+            },
             files,
         })
         .collect();
@@ -164,8 +164,7 @@ fn group_by_size(ctx: &mut AppCtx, files: Vec<Vec<FileInfo>>) -> Vec<FileGroup<F
 
 fn to_group_of_paths(f: FileGroup<FileInfoNoLen>) -> FileGroup<Path> {
     FileGroup {
-        len: f.len,
-        hash: None,
+        meta: f.meta,
         files: f.files.into_iter().map(|i| i.path).collect(),
     }
 }
@@ -247,8 +246,11 @@ fn group_transformed(
         .into_iter()
         .filter(|(_, files)| files.len() > rf_over)
         .map(|((len, hash), files)| FileGroup {
-            len,
-            hash: Some(hash),
+            meta: FileGroupMeta {
+                file_len: len,
+                hash: Some(hash),
+                prefix_len: len,
+            },
             files,
         })
         .collect();
@@ -264,6 +266,20 @@ fn group_transformed(
     groups
 }
 
+/// Returns the desired prefix length for the given group of files.
+/// The return value depends on the capabilities of the devices the files are stored on.
+/// Higher values are desired if any of the files resides on an HDD.
+fn prefix_len(partitions: &Partitions, g: &FileGroup<Path>) -> FileLen {
+    let v: Vec<&Partition> = g.files.iter().map(|p| partitions.get_by_path(p)).collect();
+    let max_prefix_len = v.iter().map(|&p| p.max_prefix_len()).max().unwrap();
+    let min_prefix_len = v.iter().map(|&p| p.min_prefix_len()).max().unwrap();
+    if g.meta.file_len <= max_prefix_len {
+        g.meta.file_len
+    } else {
+        min_prefix_len
+    }
+}
+
 fn group_by_prefix(ctx: &mut AppCtx, groups: Vec<FileGroup<Path>>) -> Vec<FileGroup<Path>> {
     let remaining_files = groups.iter().filter(|g| g.files.len() > 1).total_count();
     let progress = ctx
@@ -273,20 +289,22 @@ fn group_by_prefix(ctx: &mut AppCtx, groups: Vec<FileGroup<Path>>) -> Vec<FileGr
     let rf_over = ctx.config.rf_over();
     let rf_under = ctx.config.rf_under();
 
-    let groups: Vec<_> = groups.split(rf_over + 1, |len, _hash, path| {
-        progress.tick();
-        let prefix_len = if len <= MAX_PREFIX_LEN {
-            len
-        } else {
-            MIN_PREFIX_LEN
-        };
-        let caching = if len <= MAX_PREFIX_LEN {
-            Caching::Default
-        } else {
-            Caching::Random
-        };
-        file_hash_or_log_err(path, FilePos(0), prefix_len, caching, |_| {}, &ctx.log)
-    });
+    let groups: Vec<_> = groups
+        .into_par_iter()
+        .flat_map(|g| {
+            let prefix_len = prefix_len(&ctx.partitions, &g);
+            let caching = if g.meta.file_len <= prefix_len {
+                Caching::Default
+            } else {
+                Caching::Random
+            };
+            g.split(true, prefix_len, |path| {
+                progress.tick();
+                file_hash_or_log_err(path, FilePos(0), prefix_len, caching, |_| {}, &ctx.log)
+            })
+        })
+        .filter(|g| g.files.len() > rf_over)
+        .collect();
 
     let count = groups.selected_count(rf_over, rf_under);
     let bytes = groups.selected_size(rf_over, rf_under);
@@ -298,12 +316,13 @@ fn group_by_prefix(ctx: &mut AppCtx, groups: Vec<FileGroup<Path>>) -> Vec<FileGr
 }
 
 fn group_by_suffix(ctx: &mut AppCtx, groups: Vec<FileGroup<Path>>) -> Vec<FileGroup<Path>> {
-    let needs_processing = |len: FileLen| len >= SUFFIX_THRESHOLD;
+    let needs_processing =
+        |g: &FileGroup<Path>| g.meta.file_len >= SUFFIX_THRESHOLD && g.files.len() > 1;
+
     let remaining_files = groups
         .iter()
-        .filter(|&g| (needs_processing)(g.len) && g.files.len() > 1)
+        .filter(|&g| (needs_processing)(g))
         .total_count();
-
     let progress = ctx
         .log
         .progress_bar("Grouping by suffix", remaining_files as u64);
@@ -311,21 +330,26 @@ fn group_by_suffix(ctx: &mut AppCtx, groups: Vec<FileGroup<Path>>) -> Vec<FileGr
     let rf_over = ctx.config.rf_over();
     let rf_under = ctx.config.rf_under();
 
-    let groups: Vec<_> = groups.split(rf_over + 1, |len, hash, path| {
-        if (needs_processing)(len) {
-            progress.tick();
-            file_hash_or_log_err(
-                path,
-                (len - SUFFIX_LEN).as_pos(),
-                SUFFIX_LEN,
-                Caching::Default,
-                |_| {},
-                &ctx.log,
-            )
-        } else {
-            hash
-        }
-    });
+    let groups: Vec<_> = groups
+        .into_par_iter()
+        .flat_map(|g| {
+            let file_len = g.meta.file_len;
+            let prefix_len = g.meta.prefix_len;
+            let needs_processing = needs_processing(&g);
+            g.split(needs_processing, prefix_len, |path| {
+                progress.tick();
+                file_hash_or_log_err(
+                    path,
+                    file_len.as_pos() - SUFFIX_LEN,
+                    SUFFIX_LEN,
+                    Caching::Default,
+                    |_| {},
+                    &ctx.log,
+                )
+            })
+        })
+        .filter(|g| g.files.len() > rf_over)
+        .collect();
 
     let count = groups.selected_count(rf_over, rf_under);
     let bytes = groups.selected_size(rf_over, rf_under);
@@ -337,32 +361,34 @@ fn group_by_suffix(ctx: &mut AppCtx, groups: Vec<FileGroup<Path>>) -> Vec<FileGr
 }
 
 fn group_by_contents(ctx: &mut AppCtx, groups: Vec<FileGroup<Path>>) -> Vec<FileGroup<Path>> {
-    let needs_processing = |len: FileLen| len >= MAX_PREFIX_LEN;
-    let bytes_to_scan = groups
-        .iter()
-        .filter(|&g| (needs_processing)(g.len) && g.files.len() > 1)
-        .total_size();
+    let needs_processing =
+        |g: &FileGroup<Path>| g.meta.file_len >= g.meta.prefix_len && g.files.len() > 1;
+    let bytes_to_scan = groups.iter().filter(|&g| needs_processing(g)).total_size();
     let progress = ctx
         .log
         .bytes_progress_bar("Grouping by contents", bytes_to_scan.0);
     let rf_over = ctx.config.rf_over();
     let rf_under = ctx.config.rf_under();
 
-    let groups: Vec<_> = groups.split(rf_over + 1, |len, hash, path| {
-        if (needs_processing)(len) {
-            let _guard = ctx.partitions.get_by_path(&path).semaphore.access();
-            file_hash_or_log_err(
-                path,
-                FilePos(0),
-                len,
-                Caching::Sequential,
-                |delta| progress.inc(delta),
-                &ctx.log,
-            )
-        } else {
-            hash
-        }
-    });
+    let groups: Vec<_> = groups
+        .into_par_iter()
+        .flat_map(|g| {
+            let file_len = g.meta.file_len;
+            let needs_processing = needs_processing(&g);
+            g.split(needs_processing, file_len, |path| {
+                let _guard = ctx.partitions.get_by_path(&path).semaphore.access();
+                file_hash_or_log_err(
+                    path,
+                    FilePos(0),
+                    file_len,
+                    Caching::Sequential,
+                    |delta| progress.inc(delta),
+                    &ctx.log,
+                )
+            })
+        })
+        .filter(|g| g.files.len() > rf_over)
+        .collect();
 
     let count = groups.selected_count(rf_over, rf_under);
     let bytes = groups.selected_size(rf_over, rf_under);
@@ -516,7 +542,7 @@ fn process(mut ctx: &mut AppCtx) -> Vec<FileGroup<Path>> {
         }
     };
     groups.retain(|g| g.files.len() < ctx.config.rf_under());
-    groups.par_sort_by_key(|g| Reverse((g.len, g.hash)));
+    groups.par_sort_by_key(|g| Reverse((g.meta.file_len, g.meta.hash)));
     groups.par_iter_mut().for_each(|g| g.files.sort());
     groups
 }
@@ -532,6 +558,8 @@ mod test {
 
     use super::*;
 
+    const MAX_PREFIX_LEN: usize = 256 * 1024;
+
     #[test]
     fn identical_small_files() {
         with_dir("target/test/main/identical_small_files", |root| {
@@ -544,7 +572,7 @@ mod test {
             ctx.config.paths = vec![file1, file2];
             let results = process(&mut ctx);
             assert_eq!(results.len(), 1);
-            assert_eq!(results[0].len, FileLen(3));
+            assert_eq!(results[0].meta.file_len, FileLen(3));
             assert_eq!(results[0].files.len(), 2);
         });
     }
@@ -554,18 +582,8 @@ mod test {
         with_dir("target/test/main/identical_large_files", |root| {
             let file1 = root.join("file1");
             let file2 = root.join("file2");
-            write_test_file(
-                &file1,
-                &[0; MAX_PREFIX_LEN.0 as usize],
-                &[1; 4096],
-                &[2; 4096],
-            );
-            write_test_file(
-                &file2,
-                &[0; MAX_PREFIX_LEN.0 as usize],
-                &[1; 4096],
-                &[2; 4096],
-            );
+            write_test_file(&file1, &[0; MAX_PREFIX_LEN], &[1; 4096], &[2; 4096]);
+            write_test_file(&file2, &[0; MAX_PREFIX_LEN], &[1; 4096], &[2; 4096]);
 
             let mut ctx = test_ctx();
             ctx.config.paths = vec![file1, file2];
@@ -625,8 +643,8 @@ mod test {
         with_dir("target/test/main/files_differing_by_suffix", |root| {
             let file1 = root.join("file1");
             let file2 = root.join("file2");
-            let prefix = [0; MAX_PREFIX_LEN.0 as usize];
-            let mid = [1; (MAX_PREFIX_LEN.0 + 2 * SUFFIX_LEN.0) as usize];
+            let prefix = [0; MAX_PREFIX_LEN];
+            let mid = [1; MAX_PREFIX_LEN + (2 * SUFFIX_LEN.0 as usize)];
             write_test_file(&file1, &prefix, &mid, b"suffix1");
             write_test_file(&file2, &prefix, &mid, b"suffix2");
 
@@ -646,7 +664,7 @@ mod test {
         with_dir("target/test/main/files_differing_by_middle", |root| {
             let file1 = root.join("file1");
             let file2 = root.join("file2");
-            let prefix = [0; MAX_PREFIX_LEN.0 as usize];
+            let prefix = [0; MAX_PREFIX_LEN];
             let suffix = [1; (SUFFIX_LEN.0 * 2) as usize];
             write_test_file(&file1, &prefix, b"middle1", &suffix);
             write_test_file(&file2, &prefix, b"middle2", &suffix);
