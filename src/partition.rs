@@ -35,16 +35,24 @@ impl Partition {
         }
     }
 
-    pub fn prefix_size(&self) -> FileLen {
+    pub fn min_prefix_len(&self) -> FileLen {
         FileLen(match self.disk_type {
-            DiskType::HDD => 256 * 1024,
+            DiskType::HDD => 64 * 1024,
             DiskType::SSD => 4 * 1024,
-            DiskType::Unknown(_) => 4 * 1024,
+            DiskType::Unknown(_) => 16 * 1024,
         })
     }
 
-    pub fn suffix_size(&self) -> FileLen {
-        self.prefix_size()
+    pub fn max_prefix_len(&self) -> FileLen {
+        FileLen(match self.disk_type {
+            DiskType::HDD => 512 * 1024,
+            DiskType::SSD => 16 * 1024,
+            DiskType::Unknown(_) => 64 * 1024,
+        })
+    }
+
+    pub fn suffix_len(&self) -> FileLen {
+        self.max_prefix_len()
     }
 
     pub fn suffix_threshold(&self) -> FileLen {
