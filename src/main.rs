@@ -47,37 +47,6 @@ fn configure_thread_pool(parallelism: usize) {
         .unwrap();
 }
 
-/// Unless `duplicate_links` is set to true,
-/// remove duplicated `FileInfo` entries with the same inode and device id from the list.
-fn prune_links_if_needed(ctx: &AppCtx, files: Vec<FileInfoNoLen>) -> Vec<FileInfoNoLen> {
-    // if we allow non-unique, or they are already unique, don't deduplicate
-    if ctx.config.hard_links || files.iter().unique_by(|i| i.id_hash).count() == files.len() {
-        files
-    } else {
-        deduplicate(files, |p| file_id_or_log_err(p, &ctx.log))
-    }
-}
-
-/// Deduplicates paths (based on the path text, not file contents)
-fn remove_duplicate_paths(files: Vec<FileInfoNoLen>) -> Vec<FileInfoNoLen> {
-    deduplicate(files, |p| p.hash128())
-}
-
-/// Deduplicates a vector of file information objects by given key.
-fn deduplicate<K>(files: Vec<FileInfoNoLen>, key: impl Fn(&Path) -> K) -> Vec<FileInfoNoLen>
-where
-    K: Eq + std::hash::Hash,
-{
-    files
-        .into_iter()
-        // need to unpack the struct before accessing path reference
-        // referencing fields of a packed struct directly is UB, because they may be unaligned
-        .map(|i| (i.path, i.id_hash))
-        .unique_by(|(path, _)| (key)(path))
-        .map(|(path, id_hash)| FileInfoNoLen { path, id_hash })
-        .collect()
-}
-
 /// Walks the directory tree and collects matching files in parallel into a vector
 fn scan_files(ctx: &mut AppCtx) -> Vec<Vec<FileInfo>> {
     let base_dir = Path::from(current_dir().unwrap_or_default());
@@ -169,6 +138,41 @@ fn to_group_of_paths(f: FileGroup<FileInfoNoLen>) -> FileGroup<Path> {
     }
 }
 
+/// Removes duplicate files matching by full-path or by inode-id.
+/// Deduplication by inode-id is not performed if the flag to preserve hard-links (-H) is set.
+fn deduplicate<F>(ctx: &AppCtx, files: Vec<FileInfoNoLen>, progress: F) -> Vec<FileInfoNoLen>
+where
+    F: Fn(&Path) + Sync + Send,
+{
+    let count = files.len();
+    let mut groups = GroupMap::with_capacity(count, |fi: FileInfoNoLen| (fi.id_hash, fi.path));
+    files.into_iter().for_each(|fi| groups.add(fi));
+
+    let mut result = Vec::with_capacity(count);
+    for (id_hash, mut paths) in groups.into_iter() {
+        if paths.len() == 1 {
+            progress(&paths[0]);
+            result.push(FileInfoNoLen {
+                id_hash,
+                path: paths.remove(0),
+            });
+        } else if ctx.config.hard_links {
+            paths
+                .into_iter()
+                .inspect(|p| progress(p))
+                .unique_by(|p| p.hash128())
+                .for_each(|p| result.push(FileInfoNoLen { id_hash, path: p }))
+        } else {
+            paths
+                .into_iter()
+                .inspect(|p| progress(p))
+                .unique_by(|p| file_id_or_log_err(p, &ctx.log))
+                .for_each(|p| result.push(FileInfoNoLen { id_hash, path: p }))
+        }
+    }
+    result
+}
+
 fn remove_same_files(
     ctx: &mut AppCtx,
     groups: Vec<FileGroup<FileInfoNoLen>>,
@@ -183,10 +187,8 @@ fn remove_same_files(
 
     let groups: Vec<_> = groups
         .into_par_iter()
-        .inspect(|g| progress.inc(g.files.len()))
         .map(|mut g| {
-            g.files = remove_duplicate_paths(g.files);
-            g.files = prune_links_if_needed(&ctx, g.files);
+            g.files = deduplicate(ctx, g.files, |_| progress.tick());
             g
         })
         .filter(|g| g.files.len() > rf_over)

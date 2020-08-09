@@ -207,7 +207,7 @@ impl FileInfo {
                     inode: metadata.ino() as u128,
                     device: metadata.dev(),
                 }
-                .hash(),
+                .get_hash(),
             }),
             Err(e) => Err(io::Error::new(
                 e.kind(),
@@ -227,7 +227,7 @@ impl FileInfo {
                     inode: info.file_index() as u128,
                     device: info.volume_serial_number() as u64,
                 }
-                .hash(),
+                .get_hash(),
             }),
             Err(e) => Err(io::Error::new(
                 e.kind(),
@@ -339,11 +339,12 @@ impl FileId {
         }
     }
 
-    pub fn hash(&self) -> u32 {
+    pub fn get_hash(&self) -> u32 {
         let mut hasher = MetroHash64::new();
         self.inode.hash(&mut hasher);
         self.device.hash(&mut hasher);
-        hasher.finish() as u32
+        let hash = hasher.finish();
+        (hash ^ (hash >> 32)) as u32
     }
 }
 
