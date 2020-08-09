@@ -62,6 +62,14 @@ where
         }
     }
 
+    pub fn with_capacity(capacity: usize, split_fn: F) -> GroupMap<T, K, V, F> {
+        GroupMap {
+            item_type: PhantomData,
+            groups: HashMap::with_capacity(capacity),
+            split_fn,
+        }
+    }
+
     /// Adds an item to the map.
     /// Note, this doesn't take `&mut self` so this can be called from safely from many threads.
     pub fn add(&mut self, item: T) {
