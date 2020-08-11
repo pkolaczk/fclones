@@ -1,8 +1,8 @@
 pub mod config;
+pub mod device;
 pub mod files;
 pub mod group;
 pub mod log;
-pub mod partition;
 pub mod path;
 pub mod pattern;
 pub mod progress;

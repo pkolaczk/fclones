@@ -16,10 +16,10 @@ use structopt::StructOpt;
 use thread_local::ThreadLocal;
 
 use fclones::config::*;
+use fclones::device::{DiskDevice, DiskDevices};
 use fclones::files::*;
 use fclones::group::*;
 use fclones::log::Log;
-use fclones::partition::{Partition, Partitions};
 use fclones::path::Path;
 use fclones::pattern::ESCAPE_CHAR;
 use fclones::progress::FastProgressBar;
@@ -27,16 +27,10 @@ use fclones::report::Reporter;
 use fclones::transform::Transform;
 use fclones::walk::Walk;
 
-/// Minimum size of a file to be considered for grouping by suffix.
-/// Grouping by suffix is unlikely to remove the file from further processing, so we only do
-/// it for big enough files
-const SUFFIX_THRESHOLD: FileLen = FileLen(4 * 1024 * 1024);
-const SUFFIX_LEN: FileLen = FileLen(4096);
-
 struct AppCtx {
     config: Config,
     log: Log,
-    partitions: Partitions,
+    partitions: DiskDevices,
 }
 
 /// Configures global thread pool to use desired number of threads
@@ -271,8 +265,8 @@ fn group_transformed(
 /// Returns the desired prefix length for the given group of files.
 /// The return value depends on the capabilities of the devices the files are stored on.
 /// Higher values are desired if any of the files resides on an HDD.
-fn prefix_len(partitions: &Partitions, g: &FileGroup<Path>) -> FileLen {
-    let v: Vec<&Partition> = g.files.iter().map(|p| partitions.get_by_path(p)).collect();
+fn prefix_len(partitions: &DiskDevices, g: &FileGroup<Path>) -> FileLen {
+    let v: Vec<&DiskDevice> = g.files.iter().map(|p| partitions.get_by_path(p)).collect();
     let max_prefix_len = v.iter().map(|&p| p.max_prefix_len()).max().unwrap();
     let min_prefix_len = v.iter().map(|&p| p.min_prefix_len()).max().unwrap();
     if g.meta.file_len <= max_prefix_len {
@@ -317,13 +311,24 @@ fn group_by_prefix(ctx: &mut AppCtx, groups: Vec<FileGroup<Path>>) -> Vec<FileGr
     groups
 }
 
+fn suffix_threshold(partitions: &DiskDevices, g: &FileGroup<Path>) -> FileLen {
+    let v: Vec<&DiskDevice> = g.files.iter().map(|p| partitions.get_by_path(p)).collect();
+    v.iter().map(|&p| p.suffix_threshold()).max().unwrap()
+}
+
+fn suffix_len(partitions: &DiskDevices, g: &FileGroup<Path>) -> FileLen {
+    let v: Vec<&DiskDevice> = g.files.iter().map(|p| partitions.get_by_path(p)).collect();
+    v.iter().map(|&p| p.suffix_len()).max().unwrap()
+}
+
 fn group_by_suffix(ctx: &mut AppCtx, groups: Vec<FileGroup<Path>>) -> Vec<FileGroup<Path>> {
-    let needs_processing =
-        |g: &FileGroup<Path>| g.meta.file_len >= SUFFIX_THRESHOLD && g.files.len() > 1;
+    let needs_processing = |partitions: &DiskDevices, g: &FileGroup<Path>| {
+        g.meta.file_len >= suffix_threshold(partitions, g) && g.files.len() > 1
+    };
 
     let remaining_files = groups
         .iter()
-        .filter(|&g| (needs_processing)(g))
+        .filter(|&g| (needs_processing)(&ctx.partitions, g))
         .total_count();
     let progress = ctx
         .log
@@ -337,13 +342,15 @@ fn group_by_suffix(ctx: &mut AppCtx, groups: Vec<FileGroup<Path>>) -> Vec<FileGr
         .flat_map(|g| {
             let file_len = g.meta.file_len;
             let prefix_len = g.meta.prefix_len;
-            let needs_processing = needs_processing(&g);
+            let suffix_len = suffix_len(&ctx.partitions, &g);
+            let needs_processing = needs_processing(&ctx.partitions, &g);
+
             g.split(needs_processing, prefix_len, |path| {
                 progress.tick();
                 file_hash_or_log_err(
                     path,
-                    file_len.as_pos() - SUFFIX_LEN,
-                    SUFFIX_LEN,
+                    file_len.as_pos() - suffix_len,
+                    suffix_len,
                     Caching::Default,
                     |_| {},
                     &ctx.log,
@@ -509,7 +516,7 @@ fn main() {
     let mut ctx = AppCtx {
         log,
         config,
-        partitions: Partitions::default(),
+        partitions: DiskDevices::default(),
     };
     ctx.config.check_transform(&ctx.log);
 
@@ -561,6 +568,7 @@ mod test {
     use super::*;
 
     const MAX_PREFIX_LEN: usize = 256 * 1024;
+    const MAX_SUFFIX_LEN: usize = 256 * 1024;
 
     #[test]
     fn identical_small_files() {
@@ -646,7 +654,7 @@ mod test {
             let file1 = root.join("file1");
             let file2 = root.join("file2");
             let prefix = [0; MAX_PREFIX_LEN];
-            let mid = [1; MAX_PREFIX_LEN + (2 * SUFFIX_LEN.0 as usize)];
+            let mid = [1; MAX_PREFIX_LEN + MAX_SUFFIX_LEN];
             write_test_file(&file1, &prefix, &mid, b"suffix1");
             write_test_file(&file2, &prefix, &mid, b"suffix2");
 
@@ -667,7 +675,7 @@ mod test {
             let file1 = root.join("file1");
             let file2 = root.join("file2");
             let prefix = [0; MAX_PREFIX_LEN];
-            let suffix = [1; (SUFFIX_LEN.0 * 2) as usize];
+            let suffix = [1; MAX_SUFFIX_LEN];
             write_test_file(&file1, &prefix, b"middle1", &suffix);
             write_test_file(&file2, &prefix, b"middle2", &suffix);
 
