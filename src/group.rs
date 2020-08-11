@@ -8,6 +8,7 @@ use serde::*;
 
 use crate::files::{FileHash, FileLen};
 use std::cmp::{max, min};
+use smallvec::SmallVec;
 
 /// Groups items by key.
 /// After all items have been added, this structure can be transformed into
@@ -21,6 +22,7 @@ use std::cmp::{max, min};
 ///
 /// # Example
 /// ```
+/// use smallvec::SmallVec;
 /// use fclones::group::GroupMap;
 /// let mut map = GroupMap::new(|item: (u32, u32)| (item.0, item.1));
 /// map.add((1, 10));
@@ -31,8 +33,8 @@ use std::cmp::{max, min};
 /// let mut groups: Vec<_> = map.into_iter().collect();
 ///
 /// groups.sort_by_key(|item| item.0);
-/// assert_eq!(groups[0], (1, vec![10, 11]));
-/// assert_eq!(groups[1], (2, vec![20, 21]));
+/// assert_eq!(groups[0], (1, SmallVec::from_vec(vec![10, 11])));
+/// assert_eq!(groups[1], (2, SmallVec::from_vec(vec![20, 21])));
 /// ```
 ///
 pub struct GroupMap<T, K, V, F>
@@ -41,7 +43,7 @@ where
     F: Fn(T) -> (K, V),
 {
     item_type: PhantomData<T>,
-    groups: HashMap<K, Vec<V>>,
+    groups: HashMap<K, SmallVec<[V; 1]>>,
     split_fn: F,
 }
 
@@ -88,29 +90,24 @@ where
     K: Eq + Hash,
     F: Fn(T) -> (K, V),
 {
-    type Item = (K, Vec<V>);
-    type IntoIter = <HashMap<K, Vec<V>> as IntoIterator>::IntoIter;
+    type Item = (K, SmallVec<[V; 1]>);
+    type IntoIter = <HashMap<K, SmallVec<[V; 1]>> as IntoIterator>::IntoIter;
 
     fn into_iter(self) -> Self::IntoIter {
         self.groups.into_iter()
     }
 }
 
-/// Metadata common for all files in the group
+/// Represents a group of files that have something in common, e.g. same size or same hash
 #[derive(Serialize, Debug)]
-pub struct FileGroupMeta {
+pub struct FileGroup<F> {
     /// Length of each file
     pub file_len: FileLen,
     /// Min length of the prefix such that all files in the group have the same prefix
     pub prefix_len: FileLen,
     /// Hash of a part or the whole of the file
-    pub hash: Option<FileHash>,
-}
+    pub hash: FileHash,
 
-/// Represents a group of files that have something in common, e.g. same size or same hash
-#[derive(Serialize, Debug)]
-pub struct FileGroup<F> {
-    pub meta: FileGroupMeta,
     pub files: Vec<F>,
 }
 
@@ -127,7 +124,9 @@ where
         H: Fn(&F) -> Option<FileHash> + Sync + Send,
     {
         if cond {
-            let meta = self.meta;
+            let file_len = self.file_len;
+            let prefix_len = min(self.file_len, max(self.prefix_len, prefix_len));
+
             let mut hashed = self
                 .files
                 .into_par_iter()
@@ -140,11 +139,9 @@ where
                 .group_by(|(h, _)| *h)
                 .into_iter()
                 .map(|(hash, group)| FileGroup {
-                    meta: FileGroupMeta {
-                        file_len: meta.file_len,
-                        prefix_len: min(meta.file_len, max(meta.prefix_len, prefix_len)),
-                        hash: Some(hash),
-                    },
+                    file_len,
+                    prefix_len,
+                    hash,
                     files: group.map(|(_hash, path)| path).collect(),
                 })
                 .collect()
@@ -184,7 +181,7 @@ where
 
     fn total_size(self) -> FileLen {
         self.into_iter()
-            .map(|g| g.meta.file_len * g.files.len() as u64)
+            .map(|g| g.file_len * g.files.len() as u64)
             .sum()
     }
 
@@ -198,7 +195,7 @@ where
     fn selected_size(self, rf_over: usize, rf_under: usize) -> FileLen {
         self.into_iter()
             .filter(|&g| g.files.len() < rf_under)
-            .map(|g| g.meta.file_len * g.files.len().saturating_sub(rf_over) as u64)
+            .map(|g| g.file_len * g.files.len().saturating_sub(rf_over) as u64)
             .sum()
     }
 }
