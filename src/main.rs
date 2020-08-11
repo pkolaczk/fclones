@@ -26,6 +26,7 @@ use fclones::progress::FastProgressBar;
 use fclones::report::Reporter;
 use fclones::transform::Transform;
 use fclones::walk::Walk;
+use smallvec::SmallVec;
 
 struct AppCtx {
     config: Config,
@@ -107,12 +108,10 @@ fn group_by_size(ctx: &mut AppCtx, files: Vec<Vec<FileInfo>>) -> Vec<FileGroup<F
         .into_iter()
         .filter(|(_, files)| files.len() > rf_over)
         .map(|(l, files)| FileGroup {
-            meta: FileGroupMeta {
-                file_len: l,
-                hash: None,
-                prefix_len: FileLen(0),
-            },
-            files,
+            file_len: l,
+            hash: FileHash(0),
+            prefix_len: FileLen(0),
+            files: files.into_vec(),
         })
         .collect();
 
@@ -127,26 +126,29 @@ fn group_by_size(ctx: &mut AppCtx, files: Vec<Vec<FileInfo>>) -> Vec<FileGroup<F
 
 fn to_group_of_paths(f: FileGroup<FileInfoNoLen>) -> FileGroup<Path> {
     FileGroup {
-        meta: f.meta,
+        file_len: f.file_len,
+        prefix_len: f.prefix_len,
+        hash: f.hash,
         files: f.files.into_iter().map(|i| i.path).collect(),
     }
 }
 
 /// Removes duplicate files matching by full-path or by inode-id.
 /// Deduplication by inode-id is not performed if the flag to preserve hard-links (-H) is set.
-fn deduplicate<F>(ctx: &AppCtx, files: Vec<FileInfoNoLen>, progress: F) -> Vec<FileInfoNoLen>
+fn deduplicate<F>(ctx: &AppCtx, files: &mut Vec<FileInfoNoLen>, progress: F)
 where
     F: Fn(&Path) + Sync + Send,
 {
     let count = files.len();
     let mut groups = GroupMap::with_capacity(count, |fi: FileInfoNoLen| (fi.id_hash, fi.path));
-    files.into_iter().for_each(|fi| groups.add(fi));
+    for f in files.drain(..) {
+        groups.add(f)
+    }
 
-    let mut result = Vec::with_capacity(count);
     for (id_hash, mut paths) in groups.into_iter() {
         if paths.len() == 1 {
             progress(&paths[0]);
-            result.push(FileInfoNoLen {
+            files.push(FileInfoNoLen {
                 id_hash,
                 path: paths.remove(0),
             });
@@ -155,16 +157,15 @@ where
                 .into_iter()
                 .inspect(|p| progress(p))
                 .unique_by(|p| p.hash128())
-                .for_each(|p| result.push(FileInfoNoLen { id_hash, path: p }))
+                .for_each(|p| files.push(FileInfoNoLen { id_hash, path: p }))
         } else {
             paths
                 .into_iter()
                 .inspect(|p| progress(p))
                 .unique_by(|p| file_id_or_log_err(p, &ctx.log))
-                .for_each(|p| result.push(FileInfoNoLen { id_hash, path: p }))
+                .for_each(|p| files.push(FileInfoNoLen { id_hash, path: p }))
         }
     }
-    result
 }
 
 fn remove_same_files(
@@ -181,10 +182,7 @@ fn remove_same_files(
 
     let groups: Vec<_> = groups
         .into_par_iter()
-        .map(|mut g| {
-            g.files = deduplicate(ctx, g.files, |_| progress.tick());
-            g
-        })
+        .update(|g| deduplicate(ctx, &mut g.files, |_| progress.tick()))
         .filter(|g| g.files.len() > rf_over)
         .map(to_group_of_paths)
         .collect();
@@ -242,12 +240,10 @@ fn group_transformed(
         .into_iter()
         .filter(|(_, files)| files.len() > rf_over)
         .map(|((len, hash), files)| FileGroup {
-            meta: FileGroupMeta {
-                file_len: len,
-                hash: Some(hash),
-                prefix_len: len,
-            },
-            files,
+            file_len: len,
+            hash,
+            prefix_len: len,
+            files: files.into_vec(),
         })
         .collect();
 
@@ -269,8 +265,8 @@ fn prefix_len(partitions: &DiskDevices, g: &FileGroup<Path>) -> FileLen {
     let v: Vec<&DiskDevice> = g.files.iter().map(|p| partitions.get_by_path(p)).collect();
     let max_prefix_len = v.iter().map(|&p| p.max_prefix_len()).max().unwrap();
     let min_prefix_len = v.iter().map(|&p| p.min_prefix_len()).max().unwrap();
-    if g.meta.file_len <= max_prefix_len {
-        g.meta.file_len
+    if g.file_len <= max_prefix_len {
+        g.file_len
     } else {
         min_prefix_len
     }
@@ -289,7 +285,7 @@ fn group_by_prefix(ctx: &mut AppCtx, groups: Vec<FileGroup<Path>>) -> Vec<FileGr
         .into_par_iter()
         .flat_map(|g| {
             let prefix_len = prefix_len(&ctx.partitions, &g);
-            let caching = if g.meta.file_len <= prefix_len {
+            let caching = if g.file_len <= prefix_len {
                 Caching::Default
             } else {
                 Caching::Random
@@ -323,7 +319,7 @@ fn suffix_len(partitions: &DiskDevices, g: &FileGroup<Path>) -> FileLen {
 
 fn group_by_suffix(ctx: &mut AppCtx, groups: Vec<FileGroup<Path>>) -> Vec<FileGroup<Path>> {
     let needs_processing = |partitions: &DiskDevices, g: &FileGroup<Path>| {
-        g.meta.file_len >= suffix_threshold(partitions, g) && g.files.len() > 1
+        g.file_len >= suffix_threshold(partitions, g) && g.files.len() > 1
     };
 
     let remaining_files = groups
@@ -340,8 +336,8 @@ fn group_by_suffix(ctx: &mut AppCtx, groups: Vec<FileGroup<Path>>) -> Vec<FileGr
     let groups: Vec<_> = groups
         .into_par_iter()
         .flat_map(|g| {
-            let file_len = g.meta.file_len;
-            let prefix_len = g.meta.prefix_len;
+            let file_len = g.file_len;
+            let prefix_len = g.prefix_len;
             let suffix_len = suffix_len(&ctx.partitions, &g);
             let needs_processing = needs_processing(&ctx.partitions, &g);
 
@@ -370,8 +366,7 @@ fn group_by_suffix(ctx: &mut AppCtx, groups: Vec<FileGroup<Path>>) -> Vec<FileGr
 }
 
 fn group_by_contents(ctx: &mut AppCtx, groups: Vec<FileGroup<Path>>) -> Vec<FileGroup<Path>> {
-    let needs_processing =
-        |g: &FileGroup<Path>| g.meta.file_len >= g.meta.prefix_len && g.files.len() > 1;
+    let needs_processing = |g: &FileGroup<Path>| g.file_len >= g.prefix_len && g.files.len() > 1;
     let bytes_to_scan = groups.iter().filter(|&g| needs_processing(g)).total_size();
     let progress = ctx
         .log
@@ -382,7 +377,7 @@ fn group_by_contents(ctx: &mut AppCtx, groups: Vec<FileGroup<Path>>) -> Vec<File
     let groups: Vec<_> = groups
         .into_par_iter()
         .flat_map(|g| {
-            let file_len = g.meta.file_len;
+            let file_len = g.file_len;
             let needs_processing = needs_processing(&g);
             g.split(needs_processing, file_len, |path| {
                 let _guard = ctx.partitions.get_by_path(&path).semaphore.access();
@@ -476,6 +471,13 @@ fn paint_help(s: &str) -> String {
 }
 
 fn main() {
+    println!("FileInfoNoLen: {}", std::mem::size_of::<FileInfoNoLen>());
+    println!("SmallVec size 1: {}", std::mem::size_of::<SmallVec<[FileInfoNoLen;1]>>());
+    println!("SmallVec size 2: {}", std::mem::size_of::<SmallVec<[FileInfoNoLen;2]>>());
+    println!("SmallVec size 3: {}", std::mem::size_of::<SmallVec<[FileInfoNoLen;3]>>());
+    println!("Array size 2: {}", std::mem::size_of::<[FileInfoNoLen;2]>());
+    println!("Vec: {}", std::mem::size_of::<Vec<FileInfoNoLen>>());
+
     let mut log = Log::new();
 
     let after_help = &paint_help(indoc!(
@@ -551,7 +553,7 @@ fn process(mut ctx: &mut AppCtx) -> Vec<FileGroup<Path>> {
         }
     };
     groups.retain(|g| g.files.len() < ctx.config.rf_under());
-    groups.par_sort_by_key(|g| Reverse((g.meta.file_len, g.meta.hash)));
+    groups.par_sort_by_key(|g| Reverse((g.file_len, g.hash)));
     groups.par_iter_mut().for_each(|g| g.files.sort());
     groups
 }
@@ -582,7 +584,7 @@ mod test {
             ctx.config.paths = vec![file1, file2];
             let results = process(&mut ctx);
             assert_eq!(results.len(), 1);
-            assert_eq!(results[0].meta.file_len, FileLen(3));
+            assert_eq!(results[0].file_len, FileLen(3));
             assert_eq!(results[0].files.len(), 2);
         });
     }
