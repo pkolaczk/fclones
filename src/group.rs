@@ -7,8 +7,8 @@ use rayon::iter::{IntoParallelIterator, ParallelIterator};
 use serde::*;
 
 use crate::files::{FileHash, FileLen};
-use std::cmp::{max, min};
 use smallvec::SmallVec;
+use std::cmp::{max, min};
 
 /// Groups items by key.
 /// After all items have been added, this structure can be transformed into

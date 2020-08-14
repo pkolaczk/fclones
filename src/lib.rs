@@ -5,6 +5,7 @@ pub mod group;
 pub mod log;
 pub mod path;
 pub mod pattern;
+pub mod pools;
 pub mod progress;
 pub mod report;
 pub mod selector;

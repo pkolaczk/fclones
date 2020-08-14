@@ -2,30 +2,34 @@ use core::cmp;
 use std::ffi::{OsStr, OsString};
 
 use itertools::Itertools;
-use std_semaphore::Semaphore;
 use sysinfo::{DiskExt, DiskType, System, SystemExt};
 
 use crate::files::FileLen;
 use crate::path::Path;
+use rayon::{ThreadPool, ThreadPoolBuilder};
 
 pub struct DiskDevice {
+    pub index: usize,
     pub name: OsString,
     pub disk_type: DiskType,
-    /// Limits the number of concurrent I/O operations sent to a single device
-    pub semaphore: Semaphore,
+    pub thread_pool: ThreadPool,
 }
 
 impl DiskDevice {
-    fn new(name: OsString, disk_type: DiskType) -> DiskDevice {
-        let parallelism: isize = match disk_type {
+    fn new(index: usize, name: OsString, disk_type: DiskType) -> DiskDevice {
+        let parallelism: usize = match disk_type {
+            DiskType::SSD => 0, // == number of cores
             DiskType::HDD => 1,
-            DiskType::SSD => std::isize::MAX >> 3,
             DiskType::Unknown(_) => 1,
         };
         DiskDevice {
+            index,
             name,
             disk_type,
-            semaphore: Semaphore::new(parallelism),
+            thread_pool: ThreadPoolBuilder::default()
+                .num_threads(parallelism)
+                .build()
+                .unwrap(),
         }
     }
 
@@ -39,16 +43,16 @@ impl DiskDevice {
 
     pub fn min_prefix_len(&self) -> FileLen {
         FileLen(match self.disk_type {
-            DiskType::HDD => 64 * 1024,
             DiskType::SSD => 4 * 1024,
+            DiskType::HDD => 64 * 1024,
             DiskType::Unknown(_) => 16 * 1024,
         })
     }
 
     pub fn max_prefix_len(&self) -> FileLen {
         FileLen(match self.disk_type {
-            DiskType::HDD => 512 * 1024,
             DiskType::SSD => 16 * 1024,
+            DiskType::HDD => 512 * 1024,
             DiskType::Unknown(_) => 64 * 1024,
         })
     }
@@ -70,7 +74,6 @@ impl DiskDevice {
 pub struct DiskDevices {
     devices: Vec<DiskDevice>,
     mount_points: Vec<(Path, usize)>,
-    fallback: DiskDevice,
 }
 
 impl DiskDevices {
@@ -80,8 +83,9 @@ impl DiskDevices {
         if let Some((index, _)) = self.devices.iter().find_position(|d| d.name == name) {
             index
         } else {
-            self.devices.push(DiskDevice::new(name, disk_type));
-            self.devices.len() - 1
+            let index = self.devices.len();
+            self.devices.push(DiskDevice::new(index, name, disk_type));
+            index
         }
     }
 
@@ -105,12 +109,14 @@ impl DiskDevices {
     pub fn new() -> DiskDevices {
         let mut sys = System::new_all();
         sys.refresh_disks();
-        let fallback = DiskDevice::new(OsString::from("default"), DiskType::Unknown(-1));
         let mut result = DiskDevices {
             devices: Vec::new(),
             mount_points: Vec::new(),
-            fallback,
         };
+
+        // Default device used when we don't find any real device
+        result.add_device(OsString::from("default"), DiskType::Unknown(-1));
+
         for d in sys.get_disks() {
             let device_name = Self::parent_device_name(d.get_name());
             let index = result.add_device(device_name, d.get_type());
@@ -130,7 +136,14 @@ impl DiskDevices {
             .iter()
             .find(|(p, _)| p.is_prefix_of(path))
             .map(|&(_, index)| &self.devices[index])
-            .unwrap_or(&self.fallback)
+            .unwrap_or(&self.devices[0])
+    }
+
+    /// Returns references to the thread pools associated with devices.
+    /// The order is the same as device order, so thread pools can be selected by
+    /// the device index.
+    pub fn thread_pools(&self) -> Vec<&ThreadPool> {
+        self.devices.iter().map(|d| &d.thread_pool).collect()
     }
 }
 
