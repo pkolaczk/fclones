@@ -22,16 +22,18 @@ use fclones::group::*;
 use fclones::log::Log;
 use fclones::path::Path;
 use fclones::pattern::ESCAPE_CHAR;
+use fclones::pools::multi_scope;
 use fclones::progress::FastProgressBar;
 use fclones::report::Reporter;
 use fclones::transform::Transform;
 use fclones::walk::Walk;
 use smallvec::SmallVec;
+use std::sync::mpsc::channel;
 
 struct AppCtx {
     config: Config,
     log: Log,
-    partitions: DiskDevices,
+    devices: DiskDevices,
 }
 
 /// Configures global thread pool to use desired number of threads
@@ -284,7 +286,7 @@ fn group_by_prefix(ctx: &mut AppCtx, groups: Vec<FileGroup<Path>>) -> Vec<FileGr
     let groups: Vec<_> = groups
         .into_par_iter()
         .flat_map(|g| {
-            let prefix_len = prefix_len(&ctx.partitions, &g);
+            let prefix_len = prefix_len(&ctx.devices, &g);
             let caching = if g.file_len <= prefix_len {
                 Caching::Default
             } else {
@@ -324,7 +326,7 @@ fn group_by_suffix(ctx: &mut AppCtx, groups: Vec<FileGroup<Path>>) -> Vec<FileGr
 
     let remaining_files = groups
         .iter()
-        .filter(|&g| (needs_processing)(&ctx.partitions, g))
+        .filter(|&g| (needs_processing)(&ctx.devices, g))
         .total_count();
     let progress = ctx
         .log
@@ -338,8 +340,8 @@ fn group_by_suffix(ctx: &mut AppCtx, groups: Vec<FileGroup<Path>>) -> Vec<FileGr
         .flat_map(|g| {
             let file_len = g.file_len;
             let prefix_len = g.prefix_len;
-            let suffix_len = suffix_len(&ctx.partitions, &g);
-            let needs_processing = needs_processing(&ctx.partitions, &g);
+            let suffix_len = suffix_len(&ctx.devices, &g);
+            let needs_processing = needs_processing(&ctx.devices, &g);
 
             g.split(needs_processing, prefix_len, |path| {
                 progress.tick();
@@ -368,30 +370,59 @@ fn group_by_suffix(ctx: &mut AppCtx, groups: Vec<FileGroup<Path>>) -> Vec<FileGr
 fn group_by_contents(ctx: &mut AppCtx, groups: Vec<FileGroup<Path>>) -> Vec<FileGroup<Path>> {
     let needs_processing = |g: &FileGroup<Path>| g.file_len >= g.prefix_len && g.files.len() > 1;
     let bytes_to_scan = groups.iter().filter(|&g| needs_processing(g)).total_size();
-    let progress = ctx
+    let progress = &ctx
         .log
         .bytes_progress_bar("Grouping by contents", bytes_to_scan.0);
     let rf_over = ctx.config.rf_over();
     let rf_under = ctx.config.rf_under();
 
+    let (tx, rx) = channel();
+    let thread_pools = ctx.devices.thread_pools();
+    let ctx = &*ctx; // drop mutability to allow sharing
+
+    multi_scope(&thread_pools, move |scopes| {
+        for group in groups.into_iter() {
+            let needs_processing = needs_processing(&group);
+            for path in group.files.into_iter() {
+                let tx = tx.clone();
+                let scope = scopes[ctx.devices.get_by_path(&path).index];
+                let len = group.file_len;
+                let hash = group.hash;
+                if needs_processing {
+                    scope.spawn(move |_| {
+                        let hash = file_hash_or_log_err(
+                            &path,
+                            FilePos(0),
+                            len,
+                            Caching::Sequential,
+                            |delta| progress.inc(delta),
+                            &ctx.log,
+                        );
+                        if let Some(hash) = hash {
+                            tx.send((path, len, hash)).unwrap()
+                        }
+                    });
+                } else {
+                    tx.send((path, len, hash)).unwrap();
+                }
+            }
+        }
+    });
+
+    let mut groups = GroupMap::new(|(path, len, hash)| ((len, hash), path));
+    for (path, len, hash) in rx.into_iter() {
+        groups.add((path, len, hash));
+    }
+
     let groups: Vec<_> = groups
-        .into_par_iter()
-        .flat_map(|g| {
-            let file_len = g.file_len;
-            let needs_processing = needs_processing(&g);
-            g.split(needs_processing, file_len, |path| {
-                let _guard = ctx.partitions.get_by_path(&path).semaphore.access();
-                file_hash_or_log_err(
-                    path,
-                    FilePos(0),
-                    file_len,
-                    Caching::Sequential,
-                    |delta| progress.inc(delta),
-                    &ctx.log,
-                )
-            })
+        .into_iter()
+        .filter(|(_, paths)| paths.len() > rf_over)
+        .map(|((len, hash), paths)| FileGroup {
+            file_len: len,
+            prefix_len: len,
+            hash,
+            files: paths.to_vec(),
         })
-        .filter(|g| g.files.len() > rf_over)
         .collect();
 
     let count = groups.selected_count(rf_over, rf_under);
@@ -472,10 +503,22 @@ fn paint_help(s: &str) -> String {
 
 fn main() {
     println!("FileInfoNoLen: {}", std::mem::size_of::<FileInfoNoLen>());
-    println!("SmallVec size 1: {}", std::mem::size_of::<SmallVec<[FileInfoNoLen;1]>>());
-    println!("SmallVec size 2: {}", std::mem::size_of::<SmallVec<[FileInfoNoLen;2]>>());
-    println!("SmallVec size 3: {}", std::mem::size_of::<SmallVec<[FileInfoNoLen;3]>>());
-    println!("Array size 2: {}", std::mem::size_of::<[FileInfoNoLen;2]>());
+    println!(
+        "SmallVec size 1: {}",
+        std::mem::size_of::<SmallVec<[FileInfoNoLen; 1]>>()
+    );
+    println!(
+        "SmallVec size 2: {}",
+        std::mem::size_of::<SmallVec<[FileInfoNoLen; 2]>>()
+    );
+    println!(
+        "SmallVec size 3: {}",
+        std::mem::size_of::<SmallVec<[FileInfoNoLen; 3]>>()
+    );
+    println!(
+        "Array size 2: {}",
+        std::mem::size_of::<[FileInfoNoLen; 2]>()
+    );
     println!("Vec: {}", std::mem::size_of::<Vec<FileInfoNoLen>>());
 
     let mut log = Log::new();
@@ -518,7 +561,7 @@ fn main() {
     let mut ctx = AppCtx {
         log,
         config,
-        partitions: DiskDevices::default(),
+        devices: DiskDevices::default(),
     };
     ctx.config.check_transform(&ctx.log);
 
@@ -795,7 +838,7 @@ mod test {
         AppCtx {
             log,
             config: Default::default(),
-            partitions: Default::default(),
+            devices: Default::default(),
         }
     }
 }
