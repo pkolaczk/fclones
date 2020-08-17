@@ -7,6 +7,7 @@ use sysinfo::{DiskExt, DiskType, System, SystemExt};
 use crate::files::FileLen;
 use crate::path::Path;
 use rayon::{ThreadPool, ThreadPoolBuilder};
+use std::collections::HashMap;
 
 pub struct DiskDevice {
     pub index: usize,
@@ -16,11 +17,14 @@ pub struct DiskDevice {
 }
 
 impl DiskDevice {
-    fn new(index: usize, name: OsString, disk_type: DiskType) -> DiskDevice {
-        let parallelism: usize = match disk_type {
-            DiskType::SSD => 0, // == number of cores
-            DiskType::HDD => 1,
-            DiskType::Unknown(_) => 1,
+    fn new(index: usize, name: OsString, disk_type: DiskType, parallelism: usize) -> DiskDevice {
+        let parallelism: usize = match parallelism {
+            0 => match disk_type {
+                DiskType::SSD => 0, // == number of cores
+                DiskType::HDD => 1,
+                DiskType::Unknown(_) => 1,
+            },
+            p => p,
         };
         DiskDevice {
             index,
@@ -77,14 +81,46 @@ pub struct DiskDevices {
 }
 
 impl DiskDevices {
+    /// Reads the preferred parallelism level for the device based on the
+    /// device name or the device type (ssd/hdd) from `pool_sizes` map.
+    /// Returns the value under the "default" key if device was not found,
+    /// or 0 if "default" doesn't exist in the map.
+    fn get_parallelism(
+        name: &OsStr,
+        disk_type: DiskType,
+        pool_sizes: &HashMap<OsString, usize>,
+    ) -> usize {
+        match pool_sizes.get(name) {
+            Some(p) => *p,
+            None => {
+                let p = match disk_type {
+                    DiskType::SSD => pool_sizes.get(OsStr::new("ssd")),
+                    DiskType::HDD => pool_sizes.get(OsStr::new("hdd")),
+                    DiskType::Unknown(_) => pool_sizes.get(OsStr::new("unknown")),
+                };
+                match p {
+                    Some(p) => *p,
+                    None => *pool_sizes.get(OsStr::new("default")).unwrap_or(&0),
+                }
+            }
+        }
+    }
+
     /// If the device doesn't exist, adds a new device to devices vector and returns its index.
     /// If the device already exists, it returns the index of the existing device.
-    fn add_device(&mut self, name: OsString, disk_type: DiskType) -> usize {
+    fn add_device(
+        &mut self,
+        name: OsString,
+        disk_type: DiskType,
+        pool_sizes: &HashMap<OsString, usize>,
+    ) -> usize {
         if let Some((index, _)) = self.devices.iter().find_position(|d| d.name == name) {
             index
         } else {
             let index = self.devices.len();
-            self.devices.push(DiskDevice::new(index, name, disk_type));
+            let parallelism = Self::get_parallelism(&name, disk_type, pool_sizes);
+            self.devices
+                .push(DiskDevice::new(index, name, disk_type, parallelism));
             index
         }
     }
@@ -106,7 +142,7 @@ impl DiskDevices {
 
     /// Reads the list of partitions and disks from the system and builds the `DiskDevices`
     /// structure from that information.
-    pub fn new() -> DiskDevices {
+    pub fn new(pool_sizes: &HashMap<OsString, usize>) -> DiskDevices {
         let mut sys = System::new_all();
         sys.refresh_disks();
         let mut result = DiskDevices {
@@ -115,11 +151,11 @@ impl DiskDevices {
         };
 
         // Default device used when we don't find any real device
-        result.add_device(OsString::from("default"), DiskType::Unknown(-1));
+        result.add_device(OsString::from("default"), DiskType::Unknown(-1), pool_sizes);
 
         for d in sys.get_disks() {
             let device_name = Self::parent_device_name(d.get_name());
-            let index = result.add_device(device_name, d.get_type());
+            let index = result.add_device(device_name, d.get_type(), pool_sizes);
             result
                 .mount_points
                 .push((Path::from(d.get_mount_point()), index));
@@ -149,6 +185,10 @@ impl DiskDevices {
 
 impl Default for DiskDevices {
     fn default() -> Self {
-        Self::new()
+        let mut pool_sizes = HashMap::new();
+        pool_sizes.insert(OsString::from("ssd"), 0);
+        pool_sizes.insert(OsString::from("hdd"), 1);
+        pool_sizes.insert(OsString::from("default"), 1);
+        Self::new(&pool_sizes)
     }
 }
