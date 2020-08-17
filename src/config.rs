@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::io;
 use std::io::{stdin, BufRead, BufReader};
 use std::path::PathBuf;
@@ -13,6 +14,7 @@ use crate::path::Path;
 use crate::pattern::{Pattern, PatternOpts};
 use crate::selector::PathSelector;
 use crate::transform::Transform;
+use std::ffi::OsString;
 
 arg_enum! {
     #[derive(Debug, StructOpt)]
@@ -24,6 +26,24 @@ arg_enum! {
 impl Default for OutputFormat {
     fn default() -> OutputFormat {
         OutputFormat::Text
+    }
+}
+
+fn parse_thread_count_option(str: &str) -> Result<(OsString, usize), String> {
+    let (key, value) = if str.contains(':') {
+        let index = str.rfind(':').unwrap();
+        (&str[0..index], &str[(index + 1)..])
+    } else {
+        ("default", str)
+    };
+    let key = OsString::from(key);
+    let value = value.to_string();
+    match value.parse() {
+        Ok(v) => Ok((key, v)),
+        Err(e) => Err(format!(
+            "Invalid count {}. Expected integer value: {}",
+            e, value
+        )),
     }
 }
 
@@ -147,10 +167,11 @@ pub struct Config {
     #[structopt(short = "g", long)]
     pub regex: bool,
 
-    /// Parallelism level.
-    /// If set to 0, the number of CPU cores reported by the operating system is used.
-    #[structopt(short, long, default_value = "0", value_name("count"))]
-    pub threads: usize,
+    /// Sets size of a thread-pool.
+    /// If unset, the number of CPU cores reported by the operating system is used for the main
+    /// thread pool and each SSD device, and 1 thread is used per each distinct HDD device.
+    #[structopt(short, long, parse(try_from_str = parse_thread_count_option))]
+    pub threads: Vec<(OsString, usize)>,
 
     /// Suppresses progress reporting
     #[structopt(short = "Q", long)]
@@ -267,5 +288,15 @@ impl Config {
                 exit(1);
             }
         }
+    }
+
+    pub fn thread_pool_sizes(&self) -> HashMap<OsString, usize> {
+        let mut map = HashMap::new();
+        map.insert(OsString::from("hdd"), 1);
+        map.insert(OsString::from("unknown"), 1);
+        for (k, v) in self.threads.iter() {
+            map.insert(k.clone(), *v);
+        }
+        map
     }
 }

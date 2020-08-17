@@ -1,11 +1,14 @@
 use std::cell::RefCell;
 use std::cmp::Reverse;
+use std::collections::HashMap;
 use std::env::current_dir;
+use std::ffi::{OsStr, OsString};
 use std::fs::File;
 use std::io::{BufWriter, Write};
 use std::path::PathBuf;
 use std::process::exit;
 use std::sync::Arc;
+use std::sync::mpsc::channel;
 
 use console::{style, Term};
 use indoc::indoc;
@@ -27,8 +30,6 @@ use fclones::progress::FastProgressBar;
 use fclones::report::Reporter;
 use fclones::transform::Transform;
 use fclones::walk::Walk;
-use smallvec::SmallVec;
-use std::sync::mpsc::channel;
 
 struct AppCtx {
     config: Config,
@@ -37,7 +38,11 @@ struct AppCtx {
 }
 
 /// Configures global thread pool to use desired number of threads
-fn configure_thread_pool(parallelism: usize) {
+fn configure_main_thread_pool(pool_sizes: &HashMap<OsString, usize>) {
+    let parallelism = *pool_sizes
+        .get(OsStr::new("main"))
+        .unwrap_or_else(|| pool_sizes.get(OsStr::new("default")).unwrap_or(&0));
+
     rayon::ThreadPoolBuilder::new()
         .num_threads(parallelism)
         .build_global()
@@ -502,25 +507,6 @@ fn paint_help(s: &str) -> String {
 }
 
 fn main() {
-    println!("FileInfoNoLen: {}", std::mem::size_of::<FileInfoNoLen>());
-    println!(
-        "SmallVec size 1: {}",
-        std::mem::size_of::<SmallVec<[FileInfoNoLen; 1]>>()
-    );
-    println!(
-        "SmallVec size 2: {}",
-        std::mem::size_of::<SmallVec<[FileInfoNoLen; 2]>>()
-    );
-    println!(
-        "SmallVec size 3: {}",
-        std::mem::size_of::<SmallVec<[FileInfoNoLen; 3]>>()
-    );
-    println!(
-        "Array size 2: {}",
-        std::mem::size_of::<[FileInfoNoLen; 2]>()
-    );
-    println!("Vec: {}", std::mem::size_of::<Vec<FileInfoNoLen>>());
-
     let mut log = Log::new();
 
     let after_help = &paint_help(indoc!(
@@ -556,12 +542,14 @@ fn main() {
     if config.quiet {
         log.no_progress = true;
     }
-    configure_thread_pool(config.threads);
+
+    let thread_pool_sizes = config.thread_pool_sizes();
+    configure_main_thread_pool(&thread_pool_sizes);
 
     let mut ctx = AppCtx {
         log,
         config,
-        devices: DiskDevices::default(),
+        devices: DiskDevices::new(&thread_pool_sizes),
     };
     ctx.config.check_transform(&ctx.log);
 
