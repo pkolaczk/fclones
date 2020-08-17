@@ -394,7 +394,7 @@ impl Serialize for FileHash {
 }
 /// Size of the temporary buffer used for file read operations.
 /// There is one such buffer per thread.
-pub const BUF_LEN: usize = 64 * 1024;
+pub const BUF_LEN: usize = 256 * 1024;
 
 #[cfg(unix)]
 fn to_off_t(offset: u64) -> libc::off_t {

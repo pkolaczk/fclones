@@ -14,7 +14,7 @@ use crate::path::Path;
 use crate::pattern::{Pattern, PatternOpts};
 use crate::selector::PathSelector;
 use crate::transform::Transform;
-use std::ffi::OsString;
+use std::ffi::{OsStr, OsString};
 
 arg_enum! {
     #[derive(Debug, StructOpt)]
@@ -40,10 +40,7 @@ fn parse_thread_count_option(str: &str) -> Result<(OsString, usize), String> {
     let value = value.to_string();
     match value.parse() {
         Ok(v) => Ok((key, v)),
-        Err(e) => Err(format!(
-            "Invalid count {}. Expected integer value: {}",
-            e, value
-        )),
+        Err(e) => Err(format!("{}: {}", e, value)),
     }
 }
 
@@ -167,10 +164,15 @@ pub struct Config {
     #[structopt(short = "g", long)]
     pub regex: bool,
 
-    /// Sets size of a thread-pool.
-    /// If unset, the number of CPU cores reported by the operating system is used for the main
-    /// thread pool and each SSD device, and 1 thread is used per each distinct HDD device.
-    #[structopt(short, long, parse(try_from_str = parse_thread_count_option))]
+    /// Sets the size of a thread-pool with the given name.
+    /// The name can be one of:
+    /// (1) a physical block device when prefixed with `dev:` e.g. `dev:/dev/sda`;
+    /// (2) a type of device - `ssd`, `hdd` or `unknown`;
+    /// (3) a thread pool or thread pool group - `main`, `default`.
+    /// If the name is not given, this option sets the size of the main thread pool
+    /// and thread pools dedicated to SSD devices.
+    /// This parameter can be used multiple times to configure multiple thread pools.
+    #[structopt(short, long, value_name = "[name:]value", parse(try_from_str = parse_thread_count_option))]
     pub threads: Vec<(OsString, usize)>,
 
     /// Suppresses progress reporting
@@ -298,5 +300,24 @@ impl Config {
             map.insert(k.clone(), *v);
         }
         map
+    }
+
+    /// Checks if `thread_pool_sizes` map contains unknown thread pool names.
+    /// If unrecognized keys are found, prints an error message and terminates the program.
+    /// The only allowed key name is: "default".
+    /// This method should be called after thread pools have been configured and their entries
+    /// removed from the map.
+    pub fn check_thread_pools(&self, log: &Log, thread_pool_sizes: &mut HashMap<OsString, usize>) {
+        thread_pool_sizes.remove(OsStr::new("default"));
+        if !thread_pool_sizes.is_empty() {
+            for (name, _) in thread_pool_sizes.iter() {
+                let name = name.to_string_lossy();
+                match name.strip_prefix("dev:") {
+                    Some(name) => log.err(format!("Unknown device: {}", name)),
+                    None => log.err(format!("Unknown thread pool or device type: {}", name)),
+                }
+            }
+            exit(1);
+        }
     }
 }

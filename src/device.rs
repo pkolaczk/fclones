@@ -48,7 +48,7 @@ impl DiskDevice {
     pub fn min_prefix_len(&self) -> FileLen {
         FileLen(match self.disk_type {
             DiskType::SSD => 4 * 1024,
-            DiskType::HDD => 64 * 1024,
+            DiskType::HDD => 16 * 1024,
             DiskType::Unknown(_) => 16 * 1024,
         })
     }
@@ -56,7 +56,7 @@ impl DiskDevice {
     pub fn max_prefix_len(&self) -> FileLen {
         FileLen(match self.disk_type {
             DiskType::SSD => 16 * 1024,
-            DiskType::HDD => 512 * 1024,
+            DiskType::HDD => 256 * 1024,
             DiskType::Unknown(_) => 64 * 1024,
         })
     }
@@ -85,13 +85,17 @@ impl DiskDevices {
     /// device name or the device type (ssd/hdd) from `pool_sizes` map.
     /// Returns the value under the "default" key if device was not found,
     /// or 0 if "default" doesn't exist in the map.
+    /// If found, the device key is removed from the map.
     fn get_parallelism(
         name: &OsStr,
         disk_type: DiskType,
-        pool_sizes: &HashMap<OsString, usize>,
+        pool_sizes: &mut HashMap<OsString, usize>,
     ) -> usize {
-        match pool_sizes.get(name) {
-            Some(p) => *p,
+        let mut dev_key = OsString::new();
+        dev_key.push("dev:");
+        dev_key.push(name);
+        match pool_sizes.remove(&dev_key) {
+            Some(p) => p,
             None => {
                 let p = match disk_type {
                     DiskType::SSD => pool_sizes.get(OsStr::new("ssd")),
@@ -112,7 +116,7 @@ impl DiskDevices {
         &mut self,
         name: OsString,
         disk_type: DiskType,
-        pool_sizes: &HashMap<OsString, usize>,
+        pool_sizes: &mut HashMap<OsString, usize>,
     ) -> usize {
         if let Some((index, _)) = self.devices.iter().find_position(|d| d.name == name) {
             index
@@ -142,7 +146,7 @@ impl DiskDevices {
 
     /// Reads the list of partitions and disks from the system and builds the `DiskDevices`
     /// structure from that information.
-    pub fn new(pool_sizes: &HashMap<OsString, usize>) -> DiskDevices {
+    pub fn new(pool_sizes: &mut HashMap<OsString, usize>) -> DiskDevices {
         let mut sys = System::new_all();
         sys.refresh_disks();
         let mut result = DiskDevices {
@@ -163,6 +167,10 @@ impl DiskDevices {
         result
             .mount_points
             .sort_by_key(|(p, _)| cmp::Reverse(p.component_count()));
+
+        pool_sizes.remove(OsStr::new("unknown"));
+        pool_sizes.remove(OsStr::new("ssd"));
+        pool_sizes.remove(OsStr::new("hdd"));
         result
     }
 
@@ -189,6 +197,6 @@ impl Default for DiskDevices {
         pool_sizes.insert(OsString::from("ssd"), 0);
         pool_sizes.insert(OsString::from("hdd"), 1);
         pool_sizes.insert(OsString::from("default"), 1);
-        Self::new(&pool_sizes)
+        Self::new(&mut pool_sizes)
     }
 }
