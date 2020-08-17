@@ -7,8 +7,8 @@ use std::fs::File;
 use std::io::{BufWriter, Write};
 use std::path::PathBuf;
 use std::process::exit;
-use std::sync::Arc;
 use std::sync::mpsc::channel;
+use std::sync::Arc;
 
 use console::{style, Term};
 use indoc::indoc;
@@ -38,10 +38,10 @@ struct AppCtx {
 }
 
 /// Configures global thread pool to use desired number of threads
-fn configure_main_thread_pool(pool_sizes: &HashMap<OsString, usize>) {
-    let parallelism = *pool_sizes
-        .get(OsStr::new("main"))
-        .unwrap_or_else(|| pool_sizes.get(OsStr::new("default")).unwrap_or(&0));
+fn configure_main_thread_pool(pool_sizes: &mut HashMap<OsString, usize>) {
+    let parallelism = pool_sizes
+        .remove(OsStr::new("main"))
+        .unwrap_or_else(|| *pool_sizes.get(OsStr::new("default")).unwrap_or(&0));
 
     rayon::ThreadPoolBuilder::new()
         .num_threads(parallelism)
@@ -543,15 +543,17 @@ fn main() {
         log.no_progress = true;
     }
 
-    let thread_pool_sizes = config.thread_pool_sizes();
-    configure_main_thread_pool(&thread_pool_sizes);
+    let mut thread_pool_sizes = config.thread_pool_sizes();
+    configure_main_thread_pool(&mut thread_pool_sizes);
 
     let mut ctx = AppCtx {
         log,
         config,
-        devices: DiskDevices::new(&thread_pool_sizes),
+        devices: DiskDevices::new(&mut thread_pool_sizes),
     };
     ctx.config.check_transform(&ctx.log);
+    ctx.config
+        .check_thread_pools(&ctx.log, &mut thread_pool_sizes);
 
     if let Some(output) = &ctx.config.output {
         // Try to create the output file now and fail early so that
