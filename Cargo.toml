@@ -66,8 +66,3 @@ assets = [
     ["README.md", "usr/share/doc/fclones/README", "644"],
 ]
 
-[package.metadata.rpm.cargo]
-buildflags = ["--release"]
-
-[package.metadata.rpm.targets]
-fclones = { path = "/usr/bin/fclones" }
