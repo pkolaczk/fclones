@@ -26,10 +26,11 @@ It easily outperforms many other popular duplicate finders by a wide margin (see
   - filtering by min/max file size
   - proper handling of symlinks and hardlinks  
 * High performance
-  - parallel processing in all I/O and CPU heavy stages 
+  - parallel processing capability in all I/O and CPU heavy stages
+  - automatic tuning of per-device parallelism based on device type (SSD vs HDD)
   - low memory footprint thanks to heavily optimized path representation
   - fast, non-cryptographic 128-bit hashing function
-  - linear complexity 
+  - linear complexity
   - doesn't push data out of the page-cache (Linux-only)
   - accurate progress reporting   
 * Human- and machine-readable output formats for easy further processing of results  
@@ -180,6 +181,54 @@ Note that there is no byte-by-byte comparison of files anywhere. A fast and good
 [MetroHash](http://www.jandrewrogers.com/2015/05/27/metrohash/) hash function
 is used and you don't need to worry about hash collisions. At 10<sup>15</sup> files, the probability of collision is
 0.000000001, without taking into account the requirement for the files to also match by size.
+    
+## Tuning
+At the moment, tuning is possible only for desired parallelism level. 
+The `--threads` parameter controls the sizes of the internal thread-pool(s). 
+This can be used to reduce parallelism level when you don't want `fclones` to 
+impact performance of your system too much, e.g. when you need to do some other work
+at the same time. It is also recommended to reduce the parallelism level if you need
+to reduce memory usage. 
+
+When using `fclones` up to version 0.6.x to deduplicate files of sizes of at least a few MBs each  
+on spinning drives (HDD), it is recommended to set `--threads 1`, because accessing big files 
+from multiple threads on HDD can be much slower than single-threaded access 
+(YMMV, this is heavily OS-dependent, 2x-10x performance differences have been reported).
+ 
+Since version 0.7.0, fclones uses separate per-device thread-pools for final hashing 
+and it will automatically tune the level of parallelism, memory buffer sizes and partial hashing sizes 
+based on the device type. These automatic settings can be overriden with `-threads` as well.
+
+The following options can be passed to `--threads`. The more specific options override the less specific ones.
+- `main:<value>` – sets the size of the main thread-pool used for random I/O: directory tree scanning, file metadata fetching and partial hashing.
+   These operations typically benefit from high parallelism level, even on spinning drives. Unset by default.
+- `dev:<device>:<value>` – sets the size of the thread-pool used for sequential I/O
+   on the block device with the given name. The name of the device is OS-dependent. 
+   Note this is not the same as the partition name or mount point.
+- `ssd:<value>` – sets the size of the thread-pools used for sequential I/O on solid-state drives. Unset by default. 
+- `hdd:<value>` – sets the size of the thread-pools used for sequential I/O on spinning drives. Defaults to 1.
+- `unknown:<value>` –  sets the size of the thread-pools used for sequential I/O on devices of unknown type. Defaults to 1.
+   Sometimes the device type can't be determined e.g. if it is mounted as NAS.
+- `default:<value>` – sets the size to be used by all unset options
+- `<value>` - same as `default:<value>`
+
+## Examples
+To limit the parallelism level for random I/O access to 1:
+
+    fclones <paths> --threads main:1  
+  
+To limit the parallelism level for sequential I/O access for all SSD devices (applies to the final full-content hashing):
+
+    fclones <paths> --threads ssd:1 
+
+To set the parallelism level to 2 for sequential I/O access for `/dev/sda` block device:
+
+    fclones <paths> --threads dev:/dev/sda:2 
+    
+Multiple `--threads` options can be used together:
+
+    fclones <paths> --threads main:16 ssd:4 hdd:1     
+    
     
 ## Benchmarks
 Different duplicate finders were given a task to find duplicates in a large set of files.
