@@ -21,6 +21,8 @@ use crate::files::{stream_hash, FileHash, FileLen};
 use crate::log::Log;
 use crate::path::Path;
 
+const BUF_LEN: usize = 64 * 1024;
+
 /// Keeps the results of the transform program execution
 pub struct Output {
     output_len: FileLen,
@@ -350,13 +352,15 @@ impl Transform {
         });
 
         let result = match output_conf {
-            OutputConf::StdOut => stream_hash(&mut child_out.unwrap(), FileLen::MAX, |_| {}),
+            OutputConf::StdOut => {
+                stream_hash(&mut child_out.unwrap(), FileLen::MAX, BUF_LEN, |_| {})
+            }
             OutputConf::Named(output) => {
-                stream_hash(&mut File::open(output)?, FileLen::MAX, |_| {})
+                stream_hash(&mut File::open(output)?, FileLen::MAX, BUF_LEN, |_| {})
             }
             OutputConf::InPlace(output) => {
                 child.wait()?;
-                stream_hash(&mut File::open(output)?, FileLen::MAX, |_| {})
+                stream_hash(&mut File::open(output)?, FileLen::MAX, BUF_LEN, |_| {})
             }
         }?;
 
@@ -458,6 +462,7 @@ mod test {
                 &input_path,
                 FilePos(0),
                 FileLen::MAX,
+                4096,
                 Caching::Default,
                 |_| {},
             )
@@ -487,6 +492,7 @@ mod test {
                 &input_path,
                 FilePos(0),
                 FileLen::MAX,
+                4096,
                 Caching::Default,
                 |_| {},
             )

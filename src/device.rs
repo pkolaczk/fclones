@@ -37,7 +37,7 @@ impl DiskDevice {
         }
     }
 
-    pub fn buffer_size(&self) -> usize {
+    pub fn buf_len(&self) -> usize {
         match self.disk_type {
             DiskType::SSD => 64 * 1024,
             DiskType::HDD => 256 * 1024,
@@ -55,9 +55,9 @@ impl DiskDevice {
 
     pub fn max_prefix_len(&self) -> FileLen {
         FileLen(match self.disk_type {
-            DiskType::SSD => 16 * 1024,
-            DiskType::HDD => 256 * 1024,
-            DiskType::Unknown(_) => 64 * 1024,
+            DiskType::SSD => 4 * 1024,
+            DiskType::HDD => 64 * 1024,
+            DiskType::Unknown(_) => 16 * 1024,
         })
     }
 
