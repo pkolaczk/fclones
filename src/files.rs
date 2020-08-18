@@ -1,5 +1,6 @@
 use core::fmt;
-use std::cmp::min;
+use std::cell::RefCell;
+use std::cmp::{max, min};
 use std::fmt::Display;
 use std::fs::{File, OpenOptions};
 use std::hash::{Hash, Hasher};
@@ -392,9 +393,6 @@ impl Serialize for FileHash {
         serializer.collect_str(self)
     }
 }
-/// Size of the temporary buffer used for file read operations.
-/// There is one such buffer per thread.
-pub const BUF_LEN: usize = 256 * 1024;
 
 #[cfg(unix)]
 fn to_off_t(offset: u64) -> libc::off_t {
@@ -451,15 +449,19 @@ fn evict_page_cache(file: &File, offset: FilePos, len: FileLen) {
 fn evict_page_cache_if_low_mem(file: &mut File, len: FileLen) {
     #[cfg(target_os = "linux")]
     {
-        let buf_len: FileLen = BUF_LEN.into();
-        if len > buf_len * 2 {
+        let skipped_prefix_len = FileLen(256 * 1024);
+        if len > skipped_prefix_len {
             let mut system = System::new();
             system.refresh_memory();
             let free_mem = system.get_free_memory();
             let total_mem = system.get_total_memory();
             let free_ratio = free_mem as f32 / total_mem as f32;
             if free_ratio < 0.05 {
-                evict_page_cache(&file, FilePos::zero() + buf_len, len - buf_len * 2);
+                evict_page_cache(
+                    &file,
+                    FilePos::zero() + skipped_prefix_len,
+                    len - skipped_prefix_len,
+                );
             }
         }
     }
@@ -509,28 +511,41 @@ fn open_noatime(path: &Path) -> io::Result<File> {
     }
 }
 
+thread_local! {
+    static BUF: RefCell<Vec<u8>> = RefCell::new(Vec::new());
+}
+
 /// Scans up to `len` bytes in a file and sends data to the given consumer.
 /// Returns the number of bytes successfully read.
-fn scan<F: FnMut(&[u8])>(stream: &mut impl Read, len: FileLen, mut consumer: F) -> io::Result<u64> {
-    let mut buf = [0; BUF_LEN];
-    let mut read: u64 = 0;
-    let len = len.into();
-    while read < len {
-        let remaining = len - read;
-        let to_read = min(remaining, buf.len() as u64) as usize;
-        let buf = &mut buf[..to_read];
-        match stream.read(buf) {
-            Ok(0) => break,
-            Ok(actual_read) => {
-                read += actual_read as u64;
-                (consumer)(&buf[..actual_read]);
-            }
-            Err(e) => {
-                return Err(e);
+fn scan<F: FnMut(&[u8])>(
+    stream: &mut impl Read,
+    len: FileLen,
+    buf_len: usize,
+    mut consumer: F,
+) -> io::Result<u64> {
+    BUF.with(|buf| {
+        let mut buf = buf.borrow_mut();
+        let new_len = max(buf.len(), buf_len);
+        buf.resize(new_len, 0);
+        let mut read: u64 = 0;
+        let len = len.into();
+        while read < len {
+            let remaining = len - read;
+            let to_read = min(remaining, buf.len() as u64) as usize;
+            let buf = &mut buf[..to_read];
+            match stream.read(buf) {
+                Ok(0) => break,
+                Ok(actual_read) => {
+                    read += actual_read as u64;
+                    (consumer)(&buf[..actual_read]);
+                }
+                Err(e) => {
+                    return Err(e);
+                }
             }
         }
-    }
-    Ok(read)
+        Ok(read)
+    })
 }
 
 /// Computes the hash value over at most `len` bytes of the stream.
@@ -538,11 +553,12 @@ fn scan<F: FnMut(&[u8])>(stream: &mut impl Read, len: FileLen, mut consumer: F) 
 pub fn stream_hash(
     stream: &mut impl Read,
     len: FileLen,
+    buf_len: usize,
     progress: impl Fn(usize),
 ) -> io::Result<(FileLen, FileHash)> {
     let mut hasher = MetroHash128::new();
     let mut read_len: FileLen = FileLen(0);
-    scan(stream, len, |buf| {
+    scan(stream, len, buf_len, |buf| {
         hasher.write(buf);
         read_len = read_len + FileLen(buf.len() as u64);
         (progress)(buf.len());
@@ -570,9 +586,9 @@ pub fn stream_hash(
 /// let file2 = test_root.join("file2");
 /// File::create(&file2).unwrap().write_all(b"Test file 2");
 ///
-/// let hash1 = file_hash(&Path::from(&file1), FilePos(0), FileLen::MAX, Caching::Default, |_|{}).unwrap();
-/// let hash2 = file_hash(&Path::from(&file2), FilePos(0), FileLen::MAX, Caching::Default, |_|{}).unwrap();
-/// let hash3 = file_hash(&Path::from(&file2), FilePos(0), FileLen(8), Caching::Default, |_|{}).unwrap();
+/// let hash1 = file_hash(&Path::from(&file1), FilePos(0), FileLen::MAX, 4096, Caching::Default, |_|{}).unwrap();
+/// let hash2 = file_hash(&Path::from(&file2), FilePos(0), FileLen::MAX, 4096, Caching::Default, |_|{}).unwrap();
+/// let hash3 = file_hash(&Path::from(&file2), FilePos(0), FileLen(8), 4096, Caching::Default, |_|{}).unwrap();
 /// assert_ne!(hash1, hash2);
 /// assert_ne!(hash2, hash3);
 /// ```
@@ -580,11 +596,12 @@ pub fn file_hash(
     path: &Path,
     offset: FilePos,
     len: FileLen,
+    buf_len: usize,
     cache_policy: Caching,
     progress: impl Fn(usize),
 ) -> io::Result<FileHash> {
     let mut file = open(path, offset, len, cache_policy)?;
-    let hash = stream_hash(&mut file, len, progress)?.1;
+    let hash = stream_hash(&mut file, len, buf_len, progress)?.1;
     evict_page_cache_if_low_mem(&mut file, len);
     Ok(hash)
 }
@@ -595,11 +612,12 @@ pub fn file_hash_or_log_err(
     path: &Path,
     offset: FilePos,
     len: FileLen,
+    buf_len: usize,
     caching: Caching,
     progress: impl Fn(usize),
     log: &Log,
 ) -> Option<FileHash> {
-    match file_hash(path, offset, len, caching, progress) {
+    match file_hash(path, offset, len, buf_len, caching, progress) {
         Ok(hash) => Some(hash),
         Err(e) if e.kind() == ErrorKind::NotFound => None,
         Err(e) => {

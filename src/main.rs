@@ -298,8 +298,17 @@ fn group_by_prefix(ctx: &mut AppCtx, groups: Vec<FileGroup<Path>>) -> Vec<FileGr
                 Caching::Random
             };
             g.split(true, prefix_len, |path| {
+                let buf_len = ctx.devices.get_by_path(&path).buf_len();
                 progress.tick();
-                file_hash_or_log_err(path, FilePos(0), prefix_len, caching, |_| {}, &ctx.log)
+                file_hash_or_log_err(
+                    path,
+                    FilePos(0),
+                    prefix_len,
+                    buf_len,
+                    caching,
+                    |_| {},
+                    &ctx.log,
+                )
             })
         })
         .filter(|g| g.files.len() > rf_over)
@@ -350,10 +359,12 @@ fn group_by_suffix(ctx: &mut AppCtx, groups: Vec<FileGroup<Path>>) -> Vec<FileGr
 
             g.split(needs_processing, prefix_len, |path| {
                 progress.tick();
+                let buf_len = ctx.devices.get_by_path(&path).buf_len();
                 file_hash_or_log_err(
                     path,
                     file_len.as_pos() - suffix_len,
                     suffix_len,
+                    buf_len,
                     Caching::Default,
                     |_| {},
                     &ctx.log,
@@ -392,6 +403,7 @@ fn group_by_contents(ctx: &mut AppCtx, groups: Vec<FileGroup<Path>>) -> Vec<File
                 let tx = tx.clone();
                 let scope = scopes[ctx.devices.get_by_path(&path).index];
                 let len = group.file_len;
+                let buf_len = ctx.devices.get_by_path(&path).buf_len();
                 let hash = group.hash;
                 if needs_processing {
                     scope.spawn(move |_| {
@@ -399,6 +411,7 @@ fn group_by_contents(ctx: &mut AppCtx, groups: Vec<FileGroup<Path>>) -> Vec<File
                             &path,
                             FilePos(0),
                             len,
+                            buf_len,
                             Caching::Sequential,
                             |delta| progress.inc(delta),
                             &ctx.log,
