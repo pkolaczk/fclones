@@ -548,7 +548,12 @@ fn main() {
         // a hack to remove "error: " from the message,
         // until we switch to Clap 3.x, which will have the `cause` field
         let r = Regex::new("[^e]*error:[^ ]* ").unwrap();
-        log.err(r.replace(e.message.as_str(), ""));
+        let message = e.message.as_str();
+        if r.is_match(message) {
+            log.err(r.replace(e.message.as_str(), ""));
+        } else {
+            println!("{}", e.message);
+        }
         exit(1);
     });
     let config: Config = Config::from_clap(&matches);
@@ -587,6 +592,7 @@ fn main() {
 
 // Extracted for testing
 fn process(mut ctx: &mut AppCtx) -> Vec<FileGroup<Path>> {
+    ctx.log.info("Started");
     let matching_files = scan_files(&mut ctx);
     let size_groups = group_by_size(&mut ctx, matching_files);
     let size_groups_pruned = remove_same_files(&mut ctx, size_groups);
