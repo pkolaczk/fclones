@@ -47,7 +47,7 @@ fn parse_thread_count_option(str: &str) -> Result<(OsString, usize), String> {
 /// Finds duplicate, unique, under- or over-replicated files
 #[derive(Debug, StructOpt, Default)]
 #[structopt(
-    name = "File Clones",
+    name = "fclones",
     setting(AppSettings::ColoredHelp),
     setting(AppSettings::DeriveDisplayOrder)
 )]
