@@ -33,10 +33,12 @@ It easily outperforms many other popular duplicate finders by a wide margin (see
   - linear complexity
   - doesn't push data out of the page-cache (Linux-only)
   - accurate progress reporting   
-* Human- and machine-readable output formats for easy further processing of results  
-  - file per line 
-  - `CSV`
-  - `JSON`     
+* Variety of output formats for easy further processing of results  
+  - standard text format
+    - groups separated by group headers with file size and hash 
+    - one path per line in a group  
+  - optional `fdupes` compatibility (no headers, no indent, groups separated by blank lines)    
+  - machine-readable formats: `CSV`, `JSON`     
 
 ## Usage
 Find duplicate files in the current directory, without descending into subdirectories 

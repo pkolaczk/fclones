@@ -19,7 +19,7 @@ use std::ffi::{OsStr, OsString};
 arg_enum! {
     #[derive(Debug, StructOpt)]
     pub enum OutputFormat {
-        Text, Csv, Json
+        Text, Fdupes, Csv, Json
     }
 }
 

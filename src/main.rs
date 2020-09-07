@@ -468,6 +468,7 @@ fn write_report(ctx: &mut AppCtx, groups: &[FileGroup<Path>]) {
 
     let result = match &ctx.config.format {
         OutputFormat::Text => reporter.write_as_text(groups),
+        OutputFormat::Fdupes => reporter.write_as_fdupes(groups),
         OutputFormat::Csv => reporter.write_as_csv(groups),
         OutputFormat::Json => reporter.write_as_json(groups),
     };
