@@ -24,7 +24,7 @@ impl<W: Write> Reporter<W> {
         }
     }
 
-    /// Writes report in human-readable text format.
+    /// Writes the report in human-readable text format.
     /// A group of identical files starts with a group header at column 0,
     /// containing the size and hash of each file in the group.
     /// Then file paths are printed in separate, indented lines.
@@ -50,6 +50,20 @@ impl<W: Write> Reporter<W> {
                 self.progress.tick();
                 writeln!(self.out, "    {}", f.display())?;
             }
+        }
+        Ok(())
+    }
+
+    /// Writes the report in `fdupes` compatible format.
+    /// This is very similar to the TEXT format, but there are no headers
+    /// for each group, and groups are separated with empty lines.
+    pub fn write_as_fdupes(&mut self, results: &[FileGroup<Path>]) -> io::Result<()> {
+        for g in results {
+            for f in g.files.iter() {
+                self.progress.tick();
+                writeln!(self.out, "{}", f.display())?;
+            }
+            writeln!(self.out)?;
         }
         Ok(())
     }
