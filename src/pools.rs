@@ -41,7 +41,7 @@ where
 /// ```
 pub fn multi_scope<'scope, OP, R>(pools: &[&ThreadPool], op: OP) -> R
 where
-    OP: for<'s> FnOnce(&'s [&'s Scope<'scope>]) -> R + 'scope + Send,
+    OP: for<'s> FnOnce(&'s [&'s Scope<'scope>]) -> R + Send,
     R: Send,
 {
     nest(pools, Vec::with_capacity(pools.len()), op)
