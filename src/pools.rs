@@ -1,28 +1,18 @@
 use rayon::{Scope, ThreadPool};
 
-unsafe fn adjust_lifetime<'s, 'a, 'b>(scope: &'s Scope<'a>) -> &'s Scope<'b> {
-    std::mem::transmute::<&'s Scope<'a>, &'s Scope<'b>>(scope)
-}
-
 /// Constructs scopes recursively.
 /// Each recursion level takes (and removes) the first thread pool from
 /// `pools`, creates a scope and pushes it into the `scopes` vector, then calls the next
 /// recursion level inside this scope. Finally it calls `op` passing all the scopes to it.
 fn nest<'scope, OP, R>(pools: &[&ThreadPool], scopes: Vec<&Scope<'scope>>, op: OP) -> R
 where
-    OP: for<'s> FnOnce(&'s [&'s Scope<'scope>]) -> R + 'scope + Send,
+    OP: for<'s> FnOnce(&'s [&'s Scope<'scope>]) -> R + Send,
     R: Send,
 {
     if !pools.is_empty() {
         pools[0].scope(move |s| {
             let mut scopes: Vec<&Scope<'scope>> = scopes;
-            // Unfortunately Scope is invariant over lifetime, therefore we can't just
-            // push all scopes into a single vector, because they have slightly different lifetimes
-            // due to nesting, and they are different types to the compiler.
-            // However, from the caller perspective, the recursion and nesting is invisible,
-            // so we can force all scopes to having the same lifetime set to `scope by using this
-            // unsafe trick. See https://github.com/rayon-rs/rayon/issues/782.
-            scopes.push(unsafe { adjust_lifetime(s) });
+            scopes.push(s);
             nest(&pools[1..], scopes, op)
         })
     } else {
