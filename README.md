@@ -5,9 +5,6 @@ Sometimes you accidentally copied your files in too many places - `fclones` will
 got different names. It can also be used to find unique or under-replicated files, e.g. to check if your 
 backups contain the required files. 
 
-`fclones` does not remove or copy files by itself. It generates a report with a list of files, and you decide
-what to do with them. For your convenience, reports are available in a few different popular formats.
-
 `fclones` has been implemented in Rust with a strong focus on performance on modern hardware.
 It easily outperforms many other popular duplicate finders by a wide margin (see [Benchmarks](#benchmarks)).
 
@@ -39,6 +36,13 @@ It easily outperforms many other popular duplicate finders by a wide margin (see
     - one path per line in a group  
   - optional `fdupes` compatibility (no headers, no indent, groups separated by blank lines)    
   - machine-readable formats: `CSV`, `JSON`     
+
+### Limitations
+Contrary to `fdupes` and some other popular duplicate removers,`fclones` currently 
+does not remove duplicate files automatically. It only generates a report with a list of files, 
+and you decide what to do with them. For your convenience, 
+reports are available in a few different popular formats.
+See [#27](https://github.com/pkolaczk/fclones/issues/27). 
 
 ## Installation
 
