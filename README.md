@@ -40,6 +40,35 @@ It easily outperforms many other popular duplicate finders by a wide margin (see
   - optional `fdupes` compatibility (no headers, no indent, groups separated by blank lines)    
   - machine-readable formats: `CSV`, `JSON`     
 
+## Installation
+
+### Supported Platforms
+The code has been thoroughly tested on Ubuntu Linux 20.04. 
+ 
+OS            |    Architecture       |    Status                       | Limitations    
+--------------|-----------------------|---------------------------------|------------
+Linux         |  AMD64                | fully supported                 | 
+Mac OS X      |  AMD64                | works                           | no page-cache optimisation
+Windows 10    |  AMD64                | works                           | no page-cache optimisation
+Wine 5.0      |  AMD64                | mostly works                    | no page-cache optimisation, broken progress bar
+
+Other systems and architectures may work. 
+Help test and/or port to other platforms is welcome.
+Please report successes as well as failures.      
+
+### Official Packages
+Installation packages and binaries for some platforms 
+are attached directly to [Releases](https://github.com/pkolaczk/fclones/releases).
+
+### Third-party Packages
+* [Linux Arch Package](https://aur.archlinux.org/packages/fclones-git/) by [@aurelg](https://github.com/aurelg)   
+
+### Building from Source 
+1. [Install Rust Toolchain](https://www.rust-lang.org/tools/install)
+2. Run `cargo install --git https://github.com/pkolaczk/fclones`
+
+The build will write the binary to `.cargo/bin/fclones`. 
+
 ## Usage
 Find duplicate files in the current directory, without descending into subdirectories 
 (in Unix-like shells with globbing support):
@@ -132,35 +161,7 @@ List more options:
   If you need path globbing, and your shell does not support it, 
   use a combination of recursive search `-R` with `--depth` limit and 
   built-in path globbing provided by `--names` or `--paths`.     
-                      
-## Installation
-
-### Supported Platforms
-The code has been thoroughly tested on Ubuntu Linux 20.04. 
- 
-OS            |    Architecture       |    Status                       | Limitations    
---------------|-----------------------|---------------------------------|------------
-Ubuntu 20.04  |  AMD64                | fully supported                 |
-Linux         |  ARMv7                | cross-compiles, not tested      | 
-Linux         |  ARM64                | cross-compiles, not tested      | 
-Mac OS X      |  AMD64                | works                           | no page-cache optimisation
-Windows 10    |  AMD64                | works                           | no page-cache optimisation
-Wine 5.0      |  AMD64                | mostly works                    | no page-cache optimisation, broken progress bar
-
-Other systems and architectures may work. 
-Help test and/or port to other platforms is welcome.
-Please report successes as well as failures.      
-
-### Download
-Installation packages and binaries for some platforms 
-are attached directly to [Releases](https://github.com/pkolaczk/fclones/releases).
-
-### Building from Source 
-1. [Install Rust](https://www.rust-lang.org/tools/install)
-2. Run `cargo build --release`
-
-The build will write the binary to `./target/release/fclones`. 
-    
+                          
 ## The Algorithm
 Files are processed in several stages. Each stage except the last one is parallel, but 
 the previous stage must complete fully before the next one is started.
