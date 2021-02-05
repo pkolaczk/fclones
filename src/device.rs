@@ -22,6 +22,7 @@ impl DiskDevice {
             0 => match disk_type {
                 DiskType::SSD => 0, // == number of cores
                 DiskType::HDD => 1,
+                DiskType::Removable => 1,
                 DiskType::Unknown(_) => 1,
             },
             p => p,
@@ -41,6 +42,7 @@ impl DiskDevice {
         match self.disk_type {
             DiskType::SSD => 64 * 1024,
             DiskType::HDD => 256 * 1024,
+            DiskType::Removable => 256 * 1024,
             DiskType::Unknown(_) => 256 * 1024,
         }
     }
@@ -49,6 +51,7 @@ impl DiskDevice {
         FileLen(match self.disk_type {
             DiskType::SSD => 4 * 1024,
             DiskType::HDD => 16 * 1024,
+            DiskType::Removable => 16 * 1024,
             DiskType::Unknown(_) => 16 * 1024,
         })
     }
@@ -57,6 +60,7 @@ impl DiskDevice {
         FileLen(match self.disk_type {
             DiskType::SSD => 4 * 1024,
             DiskType::HDD => 64 * 1024,
+            DiskType::Removable => 64 * 1024,
             DiskType::Unknown(_) => 16 * 1024,
         })
     }
@@ -67,8 +71,9 @@ impl DiskDevice {
 
     pub fn suffix_threshold(&self) -> FileLen {
         FileLen(match self.disk_type {
-            DiskType::HDD => 64 * 1024 * 1024, // 64 MB
-            DiskType::SSD => 64 * 1024,        // 64 kB
+            DiskType::SSD => 64 * 1024,              // 64 kB
+            DiskType::HDD => 64 * 1024 * 1024,       // 64 MB
+            DiskType::Removable => 64 * 1024 * 1024, // 64 MB
             DiskType::Unknown(_) => 64 * 1024 * 1024,
         })
     }
@@ -100,6 +105,7 @@ impl DiskDevices {
                 let p = match disk_type {
                     DiskType::SSD => pool_sizes.get(OsStr::new("ssd")),
                     DiskType::HDD => pool_sizes.get(OsStr::new("hdd")),
+                    DiskType::Removable => pool_sizes.get(OsStr::new("removable")),
                     DiskType::Unknown(_) => pool_sizes.get(OsStr::new("unknown")),
                 };
                 match p {
