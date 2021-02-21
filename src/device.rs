@@ -180,13 +180,18 @@ impl DiskDevices {
         result
     }
 
-    /// Returns the disk device which holds the given path.
+    /// Returns the disk device which holds the given path
     pub fn get_by_path(&self, path: &Path) -> &DiskDevice {
         self.mount_points
             .iter()
             .find(|(p, _)| p.is_prefix_of(path))
             .map(|&(_, index)| &self.devices[index])
             .unwrap_or(&self.devices[0])
+    }
+
+    /// Returns the first device on the list
+    pub fn get_default(&self) -> &DiskDevice {
+        &self.devices[0]
     }
 
     /// Returns references to the thread pools associated with devices.

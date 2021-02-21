@@ -179,20 +179,31 @@ impl Display for FileLen {
     }
 }
 
-/// Keeps metadata of the file that we are interested in.
-/// We don't want to keep unused metadata in memory.
-#[repr(packed(4))]
+pub trait AsPath {
+    fn path(&self) -> &Path;
+}
+
+pub trait IntoPath {
+    fn into_path(self) -> Path;
+}
+
 pub struct FileInfo {
     pub path: Path,
     pub len: FileLen,
-    pub id_hash: u32,
+    pub id_hash: u32,  // hash of file identifier, for hardlink processing
+    pub location: u32, // physical on-disk location of file data for access ordering optimisation
 }
 
-/// An even more packed file information, without length
-#[repr(packed(4))]
-pub struct FileInfoNoLen {
-    pub path: Path,
-    pub id_hash: u32,
+impl AsPath for FileInfo {
+    fn path(&self) -> &Path {
+        &self.path
+    }
+}
+
+impl IntoPath for FileInfo {
+    fn into_path(self) -> Path {
+        self.path
+    }
 }
 
 impl FileInfo {
@@ -209,6 +220,11 @@ impl FileInfo {
                     device: metadata.dev(),
                 }
                 .get_hash(),
+                // the idea here is that files which have close inode ids are also
+                // colocated physically; it should hold well
+                // if a bunch of files was copied in one go
+                // TODO: query the system for real physical location
+                location: (metadata.ino() & 0xFFFFFFFF) as u32,
             }),
             Err(e) => Err(io::Error::new(
                 e.kind(),
@@ -229,48 +245,12 @@ impl FileInfo {
                     device: info.volume_serial_number() as u64,
                 }
                 .get_hash(),
+                location: (info.file_index() & 0xFFFFFFFF) as u32,
             }),
             Err(e) => Err(io::Error::new(
                 e.kind(),
                 format!("Failed to read metadata of {}: {}", path.display(), e),
             )),
-        }
-    }
-
-    /// Removes the length field from the information and returns a smaller structure
-    pub fn drop_len(self) -> FileInfoNoLen {
-        FileInfoNoLen {
-            path: self.path,
-            id_hash: self.id_hash,
-        }
-    }
-
-    /// Converts to an aligned representation
-    pub fn unpack(self) -> UnpackedFileInfo {
-        UnpackedFileInfo {
-            path: self.path,
-            len: self.len,
-            id_hash: self.id_hash,
-        }
-    }
-}
-
-/// This structure contains the same data as `FileInfo` but is unpacked (aligned)
-/// and allows borrowing fields. Use [unpack](FileInfo::unpack) and [pack](UnpackedFileInfo::pack)
-/// methods to convert between packed and non-packed representations.
-pub struct UnpackedFileInfo {
-    pub path: Path,
-    pub len: FileLen,
-    pub id_hash: u32,
-}
-
-impl UnpackedFileInfo {
-    /// Converts to a non-aligned representation
-    pub fn pack(self) -> FileInfo {
-        FileInfo {
-            path: self.path,
-            len: self.len,
-            id_hash: self.id_hash,
         }
     }
 }
