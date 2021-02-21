@@ -1,11 +1,11 @@
 use std::collections::HashMap;
-use std::io;
-use std::io::{stdin, BufRead, BufReader};
+use std::ffi::{OsStr, OsString};
+use std::io::{BufRead, BufReader, stdin};
 use std::path::PathBuf;
 use std::process::exit;
 
-use clap::arg_enum;
 use clap::AppSettings;
+use clap::arg_enum;
 use structopt::StructOpt;
 
 use crate::files::FileLen;
@@ -14,7 +14,6 @@ use crate::path::Path;
 use crate::pattern::{Pattern, PatternOpts};
 use crate::selector::PathSelector;
 use crate::transform::Transform;
-use std::ffi::{OsStr, OsString};
 
 arg_enum! {
     #[derive(Debug, StructOpt)]
@@ -274,16 +273,16 @@ impl Config {
     pub fn take_transform(&mut self, log: &Log) -> Option<Transform> {
         self.transform
             .take()
-            .and_then(|command| self.build_transform(&command, log).ok())
+            .map(|command| self.build_transform(&command, log))
     }
 
-    fn build_transform(&self, command: &str, log: &Log) -> io::Result<Transform> {
+    fn build_transform(&self, command: &str, log: &Log) -> Transform {
         match Transform::new(command.to_string(), self.in_place) {
             Ok(mut tr) => {
                 if self.no_copy {
                     tr.copy = false
                 };
-                Ok(tr)
+                tr
             }
             Err(e) => {
                 log.err(e);
