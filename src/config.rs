@@ -1,11 +1,11 @@
 use std::collections::HashMap;
 use std::ffi::{OsStr, OsString};
-use std::io::{BufRead, BufReader, stdin};
+use std::io::{stdin, BufRead, BufReader};
 use std::path::PathBuf;
 use std::process::exit;
 
-use clap::AppSettings;
 use clap::arg_enum;
+use clap::AppSettings;
 use structopt::StructOpt;
 
 use crate::files::FileLen;
