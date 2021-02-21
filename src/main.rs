@@ -97,11 +97,11 @@ fn scan_files(ctx: &mut AppCtx) -> Vec<Vec<FileInfo>> {
     files
 }
 
-fn group_by_size(ctx: &mut AppCtx, files: Vec<Vec<FileInfo>>) -> Vec<FileGroup<FileInfoNoLen>> {
+fn group_by_size(ctx: &mut AppCtx, files: Vec<Vec<FileInfo>>) -> Vec<FileGroup<FileInfo>> {
     let file_count: usize = files.iter().map(|v| v.len()).sum();
     let progress = ctx.log.progress_bar("Grouping by size", file_count as u64);
 
-    let mut groups = GroupMap::new(|info: FileInfo| (info.len, info.drop_len()));
+    let mut groups = GroupMap::new(|info: FileInfo| (info.len, info));
     for files in files.into_iter() {
         for file in files.into_iter() {
             progress.tick();
@@ -131,54 +131,43 @@ fn group_by_size(ctx: &mut AppCtx, files: Vec<Vec<FileInfo>>) -> Vec<FileGroup<F
     groups
 }
 
-fn to_group_of_paths(f: FileGroup<FileInfoNoLen>) -> FileGroup<Path> {
-    FileGroup {
-        file_len: f.file_len,
-        prefix_len: f.prefix_len,
-        hash: f.hash,
-        files: f.files.into_iter().map(|i| i.path).collect(),
-    }
-}
-
 /// Removes duplicate files matching by full-path or by inode-id.
 /// Deduplication by inode-id is not performed if the flag to preserve hard-links (-H) is set.
-fn deduplicate<F>(ctx: &AppCtx, files: &mut Vec<FileInfoNoLen>, progress: F)
+fn deduplicate<F>(ctx: &AppCtx, files: &mut Vec<FileInfo>, progress: F)
 where
     F: Fn(&Path) + Sync + Send,
 {
     let count = files.len();
-    let mut groups = GroupMap::with_capacity(count, |fi: FileInfoNoLen| (fi.id_hash, fi.path));
+    let mut groups = GroupMap::with_capacity(count, |fi: FileInfo| (fi.id_hash, fi));
     for f in files.drain(..) {
         groups.add(f)
     }
 
-    for (id_hash, mut paths) in groups.into_iter() {
-        if paths.len() == 1 {
-            progress(&paths[0]);
-            files.push(FileInfoNoLen {
-                id_hash,
-                path: paths.remove(0),
-            });
+    for (_, file_group) in groups.into_iter() {
+        if file_group.len() == 1 {
+            files.extend(file_group.into_iter().inspect(|p| progress(&p.path)));
         } else if ctx.config.hard_links {
-            paths
-                .into_iter()
-                .inspect(|p| progress(p))
-                .unique_by(|p| p.hash128())
-                .for_each(|p| files.push(FileInfoNoLen { id_hash, path: p }))
+            files.extend(
+                file_group
+                    .into_iter()
+                    .inspect(|p| progress(&p.path))
+                    .unique_by(|p| p.path.hash128()),
+            )
         } else {
-            paths
-                .into_iter()
-                .inspect(|p| progress(p))
-                .unique_by(|p| file_id_or_log_err(p, &ctx.log))
-                .for_each(|p| files.push(FileInfoNoLen { id_hash, path: p }))
+            files.extend(
+                file_group
+                    .into_iter()
+                    .inspect(|p| progress(&p.path))
+                    .unique_by(|p| file_id_or_log_err(&p.path, &ctx.log)),
+            )
         }
     }
 }
 
 fn remove_same_files(
     ctx: &mut AppCtx,
-    groups: Vec<FileGroup<FileInfoNoLen>>,
-) -> Vec<FileGroup<Path>> {
+    groups: Vec<FileGroup<FileInfo>>,
+) -> Vec<FileGroup<FileInfo>> {
     let file_count: usize = groups.total_count();
     let progress = ctx
         .log
@@ -191,7 +180,6 @@ fn remove_same_files(
         .into_par_iter()
         .update(|g| deduplicate(ctx, &mut g.files, |_| progress.tick()))
         .filter(|g| g.files.len() > rf_over)
-        .map(to_group_of_paths)
         .collect();
 
     let count: usize = groups.selected_count(rf_over, rf_under);
@@ -213,7 +201,7 @@ fn remove_same_files(
 fn group_transformed(
     ctx: &mut AppCtx,
     transform: &Transform,
-    groups: Vec<FileGroup<Path>>,
+    groups: Vec<FileGroup<FileInfo>>,
 ) -> Vec<FileGroup<Path>> {
     let file_count: usize = groups.total_count();
     let progress = ctx.log.progress_bar("Transforming", file_count as u64);
@@ -224,9 +212,9 @@ fn group_transformed(
             g.files
                 .into_par_iter()
                 .inspect(|_| progress.tick())
-                .filter_map(|f: Path| {
-                    let result = transform.run_or_log_err(&f, &ctx.log);
-                    result.map(|(len, hash)| (len, hash, f))
+                .filter_map(|fi| {
+                    let result = transform.run_or_log_err(&fi.path, &ctx.log);
+                    result.map(|(len, hash)| (len, hash, fi.path))
                 })
                 .collect::<Vec<_>>()
         })
@@ -265,53 +253,73 @@ fn group_transformed(
     groups
 }
 
-/// Returns the desired prefix length for the given group of files.
+/// Returns the desired prefix length for a group of files.
 /// The return value depends on the capabilities of the devices the files are stored on.
 /// Higher values are desired if any of the files resides on an HDD.
-fn prefix_len(partitions: &DiskDevices, g: &FileGroup<Path>) -> FileLen {
-    let v: Vec<&DiskDevice> = g.files.iter().map(|p| partitions.get_by_path(p)).collect();
-    let max_prefix_len = v.iter().map(|&p| p.max_prefix_len()).max().unwrap();
-    let min_prefix_len = v.iter().map(|&p| p.min_prefix_len()).max().unwrap();
-    if g.file_len <= max_prefix_len {
-        g.file_len
-    } else {
-        min_prefix_len
-    }
+fn prefix_len(partitions: &DiskDevices, files: &[FileInfo]) -> FileLen {
+    files
+        .into_par_iter()
+        .map(|f| partitions.get_by_path(&f.path).max_prefix_len())
+        .max()
+        .unwrap_or_else(|| partitions.get_default().max_prefix_len())
 }
 
-fn group_by_prefix(ctx: &mut AppCtx, groups: Vec<FileGroup<Path>>) -> Vec<FileGroup<Path>> {
+fn group_by_prefix(ctx: &mut AppCtx, groups: Vec<FileGroup<FileInfo>>) -> Vec<FileGroup<Path>> {
     let remaining_files = groups.iter().filter(|g| g.files.len() > 1).total_count();
     let progress = ctx
         .log
         .progress_bar("Grouping by prefix", remaining_files as u64);
 
+    // Obtain a flat list of files:
+    let mut files: Vec<_> = groups.into_iter().flat_map(|g| g.files).collect();
+
+    // Sort files by their physical location, to reduce disk seek latency
+    files.par_sort_unstable_by_key(|f| f.location);
+
     let rf_over = ctx.config.rf_over();
     let rf_under = ctx.config.rf_under();
+    let prefix_len = prefix_len(&ctx.devices, &files);
 
-    let groups: Vec<_> = groups
-        .into_par_iter()
-        .flat_map(|g| {
-            let prefix_len = prefix_len(&ctx.devices, &g);
-            let caching = if g.file_len <= prefix_len {
+    // Compute prefix hashes in parallel:
+    let hashes: Vec<Option<(FileLen, FileHash)>> = files
+        .par_iter()
+        .map(|fi| {
+            progress.tick();
+            let buf_len = ctx.devices.get_by_path(&fi.path).buf_len();
+            let caching = if fi.len <= prefix_len {
                 Caching::Default
             } else {
                 Caching::Random
             };
-            g.split(true, prefix_len, |path| {
-                let buf_len = ctx.devices.get_by_path(&path).buf_len();
-                progress.tick();
-                file_hash_or_log_err(
-                    path,
-                    FilePos(0),
-                    prefix_len,
-                    buf_len,
-                    caching,
-                    |_| {},
-                    &ctx.log,
-                )
-            })
+            let hash = file_hash_or_log_err(
+                &fi.path,
+                FilePos(0),
+                prefix_len,
+                buf_len,
+                caching,
+                |_| {},
+                &ctx.log,
+            );
+            hash.map(|h| (fi.len, h))
         })
-        .filter(|g| g.files.len() > rf_over)
+        .collect();
+
+    // Group by length and hash
+    let mut groups = GroupMap::new(|(path, len, hash)| ((len, hash), path));
+    for (fi, len_and_hash) in files.into_iter().zip(hashes) {
+        if let Some((file_len, file_hash)) = len_and_hash {
+            groups.add((fi.path, file_len, file_hash))
+        }
+    }
+    let groups: Vec<_> = groups
+        .into_iter()
+        .filter(|(_, paths)| paths.len() > rf_over)
+        .map(|((len, hash), paths)| FileGroup {
+            file_len: len,
+            prefix_len: len,
+            hash,
+            files: paths.to_vec(),
+        })
         .collect();
 
     let count = groups.selected_count(rf_over, rf_under);
