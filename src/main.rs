@@ -268,7 +268,7 @@ fn group_by_prefix(ctx: &mut AppCtx, groups: Vec<FileGroup<FileInfo>>) -> Vec<Fi
     let remaining_files = groups.iter().filter(|g| g.files.len() > 1).total_count();
     let progress = ctx
         .log
-        .progress_bar("Grouping by prefix", remaining_files as u64);
+        .progress_bar("Computing prefix hashes", remaining_files as u64);
 
     // Obtain a flat list of files:
     let mut files: Vec<_> = groups.into_iter().flat_map(|g| g.files).collect();
@@ -280,37 +280,43 @@ fn group_by_prefix(ctx: &mut AppCtx, groups: Vec<FileGroup<FileInfo>>) -> Vec<Fi
     let rf_under = ctx.config.rf_under();
     let prefix_len = prefix_len(&ctx.devices, &files);
 
-    // Compute prefix hashes in parallel:
-    let hashes: Vec<Option<(FileLen, FileHash)>> = files
-        .par_iter()
-        .map(|fi| {
-            progress.tick();
-            let buf_len = ctx.devices.get_by_path(&fi.path).buf_len();
-            let caching = if fi.len <= prefix_len {
-                Caching::Default
-            } else {
-                Caching::Random
-            };
-            let hash = file_hash_or_log_err(
-                &fi.path,
-                FilePos(0),
-                prefix_len,
-                buf_len,
-                caching,
-                |_| {},
-                &ctx.log,
-            );
-            hash.map(|h| (fi.len, h))
-        })
-        .collect();
+    let (tx, rx) = channel();
+    let ctx = &*ctx; // drop mutability to allow sharing
 
-    // Group by length and hash
-    let mut groups = GroupMap::new(|(path, len, hash)| ((len, hash), path));
-    for (fi, len_and_hash) in files.into_iter().zip(hashes) {
-        if let Some((file_len, file_hash)) = len_and_hash {
-            groups.add((fi.path, file_len, file_hash))
+    // Compute prefix hashes in parallel:
+    let groups = rayon::scope(move |s| {
+        s.spawn(move |_| {
+            files
+                .into_par_iter()
+                .map(|fi| {
+                    progress.tick();
+                    let buf_len = ctx.devices.get_by_path(&fi.path).buf_len();
+                    let caching = if fi.len <= prefix_len {
+                        Caching::Default
+                    } else {
+                        Caching::Random
+                    };
+                    let hash = file_hash_or_log_err(
+                        &fi.path,
+                        FilePos(0),
+                        prefix_len,
+                        buf_len,
+                        caching,
+                        |_| {},
+                        &ctx.log,
+                    );
+                    hash.map(|h| (fi, h))
+                })
+                .for_each_with(tx, |tx, file_with_hash| tx.send(file_with_hash).unwrap());
+        });
+
+        let mut groups = GroupMap::new(|(path, len, hash)| ((len, hash), path));
+        while let Ok(Some((fi, hash))) = rx.recv() {
+            groups.add((fi.path, fi.len, hash));
         }
-    }
+        groups
+    });
+
     let groups: Vec<_> = groups
         .into_iter()
         .filter(|(_, paths)| paths.len() > rf_over)
