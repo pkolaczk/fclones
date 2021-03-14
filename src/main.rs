@@ -264,6 +264,7 @@ fn prefix_len(partitions: &DiskDevices, files: &[FileInfo]) -> FileLen {
         .unwrap_or_else(|| partitions.get_default().max_prefix_len())
 }
 
+/// Groups files by a hash of their first few thousand bytes.
 fn group_by_prefix(ctx: &mut AppCtx, groups: Vec<FileGroup<FileInfo>>) -> Vec<FileGroup<Path>> {
     let remaining_files = groups.iter().filter(|g| g.files.len() > 1).total_count();
     let progress = ctx
