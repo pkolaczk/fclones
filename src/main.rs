@@ -410,7 +410,7 @@ fn group_by_contents(ctx: &mut AppCtx, groups: Vec<FileGroup<Path>>) -> Vec<File
     let thread_pools = ctx.devices.thread_pools();
     let ctx = &*ctx; // drop mutability to allow sharing
 
-    multi_scope(&thread_pools, move |scopes| {
+    let groups= multi_scope(&thread_pools, move |scopes| {
         for group in groups.into_iter() {
             let needs_processing = needs_processing(&group);
             for path in group.files.into_iter() {
@@ -439,12 +439,14 @@ fn group_by_contents(ctx: &mut AppCtx, groups: Vec<FileGroup<Path>>) -> Vec<File
                 }
             }
         }
+        drop(tx);
+        let mut groups = GroupMap::new(|(path, len, hash)| ((len, hash), path));
+        for (path, len, hash) in rx.into_iter() {
+            groups.add((path, len, hash));
+        }
+        groups
     });
 
-    let mut groups = GroupMap::new(|(path, len, hash)| ((len, hash), path));
-    for (path, len, hash) in rx.into_iter() {
-        groups.add((path, len, hash));
-    }
 
     let groups: Vec<_> = groups
         .into_iter()
