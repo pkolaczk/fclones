@@ -336,6 +336,7 @@ dependencies = [
  "chrono",
  "clap",
  "console 0.11.3",
+ "crossbeam-utils",
  "csv",
  "dashmap",
  "dunce",
