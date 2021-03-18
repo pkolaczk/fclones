@@ -11,6 +11,7 @@ use std::sync::mpsc::channel;
 use std::sync::Arc;
 
 use console::{style, Term};
+use crossbeam_utils::thread;
 use indoc::indoc;
 use itertools::Itertools;
 use rayon::prelude::*;
@@ -285,7 +286,7 @@ fn group_by_prefix(ctx: &mut AppCtx, groups: Vec<FileGroup<FileInfo>>) -> Vec<Fi
     let ctx = &*ctx; // drop mutability to allow sharing
 
     // Compute prefix hashes in parallel:
-    let groups = rayon::scope(move |s| {
+    let groups = thread::scope(move |s| {
         s.spawn(move |_| {
             files
                 .into_par_iter()
@@ -316,7 +317,8 @@ fn group_by_prefix(ctx: &mut AppCtx, groups: Vec<FileGroup<FileInfo>>) -> Vec<Fi
             groups.add((fi.path, fi.len, hash));
         }
         groups
-    });
+    })
+    .unwrap();
 
     let groups: Vec<_> = groups
         .into_iter()
@@ -411,43 +413,46 @@ fn group_by_contents(ctx: &mut AppCtx, groups: Vec<FileGroup<Path>>) -> Vec<File
     let thread_pools = ctx.devices.thread_pools();
     let ctx = &*ctx; // drop mutability to allow sharing
 
-    let groups= multi_scope(&thread_pools, move |scopes| {
-        for group in groups.into_iter() {
-            let needs_processing = needs_processing(&group);
-            for path in group.files.into_iter() {
-                let tx = tx.clone();
-                let scope = scopes[ctx.devices.get_by_path(&path).index];
-                let len = group.file_len;
-                let buf_len = ctx.devices.get_by_path(&path).buf_len();
-                let hash = group.hash;
-                if needs_processing {
-                    scope.spawn(move |_| {
-                        let hash = file_hash_or_log_err(
-                            &path,
-                            FilePos(0),
-                            len,
-                            buf_len,
-                            Caching::Sequential,
-                            |delta| progress.inc(delta),
-                            &ctx.log,
-                        );
-                        if let Some(hash) = hash {
-                            tx.send((path, len, hash)).unwrap()
+    thread::scope(move |s| {
+        s.spawn(move |_| {
+            multi_scope(&thread_pools, move |scopes| {
+                for group in groups.into_iter() {
+                    let needs_processing = needs_processing(&group);
+                    for path in group.files.into_iter() {
+                        let tx = tx.clone();
+                        let scope = scopes[ctx.devices.get_by_path(&path).index];
+                        let len = group.file_len;
+                        let buf_len = ctx.devices.get_by_path(&path).buf_len();
+                        let hash = group.hash;
+                        if needs_processing {
+                            scope.spawn(move |_| {
+                                let hash = file_hash_or_log_err(
+                                    &path,
+                                    FilePos(0),
+                                    len,
+                                    buf_len,
+                                    Caching::Sequential,
+                                    |delta| progress.inc(delta),
+                                    &ctx.log,
+                                );
+                                if let Some(hash) = hash {
+                                    tx.send((path, len, hash)).unwrap()
+                                }
+                            });
+                        } else {
+                            tx.send((path, len, hash)).unwrap();
                         }
-                    });
-                } else {
-                    tx.send((path, len, hash)).unwrap();
+                    }
                 }
-            }
-        }
-        drop(tx);
-        let mut groups = GroupMap::new(|(path, len, hash)| ((len, hash), path));
-        for (path, len, hash) in rx.into_iter() {
-            groups.add((path, len, hash));
-        }
-        groups
-    });
+                drop(tx);
+            });
+        });
+    }).unwrap();
 
+    let mut groups = GroupMap::new(|(path, len, hash)| ((len, hash), path));
+    for (path, len, hash) in rx.into_iter() {
+        groups.add((path, len, hash));
+    }
 
     let groups: Vec<_> = groups
         .into_iter()
