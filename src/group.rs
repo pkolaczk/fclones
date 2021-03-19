@@ -10,8 +10,9 @@ use rayon::prelude::ParallelSliceMut;
 use serde::*;
 use smallvec::SmallVec;
 
-use crate::device::DiskDevices;
+use crate::device::{DiskDevices, DiskDevice};
 use crate::files::{AsPath, FileHash, FileInfo, FileLen};
+use rayon::ThreadPool;
 
 /// Groups items by key.
 /// After all items have been added, this structure can be transformed into
@@ -201,7 +202,7 @@ where
 /// Helper struct to preserve the original file hash and keep it together with file information
 /// Sometimes the old hash must be taken into account, e.g. when combining the prefix hash with
 /// the suffix hash.
-struct HashedFileInfo {
+pub struct HashedFileInfo {
     file_hash: FileHash,
     file_info: FileInfo,
 }
@@ -228,43 +229,90 @@ fn partition_by_devices(
     result
 }
 
-/// Iterates over grouped files
-pub fn flat_iter(files: &Vec<FileGroup<FileInfo>>) -> impl ParallelIterator<Item = &FileInfo> {
+/// Iterates over grouped files, in parallel
+pub fn flat_iter(files: &[FileGroup<FileInfo>]) -> impl ParallelIterator<Item = &FileInfo> {
     files.par_iter().flat_map(|g| &g.files)
 }
 
-pub fn rehash<H>(
+/// Groups files by length and hash computed by given `hash_fn`.
+/// Runs in parallel on dedicated thread pools as given by `thead_pool_fn`.
+/// Files on different devices are hashed separately from each other.
+/// File hashes within a single device are computed in the order given by
+/// their `location` field to minimize seek latency.
+///
+/// Caveats: the original grouping is lost. It is possible for two files that
+/// were in the different groups to end up in the same group if they have the same length
+/// and they hash to the same value. If you don't want this, you need to combine the old
+/// hash with the new hash in the provided `hash_fn`.
+pub fn rehash<H, T>(
     files: Vec<FileGroup<FileInfo>>,
     devices: &DiskDevices,
-    hash: H,
+    thread_pool_fn: T,
+    hash_fn: H,
+    min_group_size: usize
 ) -> Vec<FileGroup<FileInfo>>
 where
-    H: Fn(FileHash, &FileInfo) -> Option<FileHash> + Sync + Send,
+    H: Fn(&HashedFileInfo) -> Option<FileHash> + Sync + Send,
+    T: Fn(&DiskDevice) -> &ThreadPool + Sync + Send
 {
+    // to allow sharing functions between threads, take their references
+    let hash_fn = &hash_fn;
+    let thread_pool_fn = &thread_pool_fn;
+
     let files = partition_by_devices(files, &devices);
+
+    // Sender/Receiver pair used to
     let (tx, rx): (Sender<HashedFileInfo>, Receiver<HashedFileInfo>) = channel();
-    let groups = thread::scope(move |s| {
+
+    // target map that will receive the hashed files and group them by hashes
+    let mut groups =
+        GroupMap::new(|f: HashedFileInfo| ((f.file_info.len, f.file_hash), f.file_info));
+    let groups_ref = &mut groups;
+
+    // Scope needed so threads can access shared stuff like groups or shared functions
+    // The threads we launch are guaranteed to not live longer than this scope
+    thread::scope(move |s| {
+        // Process all files in background
         for (mut files, device) in files.into_iter().zip(devices.iter()) {
             let tx = tx.clone();
+
+            // Launch a separate thread for each device, so we can process
+            // files on each device independently
             s.spawn(move |_| {
                 // Sort files by their physical location, to reduce disk seek latency
                 files.par_sort_unstable_by_key(|f| f.file_info.location);
+
+                // Run hashing on the thread-pool dedicated to the device
+                let thread_pool = thread_pool_fn(&device);
+                thread_pool.install(|| {
+                    files
+                        .into_par_iter()
+                        .filter_map(|mut f| {
+                            hash_fn(&f).map(|h| {
+                                f.file_hash = h;
+                                f
+                            })
+                        })
+                        .for_each_with(tx, |tx, hashed_file| tx.send(hashed_file).unwrap());
+                });
             });
         }
+        // Drop the original tx, so all tx are closed when the threads finish and
+        // the next while loop will eventually exit
         drop(tx);
 
-        // Collect the results from all threads and group them:
-        let mut groups =
-            GroupMap::new(|f: HashedFileInfo| ((f.file_info.len, f.file_hash), f.file_info));
+        // Collect the results from all threads and group them.
+        // Note that this will happen as soon as data are available
         while let Ok(hashed_file) = rx.recv() {
-            groups.add(hashed_file);
+            groups_ref.add(hashed_file);
         }
-        groups
     })
     .unwrap();
 
+    // Convert the hashmap into vector, leaving only large-enough groups:
     groups
         .into_iter()
+        .filter(|(_, files)| files.len() >= min_group_size)
         .map(|((len, hash), files)| FileGroup {
             file_len: len,
             file_hash: hash,
