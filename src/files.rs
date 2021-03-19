@@ -187,6 +187,7 @@ pub trait IntoPath {
     fn into_path(self) -> Path;
 }
 
+#[derive(Clone, Debug)]
 pub struct FileInfo {
     pub path: Path,
     pub len: FileLen,

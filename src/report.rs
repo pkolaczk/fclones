@@ -39,7 +39,7 @@ impl<W: Write> Reporter<W> {
     pub fn write_as_text(&mut self, results: &[FileGroup<Path>]) -> io::Result<()> {
         for g in results {
             let len = style(format!("{:8}", g.file_len)).yellow().bold();
-            let hash = style(format!("{}", g.hash)).blue().bold().bright();
+            let hash = style(format!("{}", g.file_hash)).blue().bold().bright();
             writeln!(
                 self.out,
                 "{} {}:",
@@ -87,7 +87,7 @@ impl<W: Write> Reporter<W> {
         for g in results {
             let mut record = csv::StringRecord::new();
             record.push_field(g.file_len.0.to_string().as_str());
-            record.push_field(g.hash.to_string().as_str());
+            record.push_field(g.file_hash.to_string().as_str());
             record.push_field(g.files.len().to_string().as_str());
             for f in g.files.iter() {
                 record.push_field(f.to_string_lossy().as_ref());

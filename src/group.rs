@@ -1,14 +1,17 @@
 use std::collections::HashMap;
 use std::hash::Hash;
 use std::marker::PhantomData;
+use std::sync::mpsc::{channel, Receiver, Sender};
 
+use crossbeam_utils::thread;
 use itertools::Itertools;
-use rayon::iter::{IntoParallelIterator, ParallelIterator};
+use rayon::iter::{IntoParallelIterator, IntoParallelRefIterator, ParallelIterator};
+use rayon::prelude::ParallelSliceMut;
 use serde::*;
-
-use crate::files::{FileHash, FileLen};
 use smallvec::SmallVec;
-use std::cmp::{max, min};
+
+use crate::device::DiskDevices;
+use crate::files::{AsPath, FileHash, FileInfo, FileLen};
 
 /// Groups items by key.
 /// After all items have been added, this structure can be transformed into
@@ -103,11 +106,9 @@ where
 pub struct FileGroup<F> {
     /// Length of each file
     pub file_len: FileLen,
-    /// Min length of the prefix such that all files in the group have the same prefix
-    pub prefix_len: FileLen,
     /// Hash of a part or the whole of the file
-    pub hash: FileHash,
-
+    pub file_hash: FileHash,
+    /// Group of files with the same length and hash
     pub files: Vec<F>,
 }
 
@@ -119,14 +120,12 @@ where
     /// If `cond` is false, then `self` is returned as the only item.
     /// Files hashing to `None` are removed from the output.
     /// An empty vector may be returned if all files hash to `None`.
-    pub fn split<H>(self, cond: bool, prefix_len: FileLen, hash: H) -> Vec<FileGroup<F>>
+    pub fn split<H>(self, cond: bool, hash: H) -> Vec<FileGroup<F>>
     where
         H: Fn(&F) -> Option<FileHash> + Sync + Send,
     {
         if cond {
             let file_len = self.file_len;
-            let prefix_len = min(self.file_len, max(self.prefix_len, prefix_len));
-
             let mut hashed = self
                 .files
                 .into_par_iter()
@@ -140,8 +139,7 @@ where
                 .into_iter()
                 .map(|(hash, group)| FileGroup {
                     file_len,
-                    prefix_len,
-                    hash,
+                    file_hash: hash,
                     files: group.map(|(_hash, path)| path).collect(),
                 })
                 .collect()
@@ -198,4 +196,79 @@ where
             .map(|g| g.file_len * g.files.len().saturating_sub(rf_over) as u64)
             .sum()
     }
+}
+
+/// Helper struct to preserve the original file hash and keep it together with file information
+/// Sometimes the old hash must be taken into account, e.g. when combining the prefix hash with
+/// the suffix hash.
+struct HashedFileInfo {
+    file_hash: FileHash,
+    file_info: FileInfo,
+}
+
+/// Partitions files into separate vectors, where each vector holds files persisted
+/// on the same disk device. The vectors are returned in the same order as devices.
+fn partition_by_devices(
+    files: Vec<FileGroup<FileInfo>>,
+    devices: &DiskDevices,
+) -> Vec<Vec<HashedFileInfo>> {
+    let mut result: Vec<Vec<HashedFileInfo>> = Vec::with_capacity(devices.len());
+    for _ in 0..devices.len() {
+        result.push(Vec::new());
+    }
+    for g in files {
+        for f in g.files {
+            let device = devices.get_by_path(&f.path());
+            result[device.index].push(HashedFileInfo {
+                file_hash: g.file_hash,
+                file_info: f,
+            });
+        }
+    }
+    result
+}
+
+/// Iterates over grouped files
+pub fn flat_iter(files: &Vec<FileGroup<FileInfo>>) -> impl ParallelIterator<Item = &FileInfo> {
+    files.par_iter().flat_map(|g| &g.files)
+}
+
+pub fn rehash<H>(
+    files: Vec<FileGroup<FileInfo>>,
+    devices: &DiskDevices,
+    hash: H,
+) -> Vec<FileGroup<FileInfo>>
+where
+    H: Fn(FileHash, &FileInfo) -> Option<FileHash> + Sync + Send,
+{
+    let files = partition_by_devices(files, &devices);
+    let (tx, rx): (Sender<HashedFileInfo>, Receiver<HashedFileInfo>) = channel();
+    let groups = thread::scope(move |s| {
+        for (mut files, device) in files.into_iter().zip(devices.iter()) {
+            let tx = tx.clone();
+            s.spawn(move |_| {
+                // Sort files by their physical location, to reduce disk seek latency
+                files.par_sort_unstable_by_key(|f| f.file_info.location);
+            });
+        }
+        drop(tx);
+
+        // Collect the results from all threads and group them:
+        let mut groups =
+            GroupMap::new(|f: HashedFileInfo| ((f.file_info.len, f.file_hash), f.file_info));
+        while let Ok(hashed_file) = rx.recv() {
+            groups.add(hashed_file);
+        }
+        groups
+    })
+    .unwrap();
+
+    groups
+        .into_iter()
+        .map(|((len, hash), files)| FileGroup {
+            file_len: len,
+            file_hash: hash,
+            files: files.to_vec(),
+        })
+        .collect()
 }
