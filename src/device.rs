@@ -8,6 +8,7 @@ use crate::files::FileLen;
 use crate::path::Path;
 use rayon::{ThreadPool, ThreadPoolBuilder};
 use std::collections::HashMap;
+use std::ops::Index;
 
 pub struct DiskDevice {
     pub index: usize,
@@ -194,6 +195,21 @@ impl DiskDevices {
         &self.devices[0]
     }
 
+    /// Returns the number of devices
+    pub fn len(&self) -> usize {
+        self.devices.len()
+    }
+
+    /// Returns true if there are no devices
+    pub fn is_empty(&self) -> bool {
+        self.devices.is_empty()
+    }
+
+    /// Returns an iterator over devices
+    pub fn iter(&self) -> impl Iterator<Item = &DiskDevice> {
+        self.devices.iter()
+    }
+
     /// Returns references to the thread pools associated with devices.
     /// The order is the same as device order, so thread pools can be selected by
     /// the device index.
@@ -209,5 +225,13 @@ impl Default for DiskDevices {
         pool_sizes.insert(OsString::from("hdd"), 1);
         pool_sizes.insert(OsString::from("default"), 1);
         Self::new(&mut pool_sizes)
+    }
+}
+
+impl Index<usize> for DiskDevices {
+    type Output = DiskDevice;
+
+    fn index(&self, index: usize) -> &Self::Output {
+        &self.devices[index]
     }
 }

@@ -117,8 +117,7 @@ fn group_by_size(ctx: &mut AppCtx, files: Vec<Vec<FileInfo>>) -> Vec<FileGroup<F
         .filter(|(_, files)| files.len() > rf_over)
         .map(|(l, files)| FileGroup {
             file_len: l,
-            hash: FileHash(0),
-            prefix_len: FileLen(0),
+            file_hash: FileHash(0),
             files: files.into_vec(),
         })
         .collect();
@@ -237,8 +236,7 @@ fn group_transformed(
         .filter(|(_, files)| files.len() > rf_over)
         .map(|((len, hash), files)| FileGroup {
             file_len: len,
-            hash,
-            prefix_len: len,
+            file_hash: hash,
             files: files.into_vec(),
         })
         .collect();
@@ -257,7 +255,10 @@ fn group_transformed(
 /// Returns the desired prefix length for a group of files.
 /// The return value depends on the capabilities of the devices the files are stored on.
 /// Higher values are desired if any of the files resides on an HDD.
-fn prefix_len(partitions: &DiskDevices, files: &[FileInfo]) -> FileLen {
+fn prefix_len<'a>(
+    partitions: &DiskDevices,
+    files: impl ParallelIterator<Item = &'a FileInfo>,
+) -> FileLen {
     files
         .into_par_iter()
         .map(|f| partitions.get_by_path(&f.path).max_prefix_len())
@@ -266,7 +267,11 @@ fn prefix_len(partitions: &DiskDevices, files: &[FileInfo]) -> FileLen {
 }
 
 /// Groups files by a hash of their first few thousand bytes.
-fn group_by_prefix(ctx: &mut AppCtx, groups: Vec<FileGroup<FileInfo>>) -> Vec<FileGroup<Path>> {
+fn group_by_prefix(
+    ctx: &mut AppCtx,
+    prefix_len: FileLen,
+    groups: Vec<FileGroup<FileInfo>>,
+) -> Vec<FileGroup<Path>> {
     let remaining_files = groups.iter().filter(|g| g.files.len() > 1).total_count();
     let progress = ctx
         .log
@@ -280,7 +285,6 @@ fn group_by_prefix(ctx: &mut AppCtx, groups: Vec<FileGroup<FileInfo>>) -> Vec<Fi
 
     let rf_over = ctx.config.rf_over();
     let rf_under = ctx.config.rf_under();
-    let prefix_len = prefix_len(&ctx.devices, &files);
 
     let (tx, rx) = channel();
     let ctx = &*ctx; // drop mutability to allow sharing
@@ -325,8 +329,7 @@ fn group_by_prefix(ctx: &mut AppCtx, groups: Vec<FileGroup<FileInfo>>) -> Vec<Fi
         .filter(|(_, paths)| paths.len() > rf_over)
         .map(|((len, hash), paths)| FileGroup {
             file_len: len,
-            prefix_len: len,
-            hash,
+            file_hash: hash,
             files: paths.to_vec(),
         })
         .collect();
@@ -370,11 +373,10 @@ fn group_by_suffix(ctx: &mut AppCtx, groups: Vec<FileGroup<Path>>) -> Vec<FileGr
         .into_par_iter()
         .flat_map(|g| {
             let file_len = g.file_len;
-            let prefix_len = g.prefix_len;
             let suffix_len = suffix_len(&ctx.devices, &g);
             let needs_processing = needs_processing(&ctx.devices, &g);
 
-            g.split(needs_processing, prefix_len, |path| {
+            g.split(needs_processing, |path| {
                 progress.tick();
                 let buf_len = ctx.devices.get_by_path(&path).buf_len();
                 file_hash_or_log_err(
@@ -400,8 +402,12 @@ fn group_by_suffix(ctx: &mut AppCtx, groups: Vec<FileGroup<Path>>) -> Vec<FileGr
     groups
 }
 
-fn group_by_contents(ctx: &mut AppCtx, groups: Vec<FileGroup<Path>>) -> Vec<FileGroup<Path>> {
-    let needs_processing = |g: &FileGroup<Path>| g.file_len >= g.prefix_len && g.files.len() > 1;
+fn group_by_contents(
+    ctx: &mut AppCtx,
+    min_file_len: FileLen,
+    groups: Vec<FileGroup<Path>>,
+) -> Vec<FileGroup<Path>> {
+    let needs_processing = |g: &FileGroup<Path>| g.file_len >= min_file_len && g.files.len() > 1;
     let bytes_to_scan = groups.iter().filter(|&g| needs_processing(g)).total_size();
     let progress = &ctx
         .log
@@ -423,7 +429,7 @@ fn group_by_contents(ctx: &mut AppCtx, groups: Vec<FileGroup<Path>>) -> Vec<File
                         let scope = scopes[ctx.devices.get_by_path(&path).index];
                         let len = group.file_len;
                         let buf_len = ctx.devices.get_by_path(&path).buf_len();
-                        let hash = group.hash;
+                        let hash = group.file_hash;
                         if needs_processing {
                             scope.spawn(move |_| {
                                 let hash = file_hash_or_log_err(
@@ -447,7 +453,8 @@ fn group_by_contents(ctx: &mut AppCtx, groups: Vec<FileGroup<Path>>) -> Vec<File
                 drop(tx);
             });
         });
-    }).unwrap();
+    })
+    .unwrap();
 
     let mut groups = GroupMap::new(|(path, len, hash)| ((len, hash), path));
     for (path, len, hash) in rx.into_iter() {
@@ -459,8 +466,7 @@ fn group_by_contents(ctx: &mut AppCtx, groups: Vec<FileGroup<Path>>) -> Vec<File
         .filter(|(_, paths)| paths.len() > rf_over)
         .map(|((len, hash), paths)| FileGroup {
             file_len: len,
-            prefix_len: len,
-            hash,
+            file_hash: hash,
             files: paths.to_vec(),
         })
         .collect();
@@ -622,13 +628,14 @@ fn process(mut ctx: &mut AppCtx) -> Vec<FileGroup<Path>> {
     let mut groups = match ctx.config.take_transform(&ctx.log) {
         Some(transform) => group_transformed(ctx, &transform, size_groups_pruned),
         None => {
-            let prefix_groups = group_by_prefix(&mut ctx, size_groups_pruned);
+            let prefix_len = prefix_len(&ctx.devices, flat_iter(&size_groups_pruned));
+            let prefix_groups = group_by_prefix(&mut ctx, prefix_len, size_groups_pruned);
             let suffix_groups = group_by_suffix(&mut ctx, prefix_groups);
-            group_by_contents(&mut ctx, suffix_groups)
+            group_by_contents(&mut ctx, prefix_len, suffix_groups)
         }
     };
     groups.retain(|g| g.files.len() < ctx.config.rf_under());
-    groups.par_sort_by_key(|g| Reverse((g.file_len, g.hash)));
+    groups.par_sort_by_key(|g| Reverse((g.file_len, g.file_hash)));
     groups.par_iter_mut().for_each(|g| g.files.sort());
     groups
 }
