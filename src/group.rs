@@ -10,9 +10,8 @@ use rayon::prelude::ParallelSliceMut;
 use serde::*;
 use smallvec::SmallVec;
 
-use crate::device::{DiskDevices, DiskDevice};
+use crate::device::DiskDevices;
 use crate::files::{AsPath, FileHash, FileInfo, FileLen};
-use rayon::ThreadPool;
 
 /// Groups items by key.
 /// After all items have been added, this structure can be transformed into
@@ -202,7 +201,7 @@ where
 /// Helper struct to preserve the original file hash and keep it together with file information
 /// Sometimes the old hash must be taken into account, e.g. when combining the prefix hash with
 /// the suffix hash.
-pub struct HashedFileInfo {
+struct HashedFileInfo {
     file_hash: FileHash,
     file_info: FileInfo,
 }
@@ -235,7 +234,7 @@ pub fn flat_iter(files: &[FileGroup<FileInfo>]) -> impl ParallelIterator<Item = 
 }
 
 /// Groups files by length and hash computed by given `hash_fn`.
-/// Runs in parallel on dedicated thread pools as given by `thead_pool_fn`.
+/// Runs in parallel on dedicated thread pools.
 /// Files on different devices are hashed separately from each other.
 /// File hashes within a single device are computed in the order given by
 /// their `location` field to minimize seek latency.
@@ -244,30 +243,33 @@ pub fn flat_iter(files: &[FileGroup<FileInfo>]) -> impl ParallelIterator<Item = 
 /// were in the different groups to end up in the same group if they have the same length
 /// and they hash to the same value. If you don't want this, you need to combine the old
 /// hash with the new hash in the provided `hash_fn`.
-pub fn rehash<H, T>(
-    files: Vec<FileGroup<FileInfo>>,
+pub fn rehash<H>(
+    groups: Vec<FileGroup<FileInfo>>,
+    min_group_size: usize,
     devices: &DiskDevices,
-    thread_pool_fn: T,
     hash_fn: H,
-    min_group_size: usize
 ) -> Vec<FileGroup<FileInfo>>
 where
-    H: Fn(&HashedFileInfo) -> Option<FileHash> + Sync + Send,
-    T: Fn(&DiskDevice) -> &ThreadPool + Sync + Send
+    H: Fn((&mut FileInfo, FileHash)) -> Option<FileHash> + Sync + Send,
 {
-    // to allow sharing functions between threads, take their references
+    // Allow sharing the hash function between threads:
     let hash_fn = &hash_fn;
-    let thread_pool_fn = &thread_pool_fn;
-
-    let files = partition_by_devices(files, &devices);
-
-    // Sender/Receiver pair used to
     let (tx, rx): (Sender<HashedFileInfo>, Receiver<HashedFileInfo>) = channel();
 
-    // target map that will receive the hashed files and group them by hashes
-    let mut groups =
-        GroupMap::new(|f: HashedFileInfo| ((f.file_info.len, f.file_hash), f.file_info));
-    let groups_ref = &mut groups;
+    // There is no point in processing groups containing a single file.
+    // Normally when searching for duplicates such groups are filtered out automatically after
+    // each stage, however they are possible when searching for unique files.
+    let (groups_to_process, groups_to_pass): (Vec<_>, Vec<_>) =
+        groups.into_iter().partition(|g| g.files.len() > 1);
+    let number_of_groups = groups_to_process.len();
+
+    // This way we can split processing to separate thread-pools, one per device:
+    let files = partition_by_devices(groups_to_process, &devices);
+
+    let mut hash_map = GroupMap::with_capacity(number_of_groups, |f: HashedFileInfo| {
+        ((f.file_info.len, f.file_hash), f.file_info)
+    });
+    let hash_map_ref = &mut hash_map;
 
     // Scope needed so threads can access shared stuff like groups or shared functions
     // The threads we launch are guaranteed to not live longer than this scope
@@ -283,12 +285,11 @@ where
                 files.par_sort_unstable_by_key(|f| f.file_info.location);
 
                 // Run hashing on the thread-pool dedicated to the device
-                let thread_pool = thread_pool_fn(&device);
-                thread_pool.install(|| {
+                device.thread_pool.install(|| {
                     files
                         .into_par_iter()
                         .filter_map(|mut f| {
-                            hash_fn(&f).map(|h| {
+                            hash_fn((&mut f.file_info, f.file_hash)).map(|h| {
                                 f.file_hash = h;
                                 f
                             })
@@ -304,13 +305,13 @@ where
         // Collect the results from all threads and group them.
         // Note that this will happen as soon as data are available
         while let Ok(hashed_file) = rx.recv() {
-            groups_ref.add(hashed_file);
+            hash_map_ref.add(hashed_file);
         }
     })
     .unwrap();
 
     // Convert the hashmap into vector, leaving only large-enough groups:
-    groups
+    hash_map
         .into_iter()
         .filter(|(_, files)| files.len() >= min_group_size)
         .map(|((len, hash), files)| FileGroup {
@@ -318,5 +319,6 @@ where
             file_hash: hash,
             files: files.to_vec(),
         })
+        .chain(groups_to_pass.into_iter())
         .collect()
 }

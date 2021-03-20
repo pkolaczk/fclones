@@ -7,7 +7,7 @@ use std::hash::{Hash, Hasher};
 use std::io;
 use std::io::{ErrorKind, Read, Seek, SeekFrom};
 use std::iter::Sum;
-use std::ops::{Add, Mul, Sub};
+use std::ops::{Add, BitXor, Mul, Sub};
 #[cfg(unix)]
 use std::os::unix::fs::OpenOptionsExt;
 #[cfg(unix)]
@@ -363,6 +363,14 @@ impl<T> AsFileHash for (T, FileHash) {
 impl Display for FileHash {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         f.pad(format!("{:032x}", self.0).as_str())
+    }
+}
+
+impl BitXor for FileHash {
+    type Output = Self;
+
+    fn bitxor(self, rhs: Self) -> Self::Output {
+        FileHash(rhs.0 ^ self.0)
     }
 }
 
