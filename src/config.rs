@@ -8,6 +8,7 @@ use clap::arg_enum;
 use clap::AppSettings;
 use structopt::StructOpt;
 
+use crate::device::Parallelism;
 use crate::files::FileLen;
 use crate::log::Log;
 use crate::path::Path;
@@ -28,7 +29,8 @@ impl Default for OutputFormat {
     }
 }
 
-fn parse_thread_count_option(str: &str) -> Result<(OsString, usize), String> {
+/// Parses string with format: `<device>:<seq parallelism>[,<rand parallelism>]`
+fn parse_thread_count_option(str: &str) -> Result<(OsString, Parallelism), String> {
     let (key, value) = if str.contains(':') {
         let index = str.rfind(':').unwrap();
         (&str[0..index], &str[(index + 1)..])
@@ -37,10 +39,19 @@ fn parse_thread_count_option(str: &str) -> Result<(OsString, usize), String> {
     };
     let key = OsString::from(key);
     let value = value.to_string();
-    match value.parse() {
-        Ok(v) => Ok((key, v)),
-        Err(e) => Err(format!("{}: {}", e, value)),
-    }
+    let mut pool_sizes = value
+        .split(',')
+        .map(|v| v.parse::<usize>().map_err(|e| format!("{}: {}", e, v)));
+
+    let random = match pool_sizes.next() {
+        Some(v) => v?,
+        None => return Err(String::from("Missing pool size specification")),
+    };
+    let sequential = match pool_sizes.next() {
+        Some(v) => v?,
+        None => random,
+    };
+    Ok((key, Parallelism { sequential, random }))
 }
 
 /// Finds duplicate, unique, under- or over-replicated files
@@ -172,7 +183,7 @@ pub struct Config {
     /// and thread pools dedicated to SSD devices.
     /// This parameter can be used multiple times to configure multiple thread pools.
     #[structopt(short, long, value_name = "[name:]value", parse(try_from_str = parse_thread_count_option))]
-    pub threads: Vec<(OsString, usize)>,
+    pub threads: Vec<(OsString, Parallelism)>,
 
     /// Suppresses progress reporting
     #[structopt(short = "Q", long)]
@@ -291,10 +302,8 @@ impl Config {
         }
     }
 
-    pub fn thread_pool_sizes(&self) -> HashMap<OsString, usize> {
+    pub fn thread_pool_sizes(&self) -> HashMap<OsString, Parallelism> {
         let mut map = HashMap::new();
-        map.insert(OsString::from("hdd"), 1);
-        map.insert(OsString::from("unknown"), 1);
         for (k, v) in self.threads.iter() {
             map.insert(k.clone(), *v);
         }
@@ -306,7 +315,11 @@ impl Config {
     /// The only allowed key name is: "default".
     /// This method should be called after thread pools have been configured and their entries
     /// removed from the map.
-    pub fn check_thread_pools(&self, log: &Log, thread_pool_sizes: &mut HashMap<OsString, usize>) {
+    pub fn check_thread_pools(
+        &self,
+        log: &Log,
+        thread_pool_sizes: &mut HashMap<OsString, Parallelism>,
+    ) {
         thread_pool_sizes.remove(OsStr::new("default"));
         if !thread_pool_sizes.is_empty() {
             for (name, _) in thread_pool_sizes.iter() {

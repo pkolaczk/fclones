@@ -1,42 +1,86 @@
 use core::cmp;
+use std::collections::HashMap;
 use std::ffi::{OsStr, OsString};
+use std::ops::Index;
 
 use itertools::Itertools;
+use lazy_init::Lazy;
+use rayon::{ThreadPool, ThreadPoolBuilder};
 use sysinfo::{DiskExt, DiskType, System, SystemExt};
 
 use crate::files::FileLen;
 use crate::path::Path;
-use rayon::{ThreadPool, ThreadPoolBuilder};
-use std::collections::HashMap;
-use std::ops::Index;
+
+#[derive(Clone, Copy, Debug)]
+pub struct Parallelism {
+    pub sequential: usize,
+    pub random: usize,
+}
+
+impl Parallelism {
+    pub fn default_for(disk_type: DiskType) -> Parallelism {
+        match disk_type {
+            DiskType::SSD => Parallelism {
+                sequential: 0,
+                random: 0,
+            }, // == number of cores
+            DiskType::HDD => Parallelism {
+                sequential: 1,
+                random: 8,
+            },
+            DiskType::Removable => Parallelism {
+                sequential: 1,
+                random: 4,
+            },
+            DiskType::Unknown(_) => Parallelism {
+                sequential: 1,
+                random: 4,
+            },
+        }
+    }
+}
 
 pub struct DiskDevice {
     pub index: usize,
     pub name: OsString,
     pub disk_type: DiskType,
-    pub thread_pool: ThreadPool,
+    pub parallelism: Parallelism,
+    seq_thread_pool: Lazy<ThreadPool>,
+    rand_thread_pool: Lazy<ThreadPool>,
 }
 
 impl DiskDevice {
-    fn new(index: usize, name: OsString, disk_type: DiskType, parallelism: usize) -> DiskDevice {
-        let parallelism: usize = match parallelism {
-            0 => match disk_type {
-                DiskType::SSD => 0, // == number of cores
-                DiskType::HDD => 1,
-                DiskType::Removable => 1,
-                DiskType::Unknown(_) => 1,
-            },
-            p => p,
-        };
+    fn new(
+        index: usize,
+        name: OsString,
+        disk_type: DiskType,
+        parallelism: Parallelism,
+    ) -> DiskDevice {
         DiskDevice {
             index,
             name,
             disk_type,
-            thread_pool: ThreadPoolBuilder::default()
-                .num_threads(parallelism)
-                .build()
-                .unwrap(),
+            parallelism,
+            seq_thread_pool: Lazy::new(),
+            rand_thread_pool: Lazy::new(),
         }
+    }
+
+    fn build_thread_pool(num_threads: usize) -> ThreadPool {
+        ThreadPoolBuilder::default()
+            .num_threads(num_threads)
+            .build()
+            .unwrap()
+    }
+
+    pub fn seq_thread_pool(&self) -> &ThreadPool {
+        self.seq_thread_pool
+            .get_or_create(|| Self::build_thread_pool(self.parallelism.sequential))
+    }
+
+    pub fn rand_thread_pool(&self) -> &ThreadPool {
+        self.rand_thread_pool
+            .get_or_create(|| Self::build_thread_pool(self.parallelism.random))
     }
 
     pub fn buf_len(&self) -> usize {
@@ -95,8 +139,8 @@ impl DiskDevices {
     fn get_parallelism(
         name: &OsStr,
         disk_type: DiskType,
-        pool_sizes: &mut HashMap<OsString, usize>,
-    ) -> usize {
+        pool_sizes: &mut HashMap<OsString, Parallelism>,
+    ) -> Parallelism {
         let mut dev_key = OsString::new();
         dev_key.push("dev:");
         dev_key.push(name);
@@ -111,7 +155,9 @@ impl DiskDevices {
                 };
                 match p {
                     Some(p) => *p,
-                    None => *pool_sizes.get(OsStr::new("default")).unwrap_or(&0),
+                    None => *pool_sizes
+                        .get(OsStr::new("default"))
+                        .unwrap_or(&Parallelism::default_for(disk_type)),
                 }
             }
         }
@@ -123,7 +169,7 @@ impl DiskDevices {
         &mut self,
         name: OsString,
         disk_type: DiskType,
-        pool_sizes: &mut HashMap<OsString, usize>,
+        pool_sizes: &mut HashMap<OsString, Parallelism>,
     ) -> usize {
         if let Some((index, _)) = self.devices.iter().find_position(|d| d.name == name) {
             index
@@ -153,9 +199,9 @@ impl DiskDevices {
 
     /// Reads the list of partitions and disks from the system and builds the `DiskDevices`
     /// structure from that information.
-    pub fn new(pool_sizes: &mut HashMap<OsString, usize>) -> DiskDevices {
-        let mut sys = System::new_all();
-        sys.refresh_disks();
+    pub fn new(pool_sizes: &mut HashMap<OsString, Parallelism>) -> DiskDevices {
+        let mut sys = System::new();
+        sys.refresh_disks_list();
         let mut result = DiskDevices {
             devices: Vec::new(),
             mount_points: Vec::new(),
@@ -209,21 +255,11 @@ impl DiskDevices {
     pub fn iter(&self) -> impl Iterator<Item = &DiskDevice> {
         self.devices.iter()
     }
-
-    /// Returns references to the thread pools associated with devices.
-    /// The order is the same as device order, so thread pools can be selected by
-    /// the device index.
-    pub fn thread_pools(&self) -> Vec<&ThreadPool> {
-        self.devices.iter().map(|d| &d.thread_pool).collect()
-    }
 }
 
 impl Default for DiskDevices {
     fn default() -> Self {
         let mut pool_sizes = HashMap::new();
-        pool_sizes.insert(OsString::from("ssd"), 0);
-        pool_sizes.insert(OsString::from("hdd"), 1);
-        pool_sizes.insert(OsString::from("default"), 1);
         Self::new(&mut pool_sizes)
     }
 }

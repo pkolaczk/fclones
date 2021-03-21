@@ -21,6 +21,7 @@ use smallvec::alloc::fmt::Formatter;
 use smallvec::alloc::str::FromStr;
 use sysinfo::{System, SystemExt};
 
+use crate::device::DiskDevices;
 use crate::log::Log;
 use crate::path::Path;
 
@@ -191,8 +192,9 @@ pub trait IntoPath {
 pub struct FileInfo {
     pub path: Path,
     pub len: FileLen,
-    pub id_hash: u32,  // hash of file identifier, for hardlink processing
-    pub location: u32, // physical on-disk location of file data for access ordering optimisation
+    // physical on-disk location of file data for access ordering optimisation
+    // the highest 16 bits encode the device id
+    pub location: u64,
 }
 
 impl AsPath for FileInfo {
@@ -209,24 +211,18 @@ impl IntoPath for FileInfo {
 
 impl FileInfo {
     #[cfg(unix)]
-    fn new(path: Path) -> io::Result<FileInfo> {
+    fn new(path: Path, devices: &DiskDevices) -> io::Result<FileInfo> {
         use std::os::unix::fs::MetadataExt;
 
         match std::fs::metadata(&path.to_path_buf()) {
-            Ok(metadata) => Ok(FileInfo {
-                path,
-                len: FileLen(metadata.len()),
-                id_hash: FileId {
-                    inode: metadata.ino() as u128,
-                    device: metadata.dev(),
-                }
-                .get_hash(),
-                // the idea here is that files which have close inode ids are also
-                // colocated physically; it should hold well
-                // if a bunch of files was copied in one go
-                // TODO: query the system for real physical location
-                location: (metadata.ino() & 0xFFFFFFFF) as u32,
-            }),
+            Ok(metadata) => {
+                let device_index = devices.get_by_path(&path).index as u64;
+                Ok(FileInfo {
+                    path,
+                    len: FileLen(metadata.len()),
+                    location: device_index << 24 | metadata.ino() & 0xFFFFFFFFFFFF,
+                })
+            }
             Err(e) => Err(io::Error::new(
                 e.kind(),
                 format!("Failed to read metadata of {}: {}", path.display(), e),
@@ -235,31 +231,34 @@ impl FileInfo {
     }
 
     #[cfg(windows)]
-    fn new(path: Path) -> io::Result<FileInfo> {
+    fn new(path: Path, devices: &DiskDevices) -> io::Result<FileInfo> {
         let info = File::open(path.to_path_buf()).and_then(|f| winapi_util::file::information(&f));
         match info {
-            Ok(info) => Ok(FileInfo {
-                path,
-                len: FileLen(info.file_size()),
-                id_hash: FileId {
-                    inode: info.file_index() as u128,
-                    device: info.volume_serial_number() as u64,
-                }
-                .get_hash(),
-                location: (info.file_index() & 0xFFFFFFFF) as u32,
-            }),
+            Ok(info) => {
+                let device_index = devices.get_by_path(&path).index as u64;
+                Ok(FileInfo {
+                    path,
+                    len: FileLen(info.file_size()),
+                    location: device_index << 24 | info.file_index() & 0xFFFFFFFFFFFF,
+                })
+            }
             Err(e) => Err(io::Error::new(
                 e.kind(),
                 format!("Failed to read metadata of {}: {}", path.display(), e),
             )),
         }
     }
+
+    /// Returns the device index into the `DiskDevices` instance passed at creation
+    pub fn get_device_index(&self) -> usize {
+        (self.location >> 24) as usize
+    }
 }
 
 /// Returns file information for the given path.
 /// On failure, logs an error to stderr and returns `None`.
-pub fn file_info_or_log_err(file: Path, log: &Log) -> Option<FileInfo> {
-    match FileInfo::new(file) {
+pub fn file_info_or_log_err(file: Path, devices: &DiskDevices, log: &Log) -> Option<FileInfo> {
+    match FileInfo::new(file, devices) {
         Ok(info) => Some(info),
         Err(e) if e.kind() == ErrorKind::NotFound => None,
         Err(e) => {

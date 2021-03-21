@@ -343,6 +343,7 @@ dependencies = [
  "indicatif",
  "indoc",
  "itertools",
+ "lazy-init",
  "libc",
  "maplit",
  "metrohash",
@@ -464,6 +465,12 @@ name = "itoa"
 version = "0.4.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "dd25036021b0de88a0aff6b850051563c6516d0bf53f8638938edbb9de732736"
+
+[[package]]
+name = "lazy-init"
+version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "23517540be87a91d06324e6bf6286ba8214171123ee8862ae9a5e7d938d71815"
 
 [[package]]
 name = "lazy_static"
