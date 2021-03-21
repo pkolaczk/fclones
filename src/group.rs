@@ -9,10 +9,10 @@ use rayon::iter::{IntoParallelIterator, IntoParallelRefIterator, ParallelIterato
 use rayon::prelude::ParallelSliceMut;
 use serde::*;
 use smallvec::SmallVec;
+use sysinfo::DiskType;
 
 use crate::device::DiskDevices;
 use crate::files::{FileHash, FileInfo, FileLen};
-use sysinfo::DiskType;
 
 /// Groups items by key.
 /// After all items have been added, this structure can be transformed into

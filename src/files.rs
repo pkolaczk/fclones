@@ -209,6 +209,9 @@ impl IntoPath for FileInfo {
     }
 }
 
+const OFFSET_MASK: u64 = 0x0000FFFFFFFFFFFF;
+const DEVICE_MASK: u64 = 0xFFFF000000000000;
+
 impl FileInfo {
     #[cfg(unix)]
     fn new(path: Path, devices: &DiskDevices) -> io::Result<FileInfo> {
@@ -220,7 +223,7 @@ impl FileInfo {
                 Ok(FileInfo {
                     path,
                     len: FileLen(metadata.len()),
-                    location: device_index << 24 | metadata.ino() & 0xFFFFFFFFFFFF,
+                    location: device_index << 48 | metadata.ino() & OFFSET_MASK,
                 })
             }
             Err(e) => Err(io::Error::new(
@@ -251,7 +254,16 @@ impl FileInfo {
 
     /// Returns the device index into the `DiskDevices` instance passed at creation
     pub fn get_device_index(&self) -> usize {
-        (self.location >> 24) as usize
+        (self.location >> 48) as usize
+    }
+
+    #[cfg(target_os = "linux")]
+    pub fn fetch_physical_location(&mut self) -> io::Result<u64> {
+        let new_location = get_physical_file_location(&self.path())?;
+        if let Some(new_location) = new_location {
+            self.location = self.location & DEVICE_MASK | (new_location >> 8) & OFFSET_MASK;
+        }
+        Ok(self.location)
     }
 }
 
@@ -337,6 +349,16 @@ pub fn file_id_or_log_err(file: &Path, log: &Log) -> Option<FileId> {
             log.err(e);
             None
         }
+    }
+}
+
+/// Returns the physical offset of the first data block of the file
+#[cfg(target_os = "linux")]
+pub fn get_physical_file_location(path: &Path) -> io::Result<Option<u64>> {
+    let mut extents = fiemap::fiemap(&path.to_path_buf())?;
+    match extents.next() {
+        Some(fe) => Ok(Some(fe?.fe_physical)),
+        None => Ok(None),
     }
 }
 

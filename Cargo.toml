@@ -41,6 +41,7 @@ uuid = { version = "0.8.1", features = ["v4"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 block-utils = "0.10.1"
+fiemap = "0.1.1"
 
 [target.'cfg(unix)'.dependencies]
 nix = "0.17.0"
