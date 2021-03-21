@@ -11,7 +11,8 @@ use serde::*;
 use smallvec::SmallVec;
 
 use crate::device::DiskDevices;
-use crate::files::{AsPath, FileHash, FileInfo, FileLen};
+use crate::files::{FileHash, FileInfo, FileLen};
+use sysinfo::DiskType;
 
 /// Groups items by key.
 /// After all items have been added, this structure can be transformed into
@@ -218,7 +219,7 @@ fn partition_by_devices(
     }
     for g in files {
         for f in g.files {
-            let device = devices.get_by_path(&f.path());
+            let device = &devices[f.get_device_index()];
             result[device.index].push(HashedFileInfo {
                 file_hash: g.file_hash,
                 file_info: f,
@@ -231,6 +232,12 @@ fn partition_by_devices(
 /// Iterates over grouped files, in parallel
 pub fn flat_iter(files: &[FileGroup<FileInfo>]) -> impl ParallelIterator<Item = &FileInfo> {
     files.par_iter().flat_map(|g| &g.files)
+}
+
+#[derive(Copy, Clone, Debug)]
+pub enum AccessType {
+    Sequential,
+    Random,
 }
 
 /// Groups files by length and hash computed by given `hash_fn`.
@@ -247,6 +254,7 @@ pub fn rehash<H>(
     groups: Vec<FileGroup<FileInfo>>,
     min_group_size: usize,
     devices: &DiskDevices,
+    access_type: AccessType,
     hash_fn: H,
 ) -> Vec<FileGroup<FileInfo>>
 where
@@ -276,16 +284,30 @@ where
     thread::scope(move |s| {
         // Process all files in background
         for (mut files, device) in files.into_iter().zip(devices.iter()) {
+            if files.is_empty() {
+                continue;
+            }
+
             let tx = tx.clone();
 
             // Launch a separate thread for each device, so we can process
             // files on each device independently
             s.spawn(move |_| {
                 // Sort files by their physical location, to reduce disk seek latency
-                files.par_sort_unstable_by_key(|f| f.file_info.location);
+                if device.disk_type != DiskType::SSD {
+                    files.par_sort_unstable_by_key(|f| f.file_info.location);
+                }
+
+                // Some devices like HDDs may benefit from different amount of parallelism
+                // depending on the access type. Therefore we chose a thread pool appropriate
+                // for the access type
+                let thread_pool = match access_type {
+                    AccessType::Sequential => device.seq_thread_pool(),
+                    AccessType::Random => device.rand_thread_pool(),
+                };
 
                 // Run hashing on the thread-pool dedicated to the device
-                device.thread_pool.install(|| {
+                thread_pool.install(|| {
                     files
                         .into_par_iter()
                         .filter_map(|mut f| {

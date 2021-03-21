@@ -18,7 +18,7 @@ use structopt::StructOpt;
 use thread_local::ThreadLocal;
 
 use fclones::config::*;
-use fclones::device::{DiskDevice, DiskDevices};
+use fclones::device::{DiskDevice, DiskDevices, Parallelism};
 use fclones::files::*;
 use fclones::group::*;
 use fclones::log::Log;
@@ -36,13 +36,18 @@ struct AppCtx {
 }
 
 /// Configures global thread pool to use desired number of threads
-fn configure_main_thread_pool(pool_sizes: &mut HashMap<OsString, usize>) {
-    let parallelism = pool_sizes
-        .remove(OsStr::new("main"))
-        .unwrap_or_else(|| *pool_sizes.get(OsStr::new("default")).unwrap_or(&0));
+fn configure_main_thread_pool(pool_sizes: &mut HashMap<OsString, Parallelism>) {
+    let parallelism = pool_sizes.remove(OsStr::new("main")).unwrap_or_else(|| {
+        *pool_sizes
+            .get(OsStr::new("default"))
+            .unwrap_or(&Parallelism {
+                sequential: 0,
+                random: 0,
+            })
+    });
 
     rayon::ThreadPoolBuilder::new()
-        .num_threads(parallelism)
+        .num_threads(parallelism.random)
         .build_global()
         .unwrap();
 }
@@ -68,7 +73,7 @@ fn scan_files(ctx: &mut AppCtx) -> Vec<Vec<FileInfo>> {
     walk.log = Some(&ctx.log);
     walk.on_visit = spinner_tick;
     walk.run(ctx.config.input_paths(), |path| {
-        file_info_or_log_err(path, &ctx.log)
+        file_info_or_log_err(path, &ctx.devices, &ctx.log)
             .into_iter()
             .filter(|info| {
                 let l = info.len;
@@ -135,7 +140,7 @@ where
     F: Fn(&Path) + Sync + Send,
 {
     let count = files.len();
-    let mut groups = GroupMap::with_capacity(count, |fi: FileInfo| (fi.id_hash, fi));
+    let mut groups = GroupMap::with_capacity(count, |fi: FileInfo| (fi.location, fi));
     for f in files.drain(..) {
         groups.add(f)
     }
@@ -208,16 +213,22 @@ fn group_transformed(
     let rf_over = ctx.config.rf_over();
     let rf_under = ctx.config.rf_under();
 
-    let groups = rehash(groups, rf_over - 1, &ctx.devices, |(fi, _)| {
-        let result = transform
-            .run_or_log_err(&fi.path, &ctx.log)
-            .map(|(len, hash)| {
-                fi.len = len;
-                hash
-            });
-        progress.tick();
-        result
-    });
+    let groups = rehash(
+        groups,
+        rf_over + 1,
+        &ctx.devices,
+        AccessType::Sequential,
+        |(fi, _)| {
+            let result = transform
+                .run_or_log_err(&fi.path, &ctx.log)
+                .map(|(len, hash)| {
+                    fi.len = len;
+                    hash
+                });
+            progress.tick();
+            result
+        },
+    );
 
     let count = groups.selected_count(rf_over, rf_under);
     let bytes = groups.selected_size(rf_over, rf_under);
@@ -233,15 +244,15 @@ fn group_transformed(
 /// Returns the maximum value of the given property of the device,
 /// among the devices actually used to store any of the given files
 fn max_device_property<'a>(
-    partitions: &DiskDevices,
+    devices: &DiskDevices,
     files: impl ParallelIterator<Item = &'a FileInfo>,
     property_fn: impl Fn(&DiskDevice) -> FileLen + Sync,
 ) -> FileLen {
     files
         .into_par_iter()
-        .map(|f| property_fn(partitions.get_by_path(&f.path)))
+        .map(|f| property_fn(&devices[f.get_device_index()]))
         .max()
-        .unwrap_or_else(|| property_fn(partitions.get_default()))
+        .unwrap_or_else(|| property_fn(devices.get_default()))
 }
 
 /// Returns the desired prefix length for a group of files.
@@ -267,24 +278,30 @@ fn group_by_prefix(
 
     let rf_over = ctx.config.rf_over();
     let rf_under = ctx.config.rf_under();
-    let groups = rehash(groups, rf_over + 1, &ctx.devices, |(fi, _)| {
-        progress.tick();
-        let buf_len = ctx.devices.get_by_path(&fi.path).buf_len();
-        let caching = if fi.len <= prefix_len {
-            Caching::Default
-        } else {
-            Caching::Random
-        };
-        file_hash_or_log_err(
-            &fi.path,
-            FilePos(0),
-            prefix_len,
-            buf_len,
-            caching,
-            |_| {},
-            &ctx.log,
-        )
-    });
+    let groups = rehash(
+        groups,
+        rf_over + 1,
+        &ctx.devices,
+        AccessType::Random,
+        |(fi, _)| {
+            progress.tick();
+            let buf_len = ctx.devices.get_by_path(&fi.path).buf_len();
+            let caching = if fi.len <= prefix_len {
+                Caching::Default
+            } else {
+                Caching::Random
+            };
+            file_hash_or_log_err(
+                &fi.path,
+                FilePos(0),
+                prefix_len,
+                buf_len,
+                caching,
+                |_| {},
+                &ctx.log,
+            )
+        },
+    );
 
     let count = groups.selected_count(rf_over, rf_under);
     let bytes = groups.selected_size(rf_over, rf_under);
@@ -326,24 +343,30 @@ fn group_by_suffix(ctx: &mut AppCtx, groups: Vec<FileGroup<FileInfo>>) -> Vec<Fi
     let rf_over = ctx.config.rf_over();
     let rf_under = ctx.config.rf_under();
 
-    let groups = rehash(groups, rf_over + 1, &ctx.devices, |(fi, old_hash)| {
-        if fi.len >= suffix_threshold {
-            progress.tick();
-            let buf_len = ctx.devices.get_by_path(&fi.path).buf_len();
-            file_hash_or_log_err(
-                &fi.path,
-                fi.len.as_pos() - suffix_len,
-                suffix_len,
-                buf_len,
-                Caching::Default,
-                |_| {},
-                &ctx.log,
-            )
-            .map(|new_hash| old_hash ^ new_hash)
-        } else {
-            Some(old_hash)
-        }
-    });
+    let groups = rehash(
+        groups,
+        rf_over + 1,
+        &ctx.devices,
+        AccessType::Random,
+        |(fi, old_hash)| {
+            if fi.len >= suffix_threshold {
+                progress.tick();
+                let buf_len = ctx.devices.get_by_path(&fi.path).buf_len();
+                file_hash_or_log_err(
+                    &fi.path,
+                    fi.len.as_pos() - suffix_len,
+                    suffix_len,
+                    buf_len,
+                    Caching::Default,
+                    |_| {},
+                    &ctx.log,
+                )
+                .map(|new_hash| old_hash ^ new_hash)
+            } else {
+                Some(old_hash)
+            }
+        },
+    );
 
     let count = groups.selected_count(rf_over, rf_under);
     let bytes = groups.selected_size(rf_over, rf_under);
@@ -359,7 +382,10 @@ fn group_by_contents(
     min_file_len: FileLen,
     groups: Vec<FileGroup<FileInfo>>,
 ) -> Vec<FileGroup<FileInfo>> {
-    let bytes_to_scan = groups.iter().filter(|&g| g.file_len >= min_file_len).total_size();
+    let bytes_to_scan = groups
+        .iter()
+        .filter(|&g| g.file_len >= min_file_len)
+        .total_size();
     let progress = &ctx
         .log
         .bytes_progress_bar("Grouping by contents", bytes_to_scan.0);
@@ -367,22 +393,28 @@ fn group_by_contents(
     let rf_over = ctx.config.rf_over();
     let rf_under = ctx.config.rf_under();
 
-    let groups = rehash(groups, rf_over + 1, &ctx.devices, |(fi, old_hash)| {
-        if fi.len >= min_file_len {
-            let buf_len = ctx.devices.get_by_path(&fi.path).buf_len();
-            file_hash_or_log_err(
-                &fi.path,
-                FilePos(0),
-                fi.len,
-                buf_len,
-                Caching::Sequential,
-                |delta| progress.inc(delta),
-                &ctx.log,
-            )
-        } else {
-            Some(old_hash)
-        }
-    });
+    let groups = rehash(
+        groups,
+        rf_over + 1,
+        &ctx.devices,
+        AccessType::Sequential,
+        |(fi, old_hash)| {
+            if fi.len >= min_file_len {
+                let buf_len = ctx.devices.get_by_path(&fi.path).buf_len();
+                file_hash_or_log_err(
+                    &fi.path,
+                    FilePos(0),
+                    fi.len,
+                    buf_len,
+                    Caching::Sequential,
+                    |delta| progress.inc(delta),
+                    &ctx.log,
+                )
+            } else {
+                Some(old_hash)
+            }
+        },
+    );
 
     let count = groups.selected_count(rf_over, rf_under);
     let bytes = groups.selected_size(rf_over, rf_under);
