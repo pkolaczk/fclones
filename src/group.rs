@@ -250,14 +250,17 @@ pub enum AccessType {
 /// were in the different groups to end up in the same group if they have the same length
 /// and they hash to the same value. If you don't want this, you need to combine the old
 /// hash with the new hash in the provided `hash_fn`.
-pub fn rehash<H>(
+pub fn rehash<F1, F2, H>(
     groups: Vec<FileGroup<FileInfo>>,
-    min_group_size: usize,
+    group_pre_filter: F1,
+    group_post_filter: F2,
     devices: &DiskDevices,
     access_type: AccessType,
     hash_fn: H,
 ) -> Vec<FileGroup<FileInfo>>
 where
+    F1: Fn(&FileGroup<FileInfo>) -> bool,
+    F2: Fn(&FileGroup<FileInfo>) -> bool,
     H: Fn((&mut FileInfo, FileHash)) -> Option<FileHash> + Sync + Send,
 {
     // Allow sharing the hash function between threads:
@@ -268,7 +271,7 @@ where
     // Normally when searching for duplicates such groups are filtered out automatically after
     // each stage, however they are possible when searching for unique files.
     let (groups_to_process, groups_to_pass): (Vec<_>, Vec<_>) =
-        groups.into_iter().partition(|g| g.files.len() > 1);
+        groups.into_iter().partition(group_pre_filter);
     let number_of_groups = groups_to_process.len();
 
     // This way we can split processing to separate thread-pools, one per device:
@@ -335,12 +338,12 @@ where
     // Convert the hashmap into vector, leaving only large-enough groups:
     hash_map
         .into_iter()
-        .filter(|(_, files)| files.len() >= min_group_size)
         .map(|((len, hash), files)| FileGroup {
             file_len: len,
             file_hash: hash,
             files: files.to_vec(),
         })
+        .filter(group_post_filter)
         .chain(groups_to_pass.into_iter())
         .collect()
 }
