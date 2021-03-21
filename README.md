@@ -24,7 +24,7 @@ It easily outperforms many other popular duplicate finders by a wide margin (see
   - proper handling of symlinks and hardlinks  
 * High performance
   - parallel processing capability in all I/O and CPU heavy stages
-  - automatic tuning of per-device parallelism based on device type (SSD vs HDD)
+  - automatic tuning of parallelism and access strategy based on device type (SSD vs HDD)
   - low memory footprint thanks to heavily optimized path representation
   - fast, non-cryptographic 128-bit hashing function
   - linear complexity
@@ -194,7 +194,7 @@ At the moment, tuning is possible only for desired parallelism level.
 The `--threads` parameter controls the sizes of the internal thread-pool(s). 
 This can be used to reduce parallelism level when you don't want `fclones` to 
 impact performance of your system too much, e.g. when you need to do some other work
-at the same time. It is also recommended to reduce the parallelism level if you need
+at the same time. We recommended reducing the parallelism level if you need
 to reduce memory usage. 
 
 When using `fclones` up to version 0.6.x to deduplicate files of sizes of at least a few MBs each  
@@ -207,34 +207,42 @@ and it will automatically tune the level of parallelism, memory buffer sizes and
 based on the device type. These automatic settings can be overriden with `-threads` as well.
 
 The following options can be passed to `--threads`. The more specific options override the less specific ones.
-- `main:<value>` – sets the size of the main thread-pool used for random I/O: directory tree scanning, file metadata fetching and partial hashing.
-   These operations typically benefit from high parallelism level, even on spinning drives. Unset by default.
-- `dev:<device>:<value>` – sets the size of the thread-pool used for sequential I/O
-   on the block device with the given name. The name of the device is OS-dependent. 
+- `main:<n>` – sets the size of the main thread-pool used for random I/O: directory tree scanning, 
+   file metadata fetching and in-memory sorting/hashing.
+   These operations typically benefit from high parallelism level, even on spinning drives. 
+   Unset by default, which means the pool will be configured to use all available CPU cores.
+- `dev:<device>:<r>,<s>` – sets the size of the thread-pool `r` used for random I/O and `s` used for 
+   sequential I/O on the block device with the given name. The name of the device is OS-dependent. 
    Note this is not the same as the partition name or mount point.
-- `ssd:<value>` – sets the size of the thread-pools used for sequential I/O on solid-state drives. Unset by default. 
-- `hdd:<value>` – sets the size of the thread-pools used for sequential I/O on spinning drives. Defaults to 1.
-- `unknown:<value>` –  sets the size of the thread-pools used for sequential I/O on devices of unknown type. Defaults to 1.
+- `ssd:<r>,<s>` – sets the sizes of the thread-pools used for I/O on solid-state drives. Unset by default. 
+- `hdd:<r>,<s>` – sets the sizes of the thread-pools used for I/O on spinning drives. 
+   Defaults to `8,1`
+- `removable:<r>,<s>` –  sets the size of the thread-pools used for I/O 
+   on removable devices (e.g. USB sticks). Defaults to `4,1`
+- `unknown:<r>,<s>` –  sets the size of the thread-pools used for I/O on devices of unknown type.
    Sometimes the device type can't be determined e.g. if it is mounted as NAS.
-- `default:<value>` – sets the size to be used by all unset options
-- `<value>` - same as `default:<value>`
+   Defaults to `4,1`
+- `default:<r>,<s>` – sets the pool sizes to be used by all unset options
+- `<r>,<s>` - same as `default:<r>,<s>`  
+- `<n>` - same as `default:<n>,<n>`
 
 ## Examples
-To limit the parallelism level for random I/O access to 1:
+To limit the parallelism level for the main thread pool to 1:
 
     fclones <paths> --threads main:1  
   
-To limit the parallelism level for sequential I/O access for all SSD devices (applies to the final full-content hashing):
+To limit the parallelism level for all I/O access for all SSD devices:
 
     fclones <paths> --threads ssd:1 
 
-To set the parallelism level to 2 for sequential I/O access for `/dev/sda` block device:
+To set the parallelism level to the number of cores for random I/O accesss and to 
+2 for sequential I/O access for `/dev/sda` block device:
 
-    fclones <paths> --threads dev:/dev/sda:2 
+    fclones <paths> --threads dev:/dev/sda:0,2 
     
-Multiple `--threads` options can be used together:
+Multiple `--threads` options can be given, separated by spaces:
 
-    fclones <paths> --threads main:16 ssd:4 hdd:1     
+    fclones <paths> --threads main:16 ssd:4 hdd:1,1     
     
     
 ## Benchmarks
