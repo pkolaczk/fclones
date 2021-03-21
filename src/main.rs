@@ -208,14 +208,15 @@ fn group_transformed(
     let file_count: usize = groups.total_count();
     let progress = ctx
         .log
-        .progress_bar("Transforming & grouping by hash", file_count as u64);
+        .progress_bar("Transforming & grouping", file_count as u64);
 
     let rf_over = ctx.config.rf_over();
     let rf_under = ctx.config.rf_under();
 
     let groups = rehash(
         groups,
-        rf_over + 1,
+        |_| true,
+        |g| g.files.len() > rf_over,
         &ctx.devices,
         AccessType::Sequential,
         |(fi, _)| {
@@ -271,16 +272,19 @@ fn group_by_prefix(
     prefix_len: FileLen,
     groups: Vec<FileGroup<FileInfo>>,
 ) -> Vec<FileGroup<FileInfo>> {
-    let remaining_files = groups.iter().filter(|g| g.files.len() > 1).total_count();
+    let pre_filter = |g: &FileGroup<FileInfo>| g.files.len() > 1;
+    let remaining_files = groups.iter().filter(|&g| pre_filter(g)).total_count();
     let progress = ctx
         .log
-        .progress_bar("Computing prefix hashes", remaining_files as u64);
+        .progress_bar("Grouping by prefix", remaining_files as u64);
 
     let rf_over = ctx.config.rf_over();
     let rf_under = ctx.config.rf_under();
+
     let groups = rehash(
         groups,
-        rf_over + 1,
+        pre_filter,
+        |g| g.files.len() > rf_over,
         &ctx.devices,
         AccessType::Random,
         |(fi, _)| {
@@ -332,10 +336,8 @@ fn suffix_threshold<'a>(
 fn group_by_suffix(ctx: &mut AppCtx, groups: Vec<FileGroup<FileInfo>>) -> Vec<FileGroup<FileInfo>> {
     let suffix_len = suffix_len(&ctx.devices, flat_iter(&groups));
     let suffix_threshold = suffix_threshold(&ctx.devices, flat_iter(&groups));
-    let remaining_files = groups
-        .iter()
-        .filter(|&g| g.file_len >= suffix_threshold)
-        .total_count();
+    let pre_filter = |g: &FileGroup<FileInfo>| g.file_len >= suffix_threshold && g.files.len() > 1;
+    let remaining_files = groups.iter().filter(|&g| pre_filter(g)).total_count();
     let progress = ctx
         .log
         .progress_bar("Grouping by suffix", remaining_files as u64);
@@ -345,26 +347,23 @@ fn group_by_suffix(ctx: &mut AppCtx, groups: Vec<FileGroup<FileInfo>>) -> Vec<Fi
 
     let groups = rehash(
         groups,
-        rf_over + 1,
+        pre_filter,
+        |g| g.files.len() > rf_over,
         &ctx.devices,
         AccessType::Random,
         |(fi, old_hash)| {
-            if fi.len >= suffix_threshold {
-                progress.tick();
-                let buf_len = ctx.devices.get_by_path(&fi.path).buf_len();
-                file_hash_or_log_err(
-                    &fi.path,
-                    fi.len.as_pos() - suffix_len,
-                    suffix_len,
-                    buf_len,
-                    Caching::Default,
-                    |_| {},
-                    &ctx.log,
-                )
-                .map(|new_hash| old_hash ^ new_hash)
-            } else {
-                Some(old_hash)
-            }
+            progress.tick();
+            let buf_len = ctx.devices.get_by_path(&fi.path).buf_len();
+            file_hash_or_log_err(
+                &fi.path,
+                fi.len.as_pos() - suffix_len,
+                suffix_len,
+                buf_len,
+                Caching::Default,
+                |_| {},
+                &ctx.log,
+            )
+            .map(|new_hash| old_hash ^ new_hash)
         },
     );
 
@@ -382,10 +381,8 @@ fn group_by_contents(
     min_file_len: FileLen,
     groups: Vec<FileGroup<FileInfo>>,
 ) -> Vec<FileGroup<FileInfo>> {
-    let bytes_to_scan = groups
-        .iter()
-        .filter(|&g| g.file_len >= min_file_len)
-        .total_size();
+    let pre_filter = |g: &FileGroup<FileInfo>| g.files.len() > 1 && g.file_len >= min_file_len;
+    let bytes_to_scan = groups.iter().filter(|&g| pre_filter(g)).total_size();
     let progress = &ctx
         .log
         .bytes_progress_bar("Grouping by contents", bytes_to_scan.0);
@@ -395,24 +392,21 @@ fn group_by_contents(
 
     let groups = rehash(
         groups,
-        rf_over + 1,
+        pre_filter,
+        |g| g.files.len() > rf_over,
         &ctx.devices,
         AccessType::Sequential,
-        |(fi, old_hash)| {
-            if fi.len >= min_file_len {
-                let buf_len = ctx.devices.get_by_path(&fi.path).buf_len();
-                file_hash_or_log_err(
-                    &fi.path,
-                    FilePos(0),
-                    fi.len,
-                    buf_len,
-                    Caching::Sequential,
-                    |delta| progress.inc(delta),
-                    &ctx.log,
-                )
-            } else {
-                Some(old_hash)
-            }
+        |(fi, _)| {
+            let buf_len = ctx.devices.get_by_path(&fi.path).buf_len();
+            file_hash_or_log_err(
+                &fi.path,
+                FilePos(0),
+                fi.len,
+                buf_len,
+                Caching::Sequential,
+                |delta| progress.inc(delta),
+                &ctx.log,
+            )
         },
     );
 
