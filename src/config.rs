@@ -100,6 +100,7 @@ pub struct Config {
     /// Before matching, transforms each file by the specified program.
     /// The value of this parameter should contain a command: the path to the program
     /// and optionally a list of space-separated arguments.
+    ///
     /// By default, the file to process will be piped to the standard input of the program and the
     /// processed data will be read from the standard output.
     /// If the program does not support piping, but requires its input and/or output file path(s)
@@ -174,15 +175,27 @@ pub struct Config {
     #[structopt(short = "g", long)]
     pub regex: bool,
 
-    /// Sets the size of a thread-pool with the given name.
+    /// Sets the sizes of thread-pools
+    ///
+    /// The spec has the following format: `[<name>:]<r>[,<s>]`.
     /// The name can be one of:
     /// (1) a physical block device when prefixed with `dev:` e.g. `dev:/dev/sda`;
-    /// (2) a type of device - `ssd`, `hdd` or `unknown`;
+    /// (2) a type of device - `ssd`, `hdd`, `removable` or `unknown`;
     /// (3) a thread pool or thread pool group - `main`, `default`.
     /// If the name is not given, this option sets the size of the main thread pool
     /// and thread pools dedicated to SSD devices.
+    ///
+    /// The values `r` and `s` are integers denoting the sizes of the
+    /// thread-pools used respectively for random access I/O and sequential I/O.
+    /// If `s` is not given, it is assumed to be the same as `r`.
+    ///
     /// This parameter can be used multiple times to configure multiple thread pools.
-    #[structopt(short, long, value_name = "[name:]value", parse(try_from_str = parse_thread_count_option))]
+    #[structopt(
+      short,
+      long,
+      value_name = "spec",
+      parse(try_from_str = parse_thread_count_option),
+      verbatim_doc_comment)]
     pub threads: Vec<(OsString, Parallelism)>,
 
     /// Suppresses progress reporting

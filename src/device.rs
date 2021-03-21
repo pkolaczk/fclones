@@ -13,28 +13,28 @@ use crate::path::Path;
 
 #[derive(Clone, Copy, Debug)]
 pub struct Parallelism {
-    pub sequential: usize,
     pub random: usize,
+    pub sequential: usize,
 }
 
 impl Parallelism {
     pub fn default_for(disk_type: DiskType) -> Parallelism {
         match disk_type {
             DiskType::SSD => Parallelism {
-                sequential: 0,
                 random: 0,
+                sequential: 0,
             }, // == number of cores
             DiskType::HDD => Parallelism {
-                sequential: 1,
                 random: 8,
+                sequential: 1,
             },
             DiskType::Removable => Parallelism {
-                sequential: 1,
                 random: 4,
+                sequential: 1,
             },
             DiskType::Unknown(_) => Parallelism {
-                sequential: 1,
                 random: 4,
+                sequential: 1,
             },
         }
     }
