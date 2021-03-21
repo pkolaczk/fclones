@@ -28,6 +28,9 @@ use fclones::progress::FastProgressBar;
 use fclones::report::Reporter;
 use fclones::transform::Transform;
 use fclones::walk::Walk;
+use std::sync::atomic::{AtomicU32, Ordering};
+
+use sysinfo::DiskType;
 
 struct AppCtx {
     config: Config,
@@ -197,6 +200,51 @@ fn remove_same_files(
         }
     ));
     groups
+}
+
+fn atomic_counter_vec(len: usize) -> Vec<AtomicU32> {
+    let mut v = Vec::with_capacity(len);
+    for _ in 0..len {
+        v.push(AtomicU32::new(0));
+    }
+    v
+}
+
+fn update_file_locations(ctx: &mut AppCtx, groups: &mut Vec<FileGroup<FileInfo>>) {
+    #[cfg(target_os = "linux")]
+    {
+        let count = groups.total_count();
+        let progress = ctx.log.progress_bar("Fetching extents", count as u64);
+
+        let err_counters = atomic_counter_vec(ctx.devices.len());
+        const MAX_ERR_COUNT_TO_LOG: u32 = 10;
+
+        groups
+            .par_iter_mut()
+            .flat_map(|g| &mut g.files)
+            .update(|fi| {
+                let device: &DiskDevice = &ctx.devices[fi.get_device_index()];
+                if device.disk_type != DiskType::SSD {
+                    if let Err(e) = fi.fetch_physical_location() {
+                        let counter = &err_counters[device.index];
+                        if counter.load(Ordering::Relaxed) < MAX_ERR_COUNT_TO_LOG {
+                            let err_count = counter.fetch_add(1, Ordering::Relaxed);
+                            ctx.log.warn(format!(
+                                "Failed to fetch extents for file {}: {}",
+                                fi.path, e
+                            ));
+                            if err_count == MAX_ERR_COUNT_TO_LOG {
+                                ctx.log.warn(format!(
+                                    "Too many fetch extents errors. More errors will be ignored. \
+                                 Random access performance might be affected on spinning drives.",
+                                ))
+                            }
+                        }
+                    }
+                }
+            })
+            .for_each(|_| progress.tick());
+    }
 }
 
 /// Transforms files by piping them to an external program and groups them by their hashes
@@ -566,7 +614,9 @@ fn main() {
 fn process(mut ctx: &mut AppCtx) -> Vec<FileGroup<Path>> {
     let matching_files = scan_files(&mut ctx);
     let size_groups = group_by_size(&mut ctx, matching_files);
-    let size_groups_pruned = remove_same_files(&mut ctx, size_groups);
+    let mut size_groups_pruned = remove_same_files(&mut ctx, size_groups);
+    update_file_locations(ctx, &mut size_groups_pruned);
+
     let groups = match ctx.config.take_transform(&ctx.log) {
         Some(transform) => group_transformed(ctx, &transform, size_groups_pruned),
         None => {
