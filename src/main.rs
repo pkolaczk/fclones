@@ -489,7 +489,6 @@ fn paint_help(s: &str) -> String {
 
 fn main() {
     let mut log = Log::new();
-
     let after_help = &paint_help(indoc!(
         "
     # PATTERN SYNTAX:
@@ -529,13 +528,18 @@ fn main() {
         log.no_progress = true;
     }
 
+    log.info("Started");
     let mut thread_pool_sizes = config.thread_pool_sizes();
     configure_main_thread_pool(&mut thread_pool_sizes);
+
+    let device_scanning_spinner = log.spinner("Fetching disk device list");
+    let devices = DiskDevices::new(&mut thread_pool_sizes);
+    drop(device_scanning_spinner);
 
     let mut ctx = AppCtx {
         log,
         config,
-        devices: DiskDevices::new(&mut thread_pool_sizes),
+        devices,
     };
     ctx.config.check_transform(&ctx.log);
     ctx.config
@@ -560,7 +564,6 @@ fn main() {
 
 // Extracted for testing
 fn process(mut ctx: &mut AppCtx) -> Vec<FileGroup<Path>> {
-    ctx.log.info("Started");
     let matching_files = scan_files(&mut ctx);
     let size_groups = group_by_size(&mut ctx, matching_files);
     let size_groups_pruned = remove_same_files(&mut ctx, size_groups);
