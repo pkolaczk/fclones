@@ -234,10 +234,10 @@ fn update_file_locations(ctx: &mut AppCtx, groups: &mut Vec<FileGroup<FileInfo>>
                                 fi.path, e
                             ));
                             if err_count == MAX_ERR_COUNT_TO_LOG {
-                                ctx.log.warn(format!(
+                                ctx.log.warn(
                                     "Too many fetch extents errors. More errors will be ignored. \
                                  Random access performance might be affected on spinning drives.",
-                                ))
+                                )
                             }
                         }
                     }
