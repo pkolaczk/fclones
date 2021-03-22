@@ -13,6 +13,7 @@ use sysinfo::DiskType;
 
 use crate::device::DiskDevices;
 use crate::files::{FileHash, FileInfo, FileLen};
+use std_semaphore::Semaphore;
 
 /// Groups items by key.
 /// After all items have been added, this structure can be transformed into
@@ -309,17 +310,23 @@ where
                     AccessType::Random => device.rand_thread_pool(),
                 };
 
+                let thread_count = thread_pool.current_num_threads() as isize;
+                let semaphore = Semaphore::new(8 * thread_count);
+                let semaphore = &semaphore;
+
                 // Run hashing on the thread-pool dedicated to the device
-                thread_pool.install(|| {
-                    files
-                        .into_par_iter()
-                        .filter_map(|mut f| {
-                            hash_fn((&mut f.file_info, f.file_hash)).map(|h| {
-                                f.file_hash = h;
-                                f
-                            })
-                        })
-                        .for_each_with(tx, |tx, hashed_file| tx.send(hashed_file).unwrap());
+                thread_pool.scope_fifo(move |s| {
+                    for mut f in files {
+                        let tx = tx.clone();
+                        let guard = semaphore.access();
+                        s.spawn_fifo(move |_| {
+                            if let Some(hash) = hash_fn((&mut f.file_info, f.file_hash)) {
+                                f.file_hash = hash;
+                                tx.send(f).unwrap();
+                            }
+                            drop(guard);
+                        });
+                    }
                 });
             });
         }
