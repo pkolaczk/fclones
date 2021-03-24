@@ -294,10 +294,10 @@ impl Config {
     }
 
     /// Constructs the transform object and clears the transform command from this object.
-    pub fn take_transform(&mut self, log: &Log) -> Option<Transform> {
+    pub fn transform(&self, log: &Log) -> Option<Transform> {
         self.transform
-            .take()
-            .map(|command| self.build_transform(&command, log))
+            .as_ref()
+            .map(|command| self.build_transform(command, log))
     }
 
     fn build_transform(&self, command: &str, log: &Log) -> Transform {
