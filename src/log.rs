@@ -1,4 +1,4 @@
-use std::sync::{Arc, Weak};
+use std::sync::{Arc, Weak, Mutex};
 
 use console::style;
 use indicatif::ProgressDrawTarget;
@@ -9,7 +9,7 @@ use chrono::Local;
 
 pub struct Log {
     program_name: String,
-    progress_bar: Weak<FastProgressBar>,
+    progress_bar: Mutex<Weak<FastProgressBar>>,
     pub log_stderr_to_stdout: bool,
     pub no_progress: bool,
 }
@@ -17,7 +17,7 @@ pub struct Log {
 impl Log {
     pub fn new() -> Log {
         Log {
-            progress_bar: Weak::default(),
+            progress_bar: Mutex::new(Weak::default()),
             program_name: std::env::current_exe()
                 .unwrap()
                 .file_name()
@@ -30,47 +30,51 @@ impl Log {
     }
 
     /// Clears any previous progress bar or spinner and installs a new spinner.
-    pub fn spinner(&mut self, msg: &str) -> Arc<FastProgressBar> {
+    pub fn spinner(&self, msg: &str) -> Arc<FastProgressBar> {
         if self.no_progress {
             return Arc::new(FastProgressBar::new_hidden());
         }
         self.progress_bar
+            .lock()
+            .unwrap()
             .upgrade()
             .iter()
             .for_each(|pb| pb.finish_and_clear());
         let result = Arc::new(FastProgressBar::new_spinner(msg));
-        self.progress_bar = Arc::downgrade(&result);
+        *self.progress_bar.lock().unwrap() = Arc::downgrade(&result);
         result
     }
 
     /// Clears any previous progress bar or spinner and installs a new progress bar.
-    pub fn progress_bar(&mut self, msg: &str, len: u64) -> Arc<FastProgressBar> {
+    pub fn progress_bar(&self, msg: &str, len: u64) -> Arc<FastProgressBar> {
         if self.no_progress {
             return Arc::new(FastProgressBar::new_hidden());
         }
         let result = Arc::new(FastProgressBar::new_progress_bar(msg, len));
-        self.progress_bar = Arc::downgrade(&result);
+        *self.progress_bar.lock().unwrap() = Arc::downgrade(&result);
         result
     }
 
     /// Clears any previous progress bar or spinner and installs a new progress bar.
-    pub fn bytes_progress_bar(&mut self, msg: &str, len: u64) -> Arc<FastProgressBar> {
+    pub fn bytes_progress_bar(&self, msg: &str, len: u64) -> Arc<FastProgressBar> {
         if self.no_progress {
             return Arc::new(FastProgressBar::new_hidden());
         }
         self.progress_bar
+            .lock()
+            .unwrap()
             .upgrade()
             .iter()
             .for_each(|pb| pb.finish_and_clear());
         let result = Arc::new(FastProgressBar::new_bytes_progress_bar(msg, len));
-        self.progress_bar = Arc::downgrade(&result);
+        *self.progress_bar.lock().unwrap() = Arc::downgrade(&result);
         result
     }
 
     /// Prints a message to stdout.
     /// Does not interfere with progress bar.
     pub fn println<I: Display>(&self, msg: I) {
-        match self.progress_bar.upgrade() {
+        match self.progress_bar.lock().unwrap().upgrade() {
             Some(pb) if pb.is_visible() => {
                 pb.set_draw_target(ProgressDrawTarget::hidden());
                 println!("{}", msg);
@@ -83,7 +87,7 @@ impl Log {
     /// Prints a message to stderr.
     /// Does not interfere with progress bar.
     pub fn eprintln<I: Display>(&self, msg: I) {
-        match self.progress_bar.upgrade() {
+        match self.progress_bar.lock().unwrap().upgrade() {
             Some(pb) if pb.is_visible() => pb.println(format!("{}", msg)),
             _ if self.log_stderr_to_stdout => println!("{}", msg),
             _ => eprintln!("{}", msg),
