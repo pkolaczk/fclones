@@ -56,7 +56,7 @@ fn configure_main_thread_pool(pool_sizes: &mut HashMap<OsString, Parallelism>) {
 }
 
 /// Walks the directory tree and collects matching files in parallel into a vector
-fn scan_files(ctx: &mut AppCtx) -> Vec<Vec<FileInfo>> {
+fn scan_files(ctx: &AppCtx) -> Vec<Vec<FileInfo>> {
     let base_dir = Path::from(current_dir().unwrap_or_default());
     let path_selector = ctx.config.path_selector(&ctx.log, &base_dir);
     let file_collector = ThreadLocal::new();
@@ -103,7 +103,7 @@ fn scan_files(ctx: &mut AppCtx) -> Vec<Vec<FileInfo>> {
     files
 }
 
-fn group_by_size(ctx: &mut AppCtx, files: Vec<Vec<FileInfo>>) -> Vec<FileGroup<FileInfo>> {
+fn group_by_size(ctx: &AppCtx, files: Vec<Vec<FileInfo>>) -> Vec<FileGroup<FileInfo>> {
     let file_count: usize = files.iter().map(|v| v.len()).sum();
     let progress = ctx.log.progress_bar("Grouping by size", file_count as u64);
 
@@ -170,7 +170,7 @@ where
 }
 
 fn remove_same_files(
-    ctx: &mut AppCtx,
+    ctx: &AppCtx,
     groups: Vec<FileGroup<FileInfo>>,
 ) -> Vec<FileGroup<FileInfo>> {
     let file_count: usize = groups.total_count();
@@ -210,7 +210,7 @@ fn atomic_counter_vec(len: usize) -> Vec<AtomicU32> {
     v
 }
 
-fn update_file_locations(ctx: &mut AppCtx, groups: &mut Vec<FileGroup<FileInfo>>) {
+fn update_file_locations(ctx: &AppCtx, groups: &mut Vec<FileGroup<FileInfo>>) {
     #[cfg(target_os = "linux")]
     {
         let count = groups.total_count();
@@ -249,7 +249,7 @@ fn update_file_locations(ctx: &mut AppCtx, groups: &mut Vec<FileGroup<FileInfo>>
 
 /// Transforms files by piping them to an external program and groups them by their hashes
 fn group_transformed(
-    ctx: &mut AppCtx,
+    ctx: &AppCtx,
     transform: &Transform,
     groups: Vec<FileGroup<FileInfo>>,
 ) -> Vec<FileGroup<FileInfo>> {
@@ -316,7 +316,7 @@ fn prefix_len<'a>(
 
 /// Groups files by a hash of their first few thousand bytes.
 fn group_by_prefix(
-    ctx: &mut AppCtx,
+    ctx: &AppCtx,
     prefix_len: FileLen,
     groups: Vec<FileGroup<FileInfo>>,
 ) -> Vec<FileGroup<FileInfo>> {
@@ -381,7 +381,7 @@ fn suffix_threshold<'a>(
     max_device_property(partitions, files, |dd| dd.suffix_threshold())
 }
 
-fn group_by_suffix(ctx: &mut AppCtx, groups: Vec<FileGroup<FileInfo>>) -> Vec<FileGroup<FileInfo>> {
+fn group_by_suffix(ctx: &AppCtx, groups: Vec<FileGroup<FileInfo>>) -> Vec<FileGroup<FileInfo>> {
     let suffix_len = suffix_len(&ctx.devices, flat_iter(&groups));
     let suffix_threshold = suffix_threshold(&ctx.devices, flat_iter(&groups));
     let pre_filter = |g: &FileGroup<FileInfo>| g.file_len >= suffix_threshold && g.files.len() > 1;
@@ -425,7 +425,7 @@ fn group_by_suffix(ctx: &mut AppCtx, groups: Vec<FileGroup<FileInfo>>) -> Vec<Fi
 }
 
 fn group_by_contents(
-    ctx: &mut AppCtx,
+    ctx: &AppCtx,
     min_file_len: FileLen,
     groups: Vec<FileGroup<FileInfo>>,
 ) -> Vec<FileGroup<FileInfo>> {
@@ -469,7 +469,7 @@ fn group_by_contents(
     groups
 }
 
-fn write_report(ctx: &mut AppCtx, groups: &[FileGroup<Path>]) {
+fn write_report(ctx: &AppCtx, groups: &[FileGroup<Path>]) {
     let remaining_files = groups.total_count();
     let progress = ctx
         .log
@@ -584,7 +584,7 @@ fn main() {
     let devices = DiskDevices::new(&mut thread_pool_sizes);
     drop(device_scanning_spinner);
 
-    let mut ctx = AppCtx {
+    let ctx = AppCtx {
         log,
         config,
         devices,
@@ -606,24 +606,24 @@ fn main() {
         }
     }
 
-    let results = process(&mut ctx);
-    write_report(&mut ctx, &results)
+    let results = process(&ctx);
+    write_report(&ctx, &results)
 }
 
 // Extracted for testing
-fn process(mut ctx: &mut AppCtx) -> Vec<FileGroup<Path>> {
-    let matching_files = scan_files(&mut ctx);
-    let size_groups = group_by_size(&mut ctx, matching_files);
-    let mut size_groups_pruned = remove_same_files(&mut ctx, size_groups);
+fn process(ctx: &AppCtx) -> Vec<FileGroup<Path>> {
+    let matching_files = scan_files(&ctx);
+    let size_groups = group_by_size(&ctx, matching_files);
+    let mut size_groups_pruned = remove_same_files(&ctx, size_groups);
     update_file_locations(ctx, &mut size_groups_pruned);
 
-    let groups = match ctx.config.take_transform(&ctx.log) {
+    let groups = match ctx.config.transform(&ctx.log) {
         Some(transform) => group_transformed(ctx, &transform, size_groups_pruned),
         None => {
             let prefix_len = prefix_len(&ctx.devices, flat_iter(&size_groups_pruned));
-            let prefix_groups = group_by_prefix(&mut ctx, prefix_len, size_groups_pruned);
-            let suffix_groups = group_by_suffix(&mut ctx, prefix_groups);
-            group_by_contents(&mut ctx, prefix_len, suffix_groups)
+            let prefix_groups = group_by_prefix(&ctx, prefix_len, size_groups_pruned);
+            let suffix_groups = group_by_suffix(&ctx, prefix_groups);
+            group_by_contents(&ctx, prefix_len, suffix_groups)
         }
     };
     let mut groups: Vec<_> = groups
@@ -664,7 +664,7 @@ mod test {
 
             let mut ctx = test_ctx();
             ctx.config.paths = vec![file1, file2];
-            let results = process(&mut ctx);
+            let results = process(&ctx);
             assert_eq!(results.len(), 1);
             assert_eq!(results[0].file_len, FileLen(3));
             assert_eq!(results[0].files.len(), 2);
@@ -682,7 +682,7 @@ mod test {
             let mut ctx = test_ctx();
             ctx.config.paths = vec![file1, file2];
 
-            let results = process(&mut ctx);
+            let results = process(&ctx);
             assert_eq!(results.len(), 1);
             assert_eq!(results[0].files.len(), 2);
         });
@@ -700,7 +700,7 @@ mod test {
             ctx.config.paths = vec![file1.clone(), file2.clone()];
             ctx.config.rf_over = Some(0);
 
-            let results = process(&mut ctx);
+            let results = process(&ctx);
             assert_eq!(results.len(), 2);
             assert_eq!(
                 results[0].files,
@@ -725,7 +725,7 @@ mod test {
             ctx.config.paths = vec![file1.clone(), file2.clone()];
             ctx.config.unique = true;
 
-            let results = process(&mut ctx);
+            let results = process(&ctx);
             assert_eq!(results.len(), 2);
             assert_eq!(results[0].files.len(), 1);
             assert_eq!(results[1].files.len(), 1);
@@ -746,7 +746,7 @@ mod test {
             ctx.config.paths = vec![file1.clone(), file2.clone()];
             ctx.config.unique = true;
 
-            let results = process(&mut ctx);
+            let results = process(&ctx);
             assert_eq!(results.len(), 2);
             assert_eq!(results[0].files.len(), 1);
             assert_eq!(results[1].files.len(), 1);
@@ -767,7 +767,7 @@ mod test {
             ctx.config.paths = vec![file1.clone(), file2.clone()];
             ctx.config.unique = true;
 
-            let results = process(&mut ctx);
+            let results = process(&ctx);
             assert_eq!(results.len(), 2);
             assert_eq!(results[0].files.len(), 1);
             assert_eq!(results[1].files.len(), 1);
@@ -786,7 +786,7 @@ mod test {
             ctx.config.paths = vec![file1.clone(), file2.clone()];
             ctx.config.unique = true;
 
-            let results = process(&mut ctx);
+            let results = process(&ctx);
             assert_eq!(results.len(), 1);
             assert_eq!(results[0].files.len(), 1);
         });
@@ -802,7 +802,7 @@ mod test {
             ctx.config.unique = true;
             ctx.config.hard_links = true;
 
-            let results = process(&mut ctx);
+            let results = process(&ctx);
             assert_eq!(results.len(), 1);
             assert_eq!(results[0].files.len(), 1);
         });
@@ -828,7 +828,7 @@ mod test {
                 ctx.config.unique = true;
                 ctx.config.hard_links = true;
 
-                let results = process(&mut ctx);
+                let results = process(&ctx);
                 assert_eq!(results.len(), 1);
                 assert_eq!(results[0].files.len(), 1);
             },
@@ -847,8 +847,8 @@ mod test {
             ctx.config.unique = true;
             ctx.config.output = Some(report_file.clone());
 
-            let results = process(&mut ctx);
-            write_report(&mut ctx, &results);
+            let results = process(&ctx);
+            write_report(&ctx, &results);
 
             assert!(report_file.exists());
             let mut report = String::new();
