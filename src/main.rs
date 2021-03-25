@@ -141,8 +141,7 @@ fn deduplicate<F>(ctx: &AppCtx, files: &mut Vec<FileInfo>, progress: F)
 where
     F: Fn(&Path) + Sync + Send,
 {
-    let count = files.len();
-    let mut groups = GroupMap::with_capacity(count, |fi: FileInfo| (fi.location, fi));
+    let mut groups = GroupMap::new(|fi: FileInfo| (fi.location, fi));
     for f in files.drain(..) {
         groups.add(f)
     }
