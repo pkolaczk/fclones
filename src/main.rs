@@ -8,6 +8,7 @@ use std::io::{BufWriter, Write};
 use std::path::PathBuf;
 use std::process::exit;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, Ordering};
 
 use console::{style, Term};
 use indoc::indoc;
@@ -15,6 +16,7 @@ use itertools::Itertools;
 use rayon::prelude::*;
 use regex::Regex;
 use structopt::StructOpt;
+use sysinfo::DiskType;
 use thread_local::ThreadLocal;
 
 use fclones::config::*;
@@ -28,9 +30,6 @@ use fclones::progress::FastProgressBar;
 use fclones::report::Reporter;
 use fclones::transform::Transform;
 use fclones::walk::Walk;
-use std::sync::atomic::{AtomicU32, Ordering};
-
-use sysinfo::DiskType;
 
 struct AppCtx {
     config: Config,

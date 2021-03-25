@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::hash::Hash;
 use std::marker::PhantomData;
+use std::sync::Arc;
 use std::sync::mpsc::{channel, Receiver, Sender};
 
 use crossbeam_utils::thread;
@@ -13,7 +14,7 @@ use sysinfo::DiskType;
 
 use crate::device::DiskDevices;
 use crate::files::{FileHash, FileInfo, FileLen};
-use std_semaphore::Semaphore;
+use crate::semaphore::Semaphore;
 
 /// Groups items by key.
 /// After all items have been added, this structure can be transformed into
@@ -251,7 +252,7 @@ pub enum AccessType {
 /// were in the different groups to end up in the same group if they have the same length
 /// and they hash to the same value. If you don't want this, you need to combine the old
 /// hash with the new hash in the provided `hash_fn`.
-pub fn rehash<F1, F2, H>(
+pub fn rehash<'a, F1, F2, H>(
     groups: Vec<FileGroup<FileInfo>>,
     group_pre_filter: F1,
     group_post_filter: F2,
@@ -262,10 +263,13 @@ pub fn rehash<F1, F2, H>(
 where
     F1: Fn(&FileGroup<FileInfo>) -> bool,
     F2: Fn(&FileGroup<FileInfo>) -> bool,
-    H: Fn((&mut FileInfo, FileHash)) -> Option<FileHash> + Sync + Send,
+    H: Fn((&mut FileInfo, FileHash)) -> Option<FileHash> + Sync + Send + 'a,
 {
+
     // Allow sharing the hash function between threads:
-    let hash_fn = &hash_fn;
+    type HT<'a> = dyn Fn((&mut FileInfo, FileHash)) -> Option<FileHash> + Sync + Send + 'a;
+    let hash_fn: &HT<'a> = &hash_fn;
+
     let (tx, rx): (Sender<HashedFileInfo>, Receiver<HashedFileInfo>) = channel();
 
     // There is no point in processing groups containing a single file.
@@ -283,8 +287,8 @@ where
     });
     let hash_map_ref = &mut hash_map;
 
-    // Scope needed so threads can access shared stuff like groups or shared functions
-    // The threads we launch are guaranteed to not live longer than this scope
+    // Scope needed so threads can access shared stuff like groups or shared functions.
+    // The threads we launch are guaranteed to not live longer than this scope.
     thread::scope(move |s| {
         // Process all files in background
         for (mut files, device) in files.into_iter().zip(devices.iter()) {
@@ -311,23 +315,39 @@ where
                 };
 
                 let thread_count = thread_pool.current_num_threads() as isize;
-                let semaphore = Semaphore::new(8 * thread_count);
-                let semaphore = &semaphore;
+
+                // Limit the number of tasks spawned at once into the thread-pool.
+                // Each task creates a heap allocation and reserves memory in the queue.
+                // It is more memory efficient to keep these tasks as long as possible
+                // in our vector. Without this limit we observed over 20% more memory use
+                // when processing 1M of files.
+                let semaphore = Arc::new(Semaphore::new(8 * thread_count));
 
                 // Run hashing on the thread-pool dedicated to the device
-                thread_pool.scope_fifo(move |s| {
-                    for mut f in files {
-                        let tx = tx.clone();
-                        let guard = semaphore.access();
-                        s.spawn_fifo(move |_| {
-                            if let Some(hash) = hash_fn((&mut f.file_info, f.file_hash)) {
-                                f.file_hash = hash;
-                                tx.send(f).unwrap();
-                            }
-                            drop(guard);
-                        });
-                    }
-                });
+                for mut f in files {
+                    let tx = tx.clone();
+                    let guard = semaphore.clone().access_owned();
+
+                    // Spawning a task into a thread-pool requires a static lifetime,
+                    // because generally the task could outlive caller's stack frame.
+                    // However, this is not the case for rehash function, because
+                    // we don't exit before all tasks are processed.
+                    // In the perfect world we should use scopes for that. Unfortunately
+                    // the current implementation of rayon scopes runs the scope body
+                    // on one of the thread-pool worker threads, so it is not possible
+                    // to safely block inside the scope, because that leads to deadlock
+                    // when the pool has only one thread.
+                    let hash_fn: &HT<'static> = unsafe {  std::mem::transmute(hash_fn) };
+                    thread_pool.spawn_fifo(move || {
+                        if let Some(hash) = hash_fn((&mut f.file_info, f.file_hash)) {
+                            f.file_hash = hash;
+                            tx.send(f).unwrap();
+                        }
+                        // This forces moving the guard into this task and be released when
+                        // the task is done
+                        drop(guard);
+                    });
+                }
             });
         }
         // Drop the original tx, so all tx are closed when the threads finish and
