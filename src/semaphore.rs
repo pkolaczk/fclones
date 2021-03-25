@@ -11,7 +11,7 @@
 // Owned guards added by Piotr Kołaczkowski
 
 use std::ops::Drop;
-use std::sync::{Condvar, Mutex, Arc};
+use std::sync::{Arc, Condvar, Mutex};
 
 /// A counting, blocking, semaphore.
 ///
@@ -114,7 +114,6 @@ impl Semaphore {
         self.acquire();
         OwnedSemaphoreGuard { sem: self }
     }
-
 }
 
 impl<'a> Drop for SemaphoreGuard<'a> {
@@ -133,9 +132,9 @@ impl Drop for OwnedSemaphoreGuard {
 mod tests {
     use std::prelude::v1::*;
 
-    use std::sync::Arc;
     use super::Semaphore;
     use std::sync::mpsc::channel;
+    use std::sync::Arc;
     use std::thread;
 
     #[test]
