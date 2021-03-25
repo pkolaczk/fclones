@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 use std::hash::Hash;
 use std::marker::PhantomData;
 use std::sync::Arc;
@@ -49,13 +49,13 @@ where
     F: Fn(T) -> (K, V),
 {
     item_type: PhantomData<T>,
-    groups: HashMap<K, SmallVec<[V; 1]>>,
+    groups: BTreeMap<K, SmallVec<[V; 1]>>,
     split_fn: F,
 }
 
 impl<T, K, V, F> GroupMap<T, K, V, F>
 where
-    K: Eq + Hash,
+    K: Eq + Hash + Ord,
     F: Fn(T) -> (K, V),
 {
     /// Creates a new empty map.
@@ -65,15 +65,7 @@ where
     pub fn new(split_fn: F) -> GroupMap<T, K, V, F> {
         GroupMap {
             item_type: PhantomData,
-            groups: HashMap::new(),
-            split_fn,
-        }
-    }
-
-    pub fn with_capacity(capacity: usize, split_fn: F) -> GroupMap<T, K, V, F> {
-        GroupMap {
-            item_type: PhantomData,
-            groups: HashMap::with_capacity(capacity),
+            groups: BTreeMap::new(),
             split_fn,
         }
     }
@@ -97,7 +89,7 @@ where
     F: Fn(T) -> (K, V),
 {
     type Item = (K, SmallVec<[V; 1]>);
-    type IntoIter = <HashMap<K, SmallVec<[V; 1]>> as IntoIterator>::IntoIter;
+    type IntoIter = <BTreeMap<K, SmallVec<[V; 1]>> as IntoIterator>::IntoIter;
 
     fn into_iter(self) -> Self::IntoIter {
         self.groups.into_iter()
@@ -277,12 +269,10 @@ where
     // each stage, however they are possible when searching for unique files.
     let (groups_to_process, groups_to_pass): (Vec<_>, Vec<_>) =
         groups.into_iter().partition(group_pre_filter);
-    let number_of_groups = groups_to_process.len();
 
     // This way we can split processing to separate thread-pools, one per device:
     let files = partition_by_devices(groups_to_process, &devices);
-
-    let mut hash_map = GroupMap::with_capacity(number_of_groups, |f: HashedFileInfo| {
+    let mut hash_map = GroupMap::new(|f: HashedFileInfo| {
         ((f.file_info.len, f.file_hash), f.file_info)
     });
     let hash_map_ref = &mut hash_map;
