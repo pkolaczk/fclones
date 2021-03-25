@@ -7,8 +7,8 @@ use std::fs::File;
 use std::io::{BufWriter, Write};
 use std::path::PathBuf;
 use std::process::exit;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::Arc;
 
 use console::{style, Term};
 use indoc::indoc;
@@ -167,10 +167,7 @@ where
     }
 }
 
-fn remove_same_files(
-    ctx: &AppCtx,
-    groups: Vec<FileGroup<FileInfo>>,
-) -> Vec<FileGroup<FileInfo>> {
+fn remove_same_files(ctx: &AppCtx, groups: Vec<FileGroup<FileInfo>>) -> Vec<FileGroup<FileInfo>> {
     let file_count: usize = groups.total_count();
     let progress = ctx
         .log
@@ -335,12 +332,14 @@ fn group_by_prefix(
         AccessType::Random,
         |(fi, _)| {
             progress.tick();
-            let buf_len = ctx.devices.get_by_path(&fi.path).buf_len();
-            let caching = if fi.len <= prefix_len {
-                Caching::Default
+            let device = &ctx.devices[fi.get_device_index()];
+            let buf_len = device.buf_len();
+            let (caching, prefix_len) = if fi.len <= prefix_len {
+                (Caching::Default, prefix_len)
             } else {
-                Caching::Random
+                (Caching::Random, device.min_prefix_len())
             };
+
             file_hash_or_log_err(
                 &fi.path,
                 FilePos(0),
@@ -399,7 +398,8 @@ fn group_by_suffix(ctx: &AppCtx, groups: Vec<FileGroup<FileInfo>>) -> Vec<FileGr
         AccessType::Random,
         |(fi, old_hash)| {
             progress.tick();
-            let buf_len = ctx.devices.get_by_path(&fi.path).buf_len();
+            let device = &ctx.devices[fi.get_device_index()];
+            let buf_len = device.buf_len();
             file_hash_or_log_err(
                 &fi.path,
                 fi.len.as_pos() - suffix_len,
@@ -443,7 +443,8 @@ fn group_by_contents(
         &ctx.devices,
         AccessType::Sequential,
         |(fi, _)| {
-            let buf_len = ctx.devices.get_by_path(&fi.path).buf_len();
+            let device = &ctx.devices[fi.get_device_index()];
+            let buf_len = device.buf_len();
             file_hash_or_log_err(
                 &fi.path,
                 FilePos(0),

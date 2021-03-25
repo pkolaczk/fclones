@@ -9,7 +9,7 @@ pub mod pools;
 pub mod progress;
 pub mod report;
 pub mod selector;
+pub mod semaphore;
 pub mod transform;
 pub mod util;
 pub mod walk;
-pub mod semaphore;

@@ -95,16 +95,16 @@ impl DiskDevice {
     pub fn min_prefix_len(&self) -> FileLen {
         FileLen(match self.disk_type {
             DiskType::SSD => 4 * 1024,
-            DiskType::HDD => 16 * 1024,
-            DiskType::Removable => 16 * 1024,
-            DiskType::Unknown(_) => 16 * 1024,
+            DiskType::HDD => 4 * 1024,
+            DiskType::Removable => 4 * 1024,
+            DiskType::Unknown(_) => 4 * 1024,
         })
     }
 
     pub fn max_prefix_len(&self) -> FileLen {
         FileLen(match self.disk_type {
             DiskType::SSD => 4 * 1024,
-            DiskType::HDD => 64 * 1024,
+            DiskType::HDD => 16 * 1024,
             DiskType::Removable => 16 * 1024,
             DiskType::Unknown(_) => 16 * 1024,
         })

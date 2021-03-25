@@ -1,4 +1,4 @@
-use std::sync::{Arc, Weak, Mutex};
+use std::sync::{Arc, Mutex, Weak};
 
 use console::style;
 use indicatif::ProgressDrawTarget;

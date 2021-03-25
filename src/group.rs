@@ -1,8 +1,8 @@
 use std::collections::BTreeMap;
 use std::hash::Hash;
 use std::marker::PhantomData;
-use std::sync::Arc;
 use std::sync::mpsc::{channel, Receiver, Sender};
+use std::sync::Arc;
 
 use crossbeam_utils::thread;
 use itertools::Itertools;
@@ -257,7 +257,6 @@ where
     F2: Fn(&FileGroup<FileInfo>) -> bool,
     H: Fn((&mut FileInfo, FileHash)) -> Option<FileHash> + Sync + Send + 'a,
 {
-
     // Allow sharing the hash function between threads:
     type HT<'a> = dyn Fn((&mut FileInfo, FileHash)) -> Option<FileHash> + Sync + Send + 'a;
     let hash_fn: &HT<'a> = &hash_fn;
@@ -272,9 +271,8 @@ where
 
     // This way we can split processing to separate thread-pools, one per device:
     let files = partition_by_devices(groups_to_process, &devices);
-    let mut hash_map = GroupMap::new(|f: HashedFileInfo| {
-        ((f.file_info.len, f.file_hash), f.file_info)
-    });
+    let mut hash_map =
+        GroupMap::new(|f: HashedFileInfo| ((f.file_info.len, f.file_hash), f.file_info));
     let hash_map_ref = &mut hash_map;
 
     // Scope needed so threads can access shared stuff like groups or shared functions.
@@ -327,7 +325,7 @@ where
                     // on one of the thread-pool worker threads, so it is not possible
                     // to safely block inside the scope, because that leads to deadlock
                     // when the pool has only one thread.
-                    let hash_fn: &HT<'static> = unsafe {  std::mem::transmute(hash_fn) };
+                    let hash_fn: &HT<'static> = unsafe { std::mem::transmute(hash_fn) };
                     thread_pool.spawn_fifo(move || {
                         if let Some(hash) = hash_fn((&mut f.file_info, f.file_hash)) {
                             f.file_hash = hash;
