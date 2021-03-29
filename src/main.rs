@@ -222,16 +222,19 @@ fn update_file_locations(ctx: &AppCtx, groups: &mut Vec<FileGroup<FileInfo>>) {
                 if let Err(e) = fi.fetch_physical_location() {
                     let counter = &err_counters[device.index];
                     if counter.load(Ordering::Relaxed) < MAX_ERR_COUNT_TO_LOG {
-                        let err_count = counter.fetch_add(1, Ordering::Relaxed);
-                        ctx.log.warn(format!(
-                            "Failed to fetch extents for file {}: {}",
-                            fi.path, e
-                        ));
-                        if err_count == MAX_ERR_COUNT_TO_LOG {
-                            ctx.log.warn(
-                                "Too many fetch extents errors. More errors will be ignored. \
-                             Random access performance might be affected on spinning drives.",
-                            )
+                        let err_count = counter.fetch_add(1, Ordering::SeqCst);
+                        if err_count < MAX_ERR_COUNT_TO_LOG {
+                            ctx.log.warn(format!(
+                                "Failed to fetch extents for file {}: {}",
+                                fi.path, e
+                            ));
+                            if err_count + 1 == MAX_ERR_COUNT_TO_LOG {
+                                ctx.log.warn(
+                                    "Too many fetch extents errors. \
+                                    More errors will be ignored. \
+                                    Random access performance might be affected on spinning drives.",
+                                )
+                            }
                         }
                     }
                 }
