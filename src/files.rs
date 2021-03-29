@@ -19,6 +19,7 @@ use metrohash::{MetroHash128, MetroHash64};
 use serde::*;
 use smallvec::alloc::fmt::Formatter;
 use smallvec::alloc::str::FromStr;
+#[cfg(unix)]
 use sysinfo::{System, SystemExt};
 
 use crate::device::DiskDevices;
@@ -44,32 +45,32 @@ impl Display for FilePos {
 }
 
 impl From<u64> for FilePos {
-    fn from(p: u64) -> Self {
-        FilePos(p)
+    fn from(pos: u64) -> Self {
+        FilePos(pos)
     }
 }
 
 impl From<usize> for FilePos {
-    fn from(p: usize) -> Self {
-        FilePos(p as u64)
+    fn from(pos: usize) -> Self {
+        FilePos(pos as u64)
     }
 }
 
-impl Into<u64> for FilePos {
-    fn into(self) -> u64 {
-        self.0
+impl From<FilePos> for u64 {
+    fn from(pos: FilePos) -> Self {
+        pos.0
     }
 }
 
-impl Into<usize> for FilePos {
-    fn into(self) -> usize {
-        self.0 as usize
+impl From<FilePos> for usize {
+    fn from(pos: FilePos) -> Self {
+        pos.0 as usize
     }
 }
 
-impl Into<SeekFrom> for FilePos {
-    fn into(self) -> SeekFrom {
-        SeekFrom::Start(self.0)
+impl From<FilePos> for SeekFrom {
+    fn from(pos: FilePos) -> Self {
+        SeekFrom::Start(pos.0)
     }
 }
 
@@ -126,15 +127,15 @@ impl From<usize> for FileLen {
     }
 }
 
-impl Into<u64> for FileLen {
-    fn into(self) -> u64 {
-        self.0
+impl From<FileLen> for u64 {
+    fn from(l: FileLen) -> Self {
+        l.0
     }
 }
 
-impl Into<usize> for FileLen {
-    fn into(self) -> usize {
-        self.0 as usize
+impl From<FileLen> for usize {
+    fn from(l: FileLen) -> Self {
+        l.0 as usize
     }
 }
 
@@ -209,7 +210,10 @@ impl IntoPath for FileInfo {
     }
 }
 
+#[cfg(unix)]
 const OFFSET_MASK: u64 = 0x0000FFFFFFFFFFFF;
+
+#[cfg(unix)]
 const DEVICE_MASK: u64 = 0xFFFF000000000000;
 
 impl FileInfo {
