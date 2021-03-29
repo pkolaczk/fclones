@@ -131,6 +131,23 @@ pub struct DiskDevices {
 }
 
 impl DiskDevices {
+    #[cfg(test)]
+    pub fn single(disk_type: DiskType, parallelism: usize) -> DiskDevices {
+        let device = DiskDevice::new(
+            0,
+            OsString::from("/"),
+            disk_type,
+            Parallelism {
+                random: parallelism,
+                sequential: parallelism,
+            },
+        );
+        DiskDevices {
+            devices: vec![device],
+            mount_points: vec![(Path::from("/"), 0)],
+        }
+    }
+
     /// Reads the preferred parallelism level for the device based on the
     /// device name or the device type (ssd/hdd) from `pool_sizes` map.
     /// Returns the value under the "default" key if device was not found,

@@ -362,3 +362,197 @@ where
         .chain(groups_to_pass.into_iter())
         .collect()
 }
+
+#[cfg(test)]
+mod test {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Mutex;
+
+    use rand::seq::SliceRandom;
+
+    use FileGroup;
+
+    use crate::path::Path;
+
+    use super::*;
+
+    /// Files hashing to different values should be placed into different groups
+    #[test]
+    fn test_rehash_puts_files_with_different_hashes_to_different_groups() {
+        let devices = DiskDevices::default();
+        let input = vec![FileGroup {
+            file_len: FileLen(200),
+            file_hash: FileHash(0),
+            files: vec![
+                FileInfo {
+                    len: FileLen(200),
+                    location: 0,
+                    path: Path::from("file1"),
+                },
+                FileInfo {
+                    len: FileLen(200),
+                    location: 35847587,
+                    path: Path::from("file2"),
+                },
+            ],
+        }];
+
+        let result = rehash(
+            input,
+            |_| true,
+            |_| true,
+            &devices,
+            AccessType::Random,
+            |(fi, _)| Some(FileHash(fi.location as u128)),
+        );
+
+        assert_eq!(result.len(), 2);
+        assert_eq!(result[0].files.len(), 1);
+        assert_eq!(result[1].files.len(), 1);
+        assert_ne!(result[0].files[0].path, result[1].files[0].path);
+    }
+
+    /// Files hashing to same values should be placed into the same groups
+    #[test]
+    fn test_rehash_puts_files_with_same_hashes_to_same_groups() {
+        let devices = DiskDevices::default();
+        let input = vec![
+            FileGroup {
+                file_len: FileLen(200),
+                file_hash: FileHash(0),
+                files: vec![FileInfo {
+                    len: FileLen(200),
+                    location: 0,
+                    path: Path::from("file1"),
+                }],
+            },
+            FileGroup {
+                file_len: FileLen(500),
+                file_hash: FileHash(0),
+                files: vec![FileInfo {
+                    len: FileLen(200),
+                    location: 35847587,
+                    path: Path::from("file2"),
+                }],
+            },
+        ];
+
+        let result = rehash(
+            input,
+            |_| true,
+            |_| true,
+            &devices,
+            AccessType::Random,
+            |(_, _)| Some(FileHash(123456)),
+        );
+
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].files.len(), 2);
+    }
+
+    #[test]
+    fn test_rehash_can_skip_processing_files() {
+        let devices = DiskDevices::default();
+        let input = vec![FileGroup {
+            file_len: FileLen(200),
+            file_hash: FileHash(0),
+            files: vec![FileInfo {
+                len: FileLen(200),
+                location: 0,
+                path: Path::from("file1"),
+            }],
+        }];
+
+        let called = AtomicBool::new(false);
+        let result = rehash(
+            input,
+            |_| false,
+            |_| true,
+            &devices,
+            AccessType::Random,
+            |(fi, _)| {
+                called.store(true, Ordering::Release);
+                Some(FileHash(fi.location as u128))
+            },
+        );
+
+        assert_eq!(result.len(), 1);
+        assert!(!called.load(Ordering::Acquire));
+    }
+
+    #[test]
+    fn test_rehash_post_filter_removes_groups() {
+        let devices = DiskDevices::default();
+        let input = vec![FileGroup {
+            file_len: FileLen(200),
+            file_hash: FileHash(0),
+            files: vec![
+                FileInfo {
+                    len: FileLen(200),
+                    location: 0,
+                    path: Path::from("file1"),
+                },
+                FileInfo {
+                    len: FileLen(200),
+                    location: 35847587,
+                    path: Path::from("file2"),
+                },
+            ],
+        }];
+
+        let result = rehash(
+            input,
+            |_| true,
+            |g| g.files.len() >= 2,
+            &devices,
+            AccessType::Random,
+            |(fi, _)| Some(FileHash(fi.location as u128)),
+        );
+
+        assert!(result.is_empty())
+    }
+
+    #[test]
+    fn test_rehash_processes_files_in_location_order_on_hdd() {
+        let thread_count = 2;
+        let devices = DiskDevices::single(DiskType::HDD, thread_count);
+        let count = 1000;
+        let mut input = Vec::with_capacity(count);
+        for i in 0..count {
+            input.push(FileGroup {
+                file_len: FileLen(0),
+                file_hash: FileHash(0),
+                files: vec![FileInfo {
+                    len: FileLen(0),
+                    location: i as u64,
+                    path: Path::from(format!("file{}", i)),
+                }],
+            })
+        }
+        input.shuffle(&mut rand::thread_rng());
+
+        let processing_order = Mutex::new(Vec::new());
+        rehash(
+            input,
+            |_| true,
+            |_| true,
+            &devices,
+            AccessType::Random,
+            |(fi, _)| {
+                processing_order.lock().unwrap().push(fi.location as i32);
+                Some(FileHash(fi.location as u128))
+            },
+        );
+        let processing_order = processing_order.into_inner().unwrap();
+
+        // Because we're processing files in parallel, we have no strict guarantee they
+        // will be processed in the exact same order as in the input.
+        // However, we expect some locality so the total distance between subsequent accesses
+        // is low.
+        let mut distance = 0;
+        for i in 0..processing_order.len() - 1 {
+            distance += i32::abs(processing_order[i] - processing_order[i + 1])
+        }
+        assert!(distance < (thread_count * count) as i32)
+    }
+}
