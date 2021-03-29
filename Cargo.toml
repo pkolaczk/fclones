@@ -51,6 +51,9 @@ libc = "0.2.69"
 winapi = "0.3.8"
 winapi-util = "0.1.5"
 
+[dev-dependencies]
+rand = "0.8.3"
+
 [package.metadata.deb]
 maintainer = "Piotr Kołaczkowski <pkolaczk@gmail.com>"
 copyright = "2020, Piotr Kołaczkowski <pkolaczk@gmail.com>"
