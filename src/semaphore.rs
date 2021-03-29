@@ -38,7 +38,7 @@ pub struct OwnedSemaphoreGuard {
     sem: Arc<Semaphore>,
 }
 
-#[allow(clippy::mutex_atomic)]
+#[allow(clippy::mutex_atomic, unused)]
 impl Semaphore {
     /// Creates a new semaphore with the initial count specified.
     ///

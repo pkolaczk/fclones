@@ -8,14 +8,9 @@ use lazy_init::Lazy;
 use rayon::{ThreadPool, ThreadPoolBuilder};
 use sysinfo::{DiskExt, DiskType, System, SystemExt};
 
+use crate::config::Parallelism;
 use crate::files::FileLen;
 use crate::path::Path;
-
-#[derive(Clone, Copy, Debug)]
-pub struct Parallelism {
-    pub random: usize,
-    pub sequential: usize,
-}
 
 impl Parallelism {
     pub fn default_for(disk_type: DiskType) -> Parallelism {
@@ -167,13 +162,13 @@ impl DiskDevices {
     fn get_parallelism(
         name: &OsStr,
         disk_type: DiskType,
-        pool_sizes: &mut HashMap<OsString, Parallelism>,
+        pool_sizes: &HashMap<OsString, Parallelism>,
     ) -> Parallelism {
         let mut dev_key = OsString::new();
         dev_key.push("dev:");
         dev_key.push(name);
-        match pool_sizes.remove(&dev_key) {
-            Some(p) => p,
+        match pool_sizes.get(&dev_key) {
+            Some(p) => *p,
             None => {
                 let p = match disk_type {
                     DiskType::SSD => pool_sizes.get(OsStr::new("ssd")),
@@ -183,9 +178,10 @@ impl DiskDevices {
                 };
                 match p {
                     Some(p) => *p,
-                    None => *pool_sizes
+                    None => pool_sizes
                         .get(OsStr::new("default"))
-                        .unwrap_or(&Parallelism::default_for(disk_type)),
+                        .copied()
+                        .unwrap_or_else(|| Parallelism::default_for(disk_type)),
                 }
             }
         }
@@ -197,7 +193,7 @@ impl DiskDevices {
         &mut self,
         name: OsString,
         disk_type: DiskType,
-        pool_sizes: &mut HashMap<OsString, Parallelism>,
+        pool_sizes: &HashMap<OsString, Parallelism>,
     ) -> usize {
         if let Some((index, _)) = self.devices.iter().find_position(|d| d.name == name) {
             index
@@ -227,7 +223,7 @@ impl DiskDevices {
 
     /// Reads the list of partitions and disks from the system and builds the `DiskDevices`
     /// structure from that information.
-    pub fn new(pool_sizes: &mut HashMap<OsString, Parallelism>) -> DiskDevices {
+    pub fn new(pool_sizes: &HashMap<OsString, Parallelism>) -> DiskDevices {
         let mut sys = System::new();
         sys.refresh_disks_list();
         let mut result = DiskDevices {
@@ -249,9 +245,6 @@ impl DiskDevices {
             .mount_points
             .sort_by_key(|(p, _)| cmp::Reverse(p.component_count()));
 
-        pool_sizes.remove(OsStr::new("unknown"));
-        pool_sizes.remove(OsStr::new("ssd"));
-        pool_sizes.remove(OsStr::new("hdd"));
         result
     }
 
@@ -264,6 +257,11 @@ impl DiskDevices {
             .unwrap_or(&self.devices[0])
     }
 
+    /// Returns the disk device by its device name (not mount point)
+    pub fn get_by_name(&self, name: &OsStr) -> Option<&DiskDevice> {
+        self.devices.iter().find(|&d| d.name == name)
+    }
+
     /// Returns the first device on the list
     pub fn get_default(&self) -> &DiskDevice {
         &self.devices[0]
@@ -274,21 +272,21 @@ impl DiskDevices {
         self.devices.len()
     }
 
-    /// Returns true if there are no devices
-    pub fn is_empty(&self) -> bool {
-        self.devices.is_empty()
-    }
-
     /// Returns an iterator over devices
     pub fn iter(&self) -> impl Iterator<Item = &DiskDevice> {
         self.devices.iter()
+    }
+
+    /// Returns device_group identifiers recognized by the constructor
+    pub fn device_types() -> Vec<&'static str> {
+        vec!["ssd", "hdd", "removable", "unknown"]
     }
 }
 
 impl Default for DiskDevices {
     fn default() -> Self {
-        let mut pool_sizes = HashMap::new();
-        Self::new(&mut pool_sizes)
+        let pool_sizes = HashMap::new();
+        Self::new(&pool_sizes)
     }
 }
 

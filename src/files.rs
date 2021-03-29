@@ -15,7 +15,7 @@ use std::os::unix::io::*;
 
 use byte_unit::Byte;
 use bytesize::ByteSize;
-use metrohash::{MetroHash128, MetroHash64};
+use metrohash::MetroHash128;
 use serde::*;
 use smallvec::alloc::fmt::Formatter;
 use smallvec::alloc::str::FromStr;
@@ -90,21 +90,6 @@ impl Sub<FileLen> for FilePos {
 
 /// Represents length of data, in bytes.
 /// Provides more type safety and nicer formatting over using a raw u64.
-///
-/// # Examples
-/// Formatting file length as a human readable string:
-/// ```
-/// use fclones::files::FileLen;
-/// let file_len = FileLen(16000);
-/// let human_readable = format!("{}", file_len);
-/// assert_eq!(human_readable, "16.0 KB");
-/// ```
-///
-/// `FileLen` can be added directly to `FilePos`:
-/// ```
-/// use fclones::files::{FileLen, FilePos};
-/// assert_eq!(FilePos(1000) + FileLen(64), FilePos(1064));
-/// ```
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, Serialize, Default)]
 pub struct FileLen(pub u64);
 
@@ -334,14 +319,6 @@ impl FileId {
                 }),
             }
         }
-    }
-
-    pub fn get_hash(&self) -> u32 {
-        let mut hasher = MetroHash64::new();
-        self.inode.hash(&mut hasher);
-        self.device.hash(&mut hasher);
-        let hash = hasher.finish();
-        (hash ^ (hash >> 32)) as u32
     }
 }
 
@@ -584,28 +561,6 @@ pub fn stream_hash(
 /// Computes hash of initial `len` bytes of a file.
 /// If the file does not exist or is not readable, print the error to stderr and return `None`.
 /// The returned hash is not cryptograhically secure.
-///
-/// # Example
-/// ```
-/// use fclones::files::{file_hash, FileLen, FilePos, Caching};
-/// use fclones::path::Path;
-/// use std::io::Write;
-/// use std::fs::{File, create_dir_all};
-/// use std::path::PathBuf;
-///
-/// let test_root = PathBuf::from("target/test/file_hash/");
-/// create_dir_all(&test_root).unwrap();
-/// let file1 = test_root.join("file1");
-/// File::create(&file1).unwrap().write_all(b"Test file 1");
-/// let file2 = test_root.join("file2");
-/// File::create(&file2).unwrap().write_all(b"Test file 2");
-///
-/// let hash1 = file_hash(&Path::from(&file1), FilePos(0), FileLen::MAX, 4096, Caching::Default, |_|{}).unwrap();
-/// let hash2 = file_hash(&Path::from(&file2), FilePos(0), FileLen::MAX, 4096, Caching::Default, |_|{}).unwrap();
-/// let hash3 = file_hash(&Path::from(&file2), FilePos(0), FileLen(8), 4096, Caching::Default, |_|{}).unwrap();
-/// assert_ne!(hash1, hash2);
-/// assert_ne!(hash2, hash3);
-/// ```
 pub fn file_hash(
     path: &Path,
     offset: FilePos,
@@ -642,5 +597,69 @@ pub fn file_hash_or_log_err(
             ));
             None
         }
+    }
+}
+
+#[cfg(test)]
+mod test {
+
+    use super::*;
+
+    use crate::path::Path;
+    use std::fs::{create_dir_all, File};
+    use std::io::Write;
+    use std::path::PathBuf;
+
+    #[test]
+    fn test_format_bytes() {
+        let file_len = FileLen(16000);
+        let human_readable = format!("{}", file_len);
+        assert_eq!(human_readable, "16.0 KB");
+    }
+
+    #[test]
+    fn test_file_hash() {
+        let test_root = PathBuf::from("target/test/file_hash/");
+        create_dir_all(&test_root).unwrap();
+        let file1 = test_root.join("file1");
+        File::create(&file1)
+            .unwrap()
+            .write_all(b"Test file 1")
+            .unwrap();
+        let file2 = test_root.join("file2");
+        File::create(&file2)
+            .unwrap()
+            .write_all(b"Test file 2")
+            .unwrap();
+
+        let hash1 = file_hash(
+            &Path::from(&file1),
+            FilePos(0),
+            FileLen::MAX,
+            4096,
+            Caching::Default,
+            |_| {},
+        )
+        .unwrap();
+        let hash2 = file_hash(
+            &Path::from(&file2),
+            FilePos(0),
+            FileLen::MAX,
+            4096,
+            Caching::Default,
+            |_| {},
+        )
+        .unwrap();
+        let hash3 = file_hash(
+            &Path::from(&file2),
+            FilePos(0),
+            FileLen(8),
+            4096,
+            Caching::Default,
+            |_| {},
+        )
+        .unwrap();
+        assert_ne!(hash1, hash2);
+        assert_ne!(hash2, hash3);
     }
 }

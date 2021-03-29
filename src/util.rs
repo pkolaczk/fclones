@@ -1,3 +1,4 @@
+#[cfg(test)]
 pub mod test {
     use std::fs::{create_dir_all, remove_dir_all};
     use std::path::PathBuf;

@@ -11,6 +11,7 @@ use nom::sequence::tuple;
 use nom::IResult;
 use regex::escape;
 
+use crate::path::PATH_ESCAPE_CHAR;
 use crate::regex::Regex;
 
 #[derive(Debug)]
@@ -64,12 +65,6 @@ enum Scope {
     CurlyBrackets,
     RoundBrackets,
 }
-
-#[cfg(unix)]
-pub const ESCAPE_CHAR: &str = "\\";
-
-#[cfg(windows)]
-pub const ESCAPE_CHAR: &str = "^";
 
 impl Pattern {
     /// Creates `Pattern` instance from raw regular expression. Supports PCRE syntax.
@@ -176,7 +171,7 @@ impl Pattern {
     /// Parses a UNIX glob and converts it to a regular expression
     fn glob_to_regex(scope: Scope, glob: &str) -> IResult<&str, String> {
         // pass escaped characters as-is:
-        let p_escaped = map(tuple((tag(ESCAPE_CHAR), anychar)), |(_, c)| {
+        let p_escaped = map(tuple((tag(PATH_ESCAPE_CHAR), anychar)), |(_, c)| {
             escape(c.to_string().as_str())
         });
 

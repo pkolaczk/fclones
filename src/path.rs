@@ -12,6 +12,12 @@ use smallvec::SmallVec;
 
 use crate::path::string::{c_to_os_str, os_to_c_str};
 
+#[cfg(unix)]
+pub const PATH_ESCAPE_CHAR: &str = "\\";
+
+#[cfg(windows)]
+pub const PATH_ESCAPE_CHAR: &str = "^";
+
 /// Memory-efficient path representation.
 /// When storing multiple paths with common parent, the standard PathBuf would keep
 /// the parent duplicated in memory, wasting a lot of memory.
