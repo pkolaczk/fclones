@@ -1,19 +1,11 @@
 use std::collections::BTreeMap;
 use std::hash::Hash;
 use std::marker::PhantomData;
-use std::sync::mpsc::{channel, Receiver, Sender};
-use std::sync::Arc;
 
-use crossbeam_utils::thread;
-use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
-use rayon::prelude::ParallelSliceMut;
 use serde::*;
 use smallvec::SmallVec;
-use sysinfo::DiskType;
 
-use crate::device::DiskDevices;
-use crate::files::{FileHash, FileInfo, FileLen};
-use crate::semaphore::Semaphore;
+use crate::files::{FileHash, FileLen};
 
 /// Groups items by key.
 /// After all items have been added, this structure can be transformed into
@@ -24,23 +16,6 @@ use crate::semaphore::Semaphore;
 /// Internally uses a hash map.
 /// The amortized complexity of adding an item is O(1).
 /// The complexity of reading all groups is O(N).
-///
-/// # Example
-/// ```
-/// use smallvec::SmallVec;
-/// use fclones::group::GroupMap;
-/// let mut map = GroupMap::new(|item: (u32, u32)| (item.0, item.1));
-/// map.add((1, 10));
-/// map.add((2, 20));
-/// map.add((1, 11));
-/// map.add((2, 21));
-///
-/// let mut groups: Vec<_> = map.into_iter().collect();
-///
-/// groups.sort_by_key(|item| item.0);
-/// assert_eq!(groups[0], (1, SmallVec::from_vec(vec![10, 11])));
-/// assert_eq!(groups[1], (2, SmallVec::from_vec(vec![20, 21])));
-/// ```
 ///
 pub struct GroupMap<T, K, V, F>
 where
@@ -74,11 +49,6 @@ where
     pub fn add(&mut self, item: T) {
         let (key, new_item) = (self.split_fn)(item);
         self.groups.entry(key).or_default().push(new_item);
-    }
-
-    /// Returns number of groups larger than given min_size
-    pub fn group_count(&self, min_size: usize) -> usize {
-        self.groups.iter().filter(|g| g.1.len() >= min_size).count()
     }
 }
 
@@ -155,366 +125,24 @@ where
     }
 }
 
-/// Helper struct to preserve the original file hash and keep it together with file information
-/// Sometimes the old hash must be taken into account, e.g. when combining the prefix hash with
-/// the suffix hash.
-struct HashedFileInfo {
-    file_hash: FileHash,
-    file_info: FileInfo,
-}
-
-/// Partitions files into separate vectors, where each vector holds files persisted
-/// on the same disk device. The vectors are returned in the same order as devices.
-fn partition_by_devices(
-    files: Vec<FileGroup<FileInfo>>,
-    devices: &DiskDevices,
-) -> Vec<Vec<HashedFileInfo>> {
-    let mut result: Vec<Vec<HashedFileInfo>> = Vec::with_capacity(devices.len());
-    for _ in 0..devices.len() {
-        result.push(Vec::new());
-    }
-    for g in files {
-        for f in g.files {
-            let device = &devices[f.get_device_index()];
-            result[device.index].push(HashedFileInfo {
-                file_hash: g.file_hash,
-                file_info: f,
-            });
-        }
-    }
-    result
-}
-
-/// Iterates over grouped files, in parallel
-pub fn flat_iter(files: &[FileGroup<FileInfo>]) -> impl ParallelIterator<Item = &FileInfo> {
-    files.par_iter().flat_map(|g| &g.files)
-}
-
-#[derive(Copy, Clone, Debug)]
-pub enum AccessType {
-    Sequential,
-    Random,
-}
-
-/// Groups files by length and hash computed by given `hash_fn`.
-/// Runs in parallel on dedicated thread pools.
-/// Files on different devices are hashed separately from each other.
-/// File hashes within a single device are computed in the order given by
-/// their `location` field to minimize seek latency.
-///
-/// Caveats: the original grouping is lost. It is possible for two files that
-/// were in the different groups to end up in the same group if they have the same length
-/// and they hash to the same value. If you don't want this, you need to combine the old
-/// hash with the new hash in the provided `hash_fn`.
-pub fn rehash<'a, F1, F2, H>(
-    groups: Vec<FileGroup<FileInfo>>,
-    group_pre_filter: F1,
-    group_post_filter: F2,
-    devices: &DiskDevices,
-    access_type: AccessType,
-    hash_fn: H,
-) -> Vec<FileGroup<FileInfo>>
-where
-    F1: Fn(&FileGroup<FileInfo>) -> bool,
-    F2: Fn(&FileGroup<FileInfo>) -> bool,
-    H: Fn((&mut FileInfo, FileHash)) -> Option<FileHash> + Sync + Send + 'a,
-{
-    // Allow sharing the hash function between threads:
-    type HashFn<'a> = dyn Fn((&mut FileInfo, FileHash)) -> Option<FileHash> + Sync + Send + 'a;
-    let hash_fn: &HashFn<'a> = &hash_fn;
-
-    let (tx, rx): (Sender<HashedFileInfo>, Receiver<HashedFileInfo>) = channel();
-
-    // There is no point in processing groups containing a single file.
-    // Normally when searching for duplicates such groups are filtered out automatically after
-    // each stage, however they are possible when searching for unique files.
-    let (groups_to_process, groups_to_pass): (Vec<_>, Vec<_>) =
-        groups.into_iter().partition(group_pre_filter);
-
-    // This way we can split processing to separate thread-pools, one per device:
-    let files = partition_by_devices(groups_to_process, &devices);
-    let mut hash_map =
-        GroupMap::new(|f: HashedFileInfo| ((f.file_info.len, f.file_hash), f.file_info));
-    let hash_map_ref = &mut hash_map;
-
-    // Scope needed so threads can access shared stuff like groups or shared functions.
-    // The threads we launch are guaranteed to not live longer than this scope.
-    thread::scope(move |s| {
-        // Process all files in background
-        for (mut files, device) in files.into_iter().zip(devices.iter()) {
-            if files.is_empty() {
-                continue;
-            }
-
-            let tx = tx.clone();
-
-            // Launch a separate thread for each device, so we can process
-            // files on each device independently
-            s.spawn(move |_| {
-                // Sort files by their physical location, to reduce disk seek latency
-                if device.disk_type != DiskType::SSD {
-                    files.par_sort_unstable_by_key(|f| f.file_info.location);
-                }
-
-                // Some devices like HDDs may benefit from different amount of parallelism
-                // depending on the access type. Therefore we chose a thread pool appropriate
-                // for the access type
-                let thread_pool = match access_type {
-                    AccessType::Sequential => device.seq_thread_pool(),
-                    AccessType::Random => device.rand_thread_pool(),
-                };
-
-                let thread_count = thread_pool.current_num_threads() as isize;
-
-                // Limit the number of tasks spawned at once into the thread-pool.
-                // Each task creates a heap allocation and reserves memory in the queue.
-                // It is more memory efficient to keep these tasks as long as possible
-                // in our vector. Without this limit we observed over 20% more memory use
-                // when processing 1M of files.
-                let semaphore = Arc::new(Semaphore::new(8 * thread_count));
-
-                // Run hashing on the thread-pool dedicated to the device
-                for mut f in files {
-                    let tx = tx.clone();
-                    let guard = semaphore.clone().access_owned();
-
-                    // Spawning a task into a thread-pool requires a static lifetime,
-                    // because generally the task could outlive caller's stack frame.
-                    // However, this is not the case for rehash function, because
-                    // we don't exit before all tasks are processed.
-                    // In the perfect world we should use scopes for that. Unfortunately
-                    // the current implementation of rayon scopes runs the scope body
-                    // on one of the thread-pool worker threads, so it is not possible
-                    // to safely block inside the scope, because that leads to deadlock
-                    // when the pool has only one thread.
-                    let hash_fn: &HashFn<'static> = unsafe { std::mem::transmute(hash_fn) };
-                    thread_pool.spawn_fifo(move || {
-                        if let Some(hash) = hash_fn((&mut f.file_info, f.file_hash)) {
-                            f.file_hash = hash;
-                            tx.send(f).unwrap();
-                        }
-                        // This forces moving the guard into this task and be released when
-                        // the task is done
-                        drop(guard);
-                    });
-                }
-            });
-        }
-        // Drop the original tx, so all tx are closed when the threads finish and
-        // the next while loop will eventually exit
-        drop(tx);
-
-        // Collect the results from all threads and group them.
-        // Note that this will happen as soon as data are available
-        while let Ok(hashed_file) = rx.recv() {
-            hash_map_ref.add(hashed_file);
-        }
-    })
-    .unwrap();
-
-    // Convert the hashmap into vector, leaving only large-enough groups:
-    hash_map
-        .into_iter()
-        .map(|((len, hash), files)| FileGroup {
-            file_len: len,
-            file_hash: hash,
-            files: files.to_vec(),
-        })
-        .filter(group_post_filter)
-        .chain(groups_to_pass.into_iter())
-        .collect()
-}
-
 #[cfg(test)]
 mod test {
-    use std::sync::atomic::{AtomicBool, Ordering};
-    use std::sync::Mutex;
-
-    use rand::seq::SliceRandom;
-
-    use FileGroup;
-
-    use crate::path::Path;
-
-    use super::*;
-
-    /// Files hashing to different values should be placed into different groups
-    #[test]
-    fn test_rehash_puts_files_with_different_hashes_to_different_groups() {
-        let devices = DiskDevices::default();
-        let input = vec![FileGroup {
-            file_len: FileLen(200),
-            file_hash: FileHash(0),
-            files: vec![
-                FileInfo {
-                    len: FileLen(200),
-                    location: 0,
-                    path: Path::from("file1"),
-                },
-                FileInfo {
-                    len: FileLen(200),
-                    location: 35847587,
-                    path: Path::from("file2"),
-                },
-            ],
-        }];
-
-        let result = rehash(
-            input,
-            |_| true,
-            |_| true,
-            &devices,
-            AccessType::Random,
-            |(fi, _)| Some(FileHash(fi.location as u128)),
-        );
-
-        assert_eq!(result.len(), 2);
-        assert_eq!(result[0].files.len(), 1);
-        assert_eq!(result[1].files.len(), 1);
-        assert_ne!(result[0].files[0].path, result[1].files[0].path);
-    }
-
-    /// Files hashing to same values should be placed into the same groups
-    #[test]
-    fn test_rehash_puts_files_with_same_hashes_to_same_groups() {
-        let devices = DiskDevices::default();
-        let input = vec![
-            FileGroup {
-                file_len: FileLen(200),
-                file_hash: FileHash(0),
-                files: vec![FileInfo {
-                    len: FileLen(200),
-                    location: 0,
-                    path: Path::from("file1"),
-                }],
-            },
-            FileGroup {
-                file_len: FileLen(500),
-                file_hash: FileHash(0),
-                files: vec![FileInfo {
-                    len: FileLen(200),
-                    location: 35847587,
-                    path: Path::from("file2"),
-                }],
-            },
-        ];
-
-        let result = rehash(
-            input,
-            |_| true,
-            |_| true,
-            &devices,
-            AccessType::Random,
-            |(_, _)| Some(FileHash(123456)),
-        );
-
-        assert_eq!(result.len(), 1);
-        assert_eq!(result[0].files.len(), 2);
-    }
 
     #[test]
-    fn test_rehash_can_skip_processing_files() {
-        let devices = DiskDevices::default();
-        let input = vec![FileGroup {
-            file_len: FileLen(200),
-            file_hash: FileHash(0),
-            files: vec![FileInfo {
-                len: FileLen(200),
-                location: 0,
-                path: Path::from("file1"),
-            }],
-        }];
+    fn items_should_be_split_into_groups() {
+        use super::GroupMap;
+        use smallvec::SmallVec;
 
-        let called = AtomicBool::new(false);
-        let result = rehash(
-            input,
-            |_| false,
-            |_| true,
-            &devices,
-            AccessType::Random,
-            |(fi, _)| {
-                called.store(true, Ordering::Release);
-                Some(FileHash(fi.location as u128))
-            },
-        );
+        let mut map = GroupMap::new(|item: (u32, u32)| (item.0, item.1));
+        map.add((1, 10));
+        map.add((2, 20));
+        map.add((1, 11));
+        map.add((2, 21));
 
-        assert_eq!(result.len(), 1);
-        assert!(!called.load(Ordering::Acquire));
-    }
+        let mut groups: Vec<_> = map.into_iter().collect();
 
-    #[test]
-    fn test_rehash_post_filter_removes_groups() {
-        let devices = DiskDevices::default();
-        let input = vec![FileGroup {
-            file_len: FileLen(200),
-            file_hash: FileHash(0),
-            files: vec![
-                FileInfo {
-                    len: FileLen(200),
-                    location: 0,
-                    path: Path::from("file1"),
-                },
-                FileInfo {
-                    len: FileLen(200),
-                    location: 35847587,
-                    path: Path::from("file2"),
-                },
-            ],
-        }];
-
-        let result = rehash(
-            input,
-            |_| true,
-            |g| g.files.len() >= 2,
-            &devices,
-            AccessType::Random,
-            |(fi, _)| Some(FileHash(fi.location as u128)),
-        );
-
-        assert!(result.is_empty())
-    }
-
-    #[test]
-    fn test_rehash_processes_files_in_location_order_on_hdd() {
-        let thread_count = 2;
-        let devices = DiskDevices::single(DiskType::HDD, thread_count);
-        let count = 1000;
-        let mut input = Vec::with_capacity(count);
-        for i in 0..count {
-            input.push(FileGroup {
-                file_len: FileLen(0),
-                file_hash: FileHash(0),
-                files: vec![FileInfo {
-                    len: FileLen(0),
-                    location: i as u64,
-                    path: Path::from(format!("file{}", i)),
-                }],
-            })
-        }
-        input.shuffle(&mut rand::thread_rng());
-
-        let processing_order = Mutex::new(Vec::new());
-        rehash(
-            input,
-            |_| true,
-            |_| true,
-            &devices,
-            AccessType::Random,
-            |(fi, _)| {
-                processing_order.lock().unwrap().push(fi.location as i32);
-                Some(FileHash(fi.location as u128))
-            },
-        );
-        let processing_order = processing_order.into_inner().unwrap();
-
-        // Because we're processing files in parallel, we have no strict guarantee they
-        // will be processed in the exact same order as in the input.
-        // However, we expect some locality so the total distance between subsequent accesses
-        // is low.
-        let mut distance = 0;
-        for i in 0..processing_order.len() - 1 {
-            distance += i32::abs(processing_order[i] - processing_order[i + 1])
-        }
-        assert!(distance < (thread_count * count) as i32)
+        groups.sort_by_key(|item| item.0);
+        assert_eq!(groups[0], (1, SmallVec::from_vec(vec![10, 11])));
+        assert_eq!(groups[1], (2, SmallVec::from_vec(vec![20, 21])));
     }
 }

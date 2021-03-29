@@ -11,24 +11,6 @@ use std::time::Duration;
 /// This wrapper uses `atomic_counter::RelaxedCounter` to keep shared state without ever blocking
 /// writers. That state is copied repeatedly by a background thread to an underlying
 /// `ProgressBar` at a low rate.
-///
-/// # Example
-/// ```
-/// use indicatif::{ProgressBar, ProgressDrawTarget};
-/// use rayon::prelude::*;
-/// use fclones::progress::FastProgressBar;
-/// use std::time::Duration;
-///
-/// let collection = vec![0; 100000];
-/// let pb = ProgressBar::new(collection.len() as u64);
-/// let pb = FastProgressBar::wrap(pb);
-/// collection.par_iter()
-///     .inspect(|x| pb.tick())
-///     .for_each(|x| ());
-/// pb.abandon();
-/// assert_eq!(pb.position(), 100000);
-/// assert_eq!(pb.last_displayed_position(), 100000);
-/// ```
 pub struct FastProgressBar {
     counter: Arc<RelaxedCounter>,
     progress_bar: Arc<ProgressBar>,
@@ -203,5 +185,26 @@ impl Drop for FastProgressBar {
         if !self.is_finished() {
             self.finish_and_clear();
         }
+    }
+}
+
+#[cfg(test)]
+mod test {
+
+    use super::*;
+    use rayon::prelude::*;
+
+    #[test]
+    fn all_ticks_should_be_counted() {
+        let collection = vec![0; 100000];
+        let pb = ProgressBar::new(collection.len() as u64);
+        let pb = FastProgressBar::wrap(pb);
+        collection
+            .par_iter()
+            .inspect(|_| pb.tick())
+            .for_each(|_| ());
+        pb.abandon();
+        assert_eq!(pb.position(), 100000);
+        assert_eq!(pb.last_displayed_position(), 100000);
     }
 }

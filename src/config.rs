@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::ffi::{OsStr, OsString};
+use std::ffi::OsString;
 use std::io::{stdin, BufRead, BufReader};
 use std::path::PathBuf;
 use std::process::exit;
@@ -8,7 +8,6 @@ use clap::arg_enum;
 use clap::AppSettings;
 use structopt::StructOpt;
 
-use crate::device::Parallelism;
 use crate::files::FileLen;
 use crate::log::Log;
 use crate::path::Path;
@@ -52,6 +51,12 @@ fn parse_thread_count_option(str: &str) -> Result<(OsString, Parallelism), Strin
         None => random,
     };
     Ok((key, Parallelism { sequential, random }))
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct Parallelism {
+    pub random: usize,
+    pub sequential: usize,
 }
 
 /// Finds duplicate, unique, under- or over-replicated files
@@ -321,28 +326,5 @@ impl Config {
             map.insert(k.clone(), *v);
         }
         map
-    }
-
-    /// Checks if `thread_pool_sizes` map contains unknown thread pool names.
-    /// If unrecognized keys are found, prints an error message and terminates the program.
-    /// The only allowed key name is: "default".
-    /// This method should be called after thread pools have been configured and their entries
-    /// removed from the map.
-    pub fn check_thread_pools(
-        &self,
-        log: &Log,
-        thread_pool_sizes: &mut HashMap<OsString, Parallelism>,
-    ) {
-        thread_pool_sizes.remove(OsStr::new("default"));
-        if !thread_pool_sizes.is_empty() {
-            for (name, _) in thread_pool_sizes.iter() {
-                let name = name.to_string_lossy();
-                match name.strip_prefix("dev:") {
-                    Some(name) => log.err(format!("Unknown device: {}", name)),
-                    None => log.err(format!("Unknown thread pool or device type: {}", name)),
-                }
-            }
-            exit(1);
-        }
     }
 }
