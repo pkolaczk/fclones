@@ -1,6 +1,6 @@
 use std::fmt::{Display, Formatter};
 use std::ops::Add;
-use std::path::{PathBuf, MAIN_SEPARATOR};
+use std::path::{Path, MAIN_SEPARATOR};
 
 use nom::branch::alt;
 use nom::bytes::complete::tag;
@@ -177,7 +177,7 @@ impl Pattern {
     }
 
     /// Returns true if this pattern fully matches given file path
-    pub fn matches_path(&self, path: &PathBuf) -> bool {
+    pub fn matches_path(&self, path: &Path) -> bool {
         self.anchored_regex
             .is_match(path.to_string_lossy().as_bytes())
             .unwrap_or(false)
@@ -307,6 +307,7 @@ impl ToString for Pattern {
 #[cfg(test)]
 mod test {
     use super::*;
+    use std::path::PathBuf;
 
     fn glob_to_regex_str(glob: &str) -> String {
         Pattern::glob(glob).unwrap().to_string()

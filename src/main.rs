@@ -5,8 +5,8 @@ use std::env::current_dir;
 use std::ffi::{OsStr, OsString};
 use std::fs::File;
 use std::io::{BufWriter, Write};
-use std::path::PathBuf;
 use std::process::exit;
+#[cfg(target_os = "linux")]
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
 
@@ -16,7 +16,6 @@ use itertools::Itertools;
 use rayon::prelude::*;
 use regex::Regex;
 use structopt::StructOpt;
-use sysinfo::DiskType;
 use thread_local::ThreadLocal;
 
 use fclones::config::*;
@@ -197,6 +196,7 @@ fn remove_same_files(ctx: &AppCtx, groups: Vec<FileGroup<FileInfo>>) -> Vec<File
     groups
 }
 
+#[cfg(target_os = "linux")]
 fn atomic_counter_vec(len: usize) -> Vec<AtomicU32> {
     let mut v = Vec::with_capacity(len);
     for _ in 0..len {
@@ -205,41 +205,39 @@ fn atomic_counter_vec(len: usize) -> Vec<AtomicU32> {
     v
 }
 
+#[cfg(target_os = "linux")]
 fn update_file_locations(ctx: &AppCtx, groups: &mut Vec<FileGroup<FileInfo>>) {
-    #[cfg(target_os = "linux")]
-    {
-        let count = groups.total_count();
-        let progress = ctx.log.progress_bar("Fetching extents", count as u64);
+    let count = groups.total_count();
+    let progress = ctx.log.progress_bar("Fetching extents", count as u64);
 
-        let err_counters = atomic_counter_vec(ctx.devices.len());
-        const MAX_ERR_COUNT_TO_LOG: u32 = 10;
+    let err_counters = atomic_counter_vec(ctx.devices.len());
+    const MAX_ERR_COUNT_TO_LOG: u32 = 10;
 
-        groups
-            .par_iter_mut()
-            .flat_map(|g| &mut g.files)
-            .update(|fi| {
-                let device: &DiskDevice = &ctx.devices[fi.get_device_index()];
-                if device.disk_type != DiskType::SSD {
-                    if let Err(e) = fi.fetch_physical_location() {
-                        let counter = &err_counters[device.index];
-                        if counter.load(Ordering::Relaxed) < MAX_ERR_COUNT_TO_LOG {
-                            let err_count = counter.fetch_add(1, Ordering::Relaxed);
-                            ctx.log.warn(format!(
-                                "Failed to fetch extents for file {}: {}",
-                                fi.path, e
-                            ));
-                            if err_count == MAX_ERR_COUNT_TO_LOG {
-                                ctx.log.warn(
-                                    "Too many fetch extents errors. More errors will be ignored. \
-                                 Random access performance might be affected on spinning drives.",
-                                )
-                            }
+    groups
+        .par_iter_mut()
+        .flat_map(|g| &mut g.files)
+        .update(|fi| {
+            let device: &DiskDevice = &ctx.devices[fi.get_device_index()];
+            if device.disk_type != sysinfo::DiskType::SSD {
+                if let Err(e) = fi.fetch_physical_location() {
+                    let counter = &err_counters[device.index];
+                    if counter.load(Ordering::Relaxed) < MAX_ERR_COUNT_TO_LOG {
+                        let err_count = counter.fetch_add(1, Ordering::Relaxed);
+                        ctx.log.warn(format!(
+                            "Failed to fetch extents for file {}: {}",
+                            fi.path, e
+                        ));
+                        if err_count == MAX_ERR_COUNT_TO_LOG {
+                            ctx.log.warn(
+                                "Too many fetch extents errors. More errors will be ignored. \
+                             Random access performance might be affected on spinning drives.",
+                            )
                         }
                     }
                 }
-            })
-            .for_each(|_| progress.tick());
-    }
+            }
+        })
+        .for_each(|_| progress.tick());
 }
 
 /// Transforms files by piping them to an external program and groups them by their hashes
@@ -507,7 +505,7 @@ fn stdout_reporter(progress: Arc<FastProgressBar>) -> Reporter<Box<dyn Write>> {
 /// Writes and error message and exists the application if the file cannot be open.
 fn file_reporter(
     ctx: &AppCtx,
-    path: &PathBuf,
+    path: &std::path::Path,
     progress: Arc<FastProgressBar>,
 ) -> Reporter<Box<dyn Write>> {
     match File::create(path) {
@@ -613,7 +611,11 @@ fn main() {
 fn process(ctx: &AppCtx) -> Vec<FileGroup<Path>> {
     let matching_files = scan_files(&ctx);
     let size_groups = group_by_size(&ctx, matching_files);
+
+    #[allow(unused_mut)]
     let mut size_groups_pruned = remove_same_files(&ctx, size_groups);
+
+    #[cfg(target_os = "linux")]
     update_file_locations(ctx, &mut size_groups_pruned);
 
     let groups = match ctx.config.transform(&ctx.log) {

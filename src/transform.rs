@@ -311,7 +311,7 @@ impl Transform {
     }
 
     #[cfg(unix)]
-    fn create_named_pipe(path: &PathBuf) -> io::Result<()> {
+    fn create_named_pipe(path: &std::path::Path) -> io::Result<()> {
         use nix::sys::stat;
         use nix::unistd::mkfifo;
         if let Err(e) = mkfifo(path, stat::Mode::S_IRWXU) {

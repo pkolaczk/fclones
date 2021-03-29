@@ -5,8 +5,7 @@ use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::Arc;
 
 use crossbeam_utils::thread;
-use itertools::Itertools;
-use rayon::iter::{IntoParallelIterator, IntoParallelRefIterator, ParallelIterator};
+use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
 use rayon::prelude::ParallelSliceMut;
 use serde::*;
 use smallvec::SmallVec;
@@ -105,43 +104,6 @@ pub struct FileGroup<F> {
     pub file_hash: FileHash,
     /// Group of files with the same length and hash
     pub files: Vec<F>,
-}
-
-impl<F> FileGroup<F>
-where
-    F: Send,
-{
-    /// Splits a single group into 0 to n groups based on the given hash function if `cond` is true.
-    /// If `cond` is false, then `self` is returned as the only item.
-    /// Files hashing to `None` are removed from the output.
-    /// An empty vector may be returned if all files hash to `None`.
-    pub fn split<H>(self, cond: bool, hash: H) -> Vec<FileGroup<F>>
-    where
-        H: Fn(&F) -> Option<FileHash> + Sync + Send,
-    {
-        if cond {
-            let file_len = self.file_len;
-            let mut hashed = self
-                .files
-                .into_par_iter()
-                .filter_map(|f: F| (hash)(&f).map(|h| (h, f)))
-                .collect::<Vec<_>>();
-
-            hashed.sort_by_key(|(h, _p)| h.0);
-            hashed
-                .into_iter()
-                .group_by(|(h, _)| *h)
-                .into_iter()
-                .map(|(hash, group)| FileGroup {
-                    file_len,
-                    file_hash: hash,
-                    files: group.map(|(_hash, path)| path).collect(),
-                })
-                .collect()
-        } else {
-            vec![self]
-        }
-    }
 }
 
 /// Computes metrics for reporting summaries of each processing stage.
@@ -258,8 +220,8 @@ where
     H: Fn((&mut FileInfo, FileHash)) -> Option<FileHash> + Sync + Send + 'a,
 {
     // Allow sharing the hash function between threads:
-    type HT<'a> = dyn Fn((&mut FileInfo, FileHash)) -> Option<FileHash> + Sync + Send + 'a;
-    let hash_fn: &HT<'a> = &hash_fn;
+    type HashFn<'a> = dyn Fn((&mut FileInfo, FileHash)) -> Option<FileHash> + Sync + Send + 'a;
+    let hash_fn: &HashFn<'a> = &hash_fn;
 
     let (tx, rx): (Sender<HashedFileInfo>, Receiver<HashedFileInfo>) = channel();
 
@@ -325,7 +287,7 @@ where
                     // on one of the thread-pool worker threads, so it is not possible
                     // to safely block inside the scope, because that leads to deadlock
                     // when the pool has only one thread.
-                    let hash_fn: &HT<'static> = unsafe { std::mem::transmute(hash_fn) };
+                    let hash_fn: &HashFn<'static> = unsafe { std::mem::transmute(hash_fn) };
                     thread_pool.spawn_fifo(move || {
                         if let Some(hash) = hash_fn((&mut f.file_info, f.file_hash)) {
                             f.file_hash = hash;
