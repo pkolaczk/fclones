@@ -251,7 +251,7 @@ Each program was executed twice.
 Before the first run, the system page cache was evicted with `echo 3 > /proc/sys/vm/drop_caches` and the second
 run was executed immediately after the first run finished. 
 
-### Benchmark 1
+### SSD Benchmark
 - Model: Dell Precision 5520
 - CPU: Intel(R) Xeon(R) CPU E3-1505M v6 @ 3.00GHz
 - RAM: 32 GB
@@ -273,33 +273,29 @@ fclones                                                |  0.1.0    | Rust     | 
 it was still computing MD5 in stage 2/3. Unfortunately `fdupes-java` doesn't display
 a useful progress bar, so it is not possible to estimate how long it would take.
 
-### Benchmark 2
-- Host:
-   - Dell Precision 5520
-   - CPU: Intel(R) Xeon(R) CPU E3-1505M v6 @ 3.00GHz
-   - RAM: 32 GB
-   - System: Ubuntu Linux 20.04, kernel 5.4.0-40-generic
-- Storage: 
-  - WD MyCloud EX2 Ultra 
-  - 2x8 TB 5400 RPM WD RED in RAID 1
-  - NFS over a 1 Gbit Ethernet LAN connection    
-- Task: 
-  - 9243 paths 
-  - 166.2 GB data 
-  - 4.2 GB duplicate files
-  - file types: RAWs, JPGs, RawTherapee processing files 
+### HDD Benchmark 
+- Model: Dell Precision M4600
+- CPU: Intel(R) Core(TM) i7-2760QM CPU @ 2.40GHz
+- RAM: 24 GB
+- System: Mint Linux 19.3, kernel 5.4.0-70-generic
+- Storage: Seagate Momentus 7200 RPM SATA drive  
+- Task: 51370 paths, 2 GB data, 6811 (471 MB) duplicate files
 
 Commands used:
 
-      /usr/bin/time -v fclones -t <num threads> -R <file set root>
+      /usr/bin/time -v fclones -t hdd:<threads> -R <file set root> 
       /usr/bin/time -v jdupes -R -Q <file set root>
       /usr/bin/time -v fdupes -R <file set root>
       /usr/bin/time -v rdfind <file set root>
+
+In this benchmark, the page cache was dropped before each run.
             
-Program                                                |  Version  | Language | Threads | Cold Cache Time | Hot Cache Time | Peak Memory
--------------------------------------------------------|-----------|----------|--------:|----------------:|---------------:|-------------:
-fclones                                                |  0.5.0    | Rust     | 8       |   **1:16.07**   | **0:00.74**    |  8.6 MB
-fclones                                                |  0.5.0    | Rust     | 1       |   1:33.03       | 0:06.07        |  7.5 MB
-[rdfind](https://github.com/pauldreik/rdfind)          |  1.4.1    | C++      | 1       |   1:26.42       | 0:21.92        |  7.3 MB
-[jdupes](https://github.com/jbruchon/jdupes)           |  1.14     | C        | 1       |   1:31.22       | 0:07.50        |  3.8 MB
-[fdupes](https://github.com/adrianlopezroche/fdupes)   |  1.6.1    | C        | 1       |   1:39.74       | 0:22.07        |  3.7 MB
+Program                                                |  Version  | Language | Threads |  Time           |  Peak Memory
+-------------------------------------------------------|-----------|----------|--------:|----------------:|-------------:
+fclones                                                |  0.9.0    | Rust     | 1,1     | **0:19.93**     |  18.1 MB
+fclones                                                |  0.9.0    | Rust     | 8,1     |   0:29.11       |  19.8 MB
+fclones                                                |  0.8.1    | Rust     | 1       |   5:32.32       |  15.3 MB
+fclones                                                |  0.8.1    | Rust     | 8       |   3:37.97       |  19.4 MB
+[rdfind](https://github.com/pauldreik/rdfind)          |  1.3.5    | C++      | 1       |   0:33.70       |  18.5 MB
+[jdupes](https://github.com/jbruchon/jdupes)           |  1.9      | C        | 1       |   1:18.47       |  15.7 MB
+[fdupes](https://github.com/adrianlopezroche/fdupes)   |  1.6.1    | C        | 1       |   1:33.71       |  15.9 MB
