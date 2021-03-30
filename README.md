@@ -297,5 +297,6 @@ fclones                                                |  0.9.0    | Rust     | 
 fclones                                                |  0.8.1    | Rust     | 1       |   5:32.32       |  15.3 MB
 fclones                                                |  0.8.1    | Rust     | 8       |   3:37.97       |  19.4 MB
 [rdfind](https://github.com/pauldreik/rdfind)          |  1.3.5    | C++      | 1       |   0:33.70       |  18.5 MB
+[yadf](https://github.com/jRimbault/yadf)              |  0.14.1   | Rust     |         |   1:11.69       |  22.9 MB
 [jdupes](https://github.com/jbruchon/jdupes)           |  1.9      | C        | 1       |   1:18.47       |  15.7 MB
 [fdupes](https://github.com/adrianlopezroche/fdupes)   |  1.6.1    | C        | 1       |   1:33.71       |  15.9 MB
