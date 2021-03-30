@@ -1,24 +1,42 @@
 #!/bin/sh
 set -e
+bold=$(tput bold)
+normal=$(tput sgr0)
 
 # This script generates packages for a release and places them in target/packages
-rustup update
+echo "${bold}Setting up Rust${normal}"
+set -x
+rustup update stable
+rustup target add x86_64-pc-windows-gnu
+set +x
+
+echo "${bold}Running checks${normal}"
+set -x
 cargo fmt -- --check
 cargo clippy --all
-cargo test
+cargo test -q
+set +x
 
+echo "${bold}Building${normal}"
+set -x
+cargo build --release
+set +x
+
+echo "${bold}Packaging${normal}"
+set -x
 VERSION=$(cargo pkgid | sed 's/.*#//')
 PKG_DIR=target/packages
 mkdir -p $PKG_DIR
+rm -f $PKG_DIR/*
 
 cargo deb
 mv target/debian/*.deb $PKG_DIR
 
-fakeroot alien --to-rpm --to-tgz -c -v $PKG_DIR/*.deb
+fakeroot alien --to-rpm -c $PKG_DIR/*.deb
 mv *.rpm $PKG_DIR
+fakeroot alien --to-tgz -c $PKG_DIR/*.deb
 mv *.tgz $PKG_DIR
 
-rustup target add x86_64-pc-windows-gnu
 cargo build --release --target=x86_64-pc-windows-gnu
 zip -j $PKG_DIR/"fclones-$VERSION-win.x86_64.zip" target/x86_64-pc-windows-gnu/release/fclones.exe
 
