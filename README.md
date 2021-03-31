@@ -278,12 +278,12 @@ a useful progress bar, so it is not possible to estimate how long it would take.
 - CPU: Intel(R) Core(TM) i7-2760QM CPU @ 2.40GHz
 - RAM: 24 GB
 - System: Mint Linux 19.3, kernel 5.4.0-70-generic
-- Storage: Seagate Momentus 7200 RPM SATA drive  
+- Storage: Seagate Momentus 7200 RPM SATA drive, EXT4 filesystem  
 - Task: 51370 paths, 2 GB data, 6811 (471 MB) duplicate files
 
 Commands used:
 
-      /usr/bin/time -v fclones -t hdd:<threads> -R <file set root> 
+      /usr/bin/time -v fclones -R <file set root> 
       /usr/bin/time -v jdupes -R -Q <file set root>
       /usr/bin/time -v fdupes -R <file set root>
       /usr/bin/time -v rdfind <file set root>
@@ -292,10 +292,7 @@ In this benchmark, the page cache was dropped before each run.
             
 Program                                                |  Version  | Language | Threads |  Time           |  Peak Memory
 -------------------------------------------------------|-----------|----------|--------:|----------------:|-------------:
-fclones                                                |  0.9.0    | Rust     | 1,1     | **0:19.93**     |  18.1 MB
-fclones                                                |  0.9.0    | Rust     | 8,1     |   0:29.11       |  19.8 MB
-fclones                                                |  0.8.1    | Rust     | 1       |   5:32.32       |  15.3 MB
-fclones                                                |  0.8.1    | Rust     | 8       |   3:37.97       |  19.4 MB
+fclones                                                |  0.9.1    | Rust     | 1       | **0:19.45**     |  18.1 MB
 [rdfind](https://github.com/pauldreik/rdfind)          |  1.3.5    | C++      | 1       |   0:33.70       |  18.5 MB
 [yadf](https://github.com/jRimbault/yadf)              |  0.14.1   | Rust     |         |   1:11.69       |  22.9 MB
 [jdupes](https://github.com/jbruchon/jdupes)           |  1.9      | C        | 1       |   1:18.47       |  15.7 MB

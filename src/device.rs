@@ -20,20 +20,31 @@ pub struct Parallelism {
 impl Parallelism {
     pub fn default_for(disk_type: DiskType) -> Parallelism {
         match disk_type {
+            // SSDs typically benefit from a lot of parallelism, so
+            // set both pools to the number of cores. Some users will probably
+            // want to increase it even more.
             DiskType::SSD => Parallelism {
                 random: 0,
                 sequential: 0,
-            }, // == number of cores
+            },
+            // Rotational drives can't serve multiple requests at once.
+            // After introducing access ordering in fclones 0.9.0 it turns out
+            // that we get slightly more IOPS when we schedule random access operations on a
+            // single thread. For sequential scanning of big files, parallel access can hurt a lot,
+            // so 1 is the only possible choice here.
             DiskType::HDD => Parallelism {
-                random: 8,
+                random: 1,
                 sequential: 1,
             },
-            DiskType::Removable => Parallelism {
-                random: 4,
-                sequential: 1,
-            },
-            DiskType::Unknown(_) => Parallelism {
-                random: 4,
+            // Unknown device here, so we need to stay away from potentially extremely bad defaults.
+            // If the underlying device is an SSD, a single-threaded mode can
+            // degrade random I/O performance many times. On the other hand making parallel random
+            // access to a HDD didn't degrade performance by more than 30% in our tests,
+            // and sometimes it can speed things up.
+            // For sequential reads of big files we obviously stay single threaded,
+            // as multithreading can hurt really a lot in case the underlying device is rotational.
+            _ => Parallelism {
+                random: 0,
                 sequential: 1,
             },
         }
