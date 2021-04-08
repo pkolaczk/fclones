@@ -1,7 +1,7 @@
 [package]
 name = "fclones"
 description = "Finds duplicate, unique, under- or over-replicated files"
-version = "0.9.1"
+version = "0.10.0"
 authors = ["Piotr Kołaczkowski <pkolaczk@gmail.com>"]
 edition = "2018"
 license = "MIT"
@@ -27,9 +27,8 @@ lazy-init = "0.5.0"
 maplit = "1.0.2"
 metrohash = "1.0.6"
 nom = { version = "5.1.2", features = ["regexp"] }
-pcre2 = { git = "https://github.com/pkolaczk/rust-pcre2.git" }
 rayon = "1.4.0"
-regex = "1.3.7"
+regex = "1.4.5"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1.0"
 smallvec = "1.6.1"

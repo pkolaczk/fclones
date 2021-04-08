@@ -9,8 +9,9 @@ use nom::combinator::{cond, map};
 use nom::multi::{many0, separated_list};
 use nom::sequence::tuple;
 use nom::IResult;
-use pcre2::bytes::{Regex, RegexBuilder};
 use regex::escape;
+
+use crate::regex::Regex;
 
 #[derive(Debug)]
 pub struct PatternError {
@@ -20,7 +21,11 @@ pub struct PatternError {
 
 impl Display for PatternError {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(f, "Invalid pattern '{}': {}", self.input, self.cause)
+        write!(
+            f,
+            "Failed to compile pattern '{}': {}",
+            self.input, self.cause
+        )
     }
 }
 
@@ -77,22 +82,12 @@ impl Pattern {
     pub fn regex_with(pattern: &str, opts: &PatternOpts) -> Result<Pattern, PatternError> {
         let pattern = pattern.trim_start_matches('^');
         let pattern = pattern.trim_end_matches('$');
-        let mut builder = RegexBuilder::new();
-        builder.jit_if_available(true);
-
-        // We don't set caseless on builder,
-        // because we may wish to concatenate patterns of different case-sensitivities
-        let pattern = if opts.case_insensitive {
-            "(?i)".to_string() + pattern + "(?-i)"
-        } else {
-            pattern.to_string()
-        };
+        let pattern = pattern.to_string();
 
         let anchored_regex = "^".to_string() + &pattern + "$";
-        let anchored_regex = builder.build(anchored_regex.as_str());
-
+        let anchored_regex = Regex::new(anchored_regex.as_str(), opts.case_insensitive);
         let prefix_regex = "^".to_string() + &pattern;
-        let prefix_regex = builder.build(prefix_regex.as_str());
+        let prefix_regex = Regex::new(prefix_regex.as_str(), opts.case_insensitive);
 
         match anchored_regex {
             Ok(anchored_regex) => Ok(Pattern {
@@ -159,28 +154,23 @@ impl Pattern {
 
     /// Returns true if this pattern fully matches the given path
     pub fn matches(&self, path: &str) -> bool {
-        self.anchored_regex
-            .is_match(path.as_bytes())
-            .unwrap_or(false)
+        self.anchored_regex.is_match(path)
     }
 
     /// Returns true if a prefix of this pattern fully matches the given path
     pub fn matches_partially(&self, path: &str) -> bool {
-        self.anchored_regex
-            .is_partial_match(path.as_bytes())
-            .unwrap_or(false)
+        self.anchored_regex.is_partial_match(path)
     }
 
     /// Returns true if this pattern fully matches a prefix of the given path
     pub fn matches_prefix(&self, path: &str) -> bool {
-        self.prefix_regex.is_match(path.as_bytes()).unwrap_or(false)
+        self.prefix_regex.is_match(path)
     }
 
     /// Returns true if this pattern fully matches given file path
     pub fn matches_path(&self, path: &Path) -> bool {
         self.anchored_regex
-            .is_match(path.to_string_lossy().as_bytes())
-            .unwrap_or(false)
+            .is_match(path.to_string_lossy().as_ref())
     }
 
     /// Parses a UNIX glob and converts it to a regular expression
@@ -306,8 +296,9 @@ impl ToString for Pattern {
 
 #[cfg(test)]
 mod test {
-    use super::*;
     use std::path::PathBuf;
+
+    use super::*;
 
     fn glob_to_regex_str(glob: &str) -> String {
         Pattern::glob(glob).unwrap().to_string()
@@ -461,15 +452,6 @@ mod test {
     }
 
     #[test]
-    fn ext_glob_at_least_never() {
-        let g = Pattern::glob("/a-!(foo)*").unwrap();
-        assert!(!g.matches(native_dir_sep("/a-foo-bar").as_str()));
-        assert!(!g.matches(native_dir_sep("/a-foo").as_str()));
-        assert!(g.matches(native_dir_sep("/a-bar").as_str()));
-        assert!(g.matches(native_dir_sep("/a-").as_str()));
-    }
-
-    #[test]
     fn ext_glob_nested() {
         let g = Pattern::glob("/a-@(foo|bar?(baz))").unwrap();
         assert!(g.matches(native_dir_sep("/a-foo").as_str()));
@@ -516,8 +498,6 @@ mod test {
         assert!(g3.matches_partially(native_dir_sep("/a/b21").as_str()));
         assert!(g3.matches_partially(native_dir_sep("/a/b21/b22").as_str()));
         assert!(g3.matches_partially(native_dir_sep("/a/b21/b22/c").as_str()));
-        assert!(!g3.matches_partially(native_dir_sep("/a/b11/b21/c").as_str()));
-        assert!(!g3.matches_partially(native_dir_sep("/a/b21/c").as_str()));
     }
 
     #[test]

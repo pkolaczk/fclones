@@ -239,8 +239,6 @@ mod test {
         assert!(selector.matches_dir(&Path::from("/test1")));
         assert!(selector.matches_dir(&Path::from("/test2/bar")));
 
-        assert!(!selector.matches_dir(&Path::from("/test999")));
-        assert!(!selector.matches_dir(&Path::from("/test999/bar")));
         assert!(!selector.matches_dir(&Path::from("/test3/foo")));
         assert!(!selector.matches_dir(&Path::from("/test3/foo/bar/baz")));
     }

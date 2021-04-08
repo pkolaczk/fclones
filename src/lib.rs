@@ -6,6 +6,7 @@ pub mod log;
 pub mod path;
 pub mod pattern;
 pub mod progress;
+pub mod regex;
 pub mod report;
 pub mod selector;
 pub mod semaphore;
