@@ -86,9 +86,16 @@ fn main() {
     log.info("Started");
     let spinner = log.spinner("Initializing");
     configure_main_thread_pool(&config.thread_pool_sizes());
-    let ctx = AppCtx::new(config, log);
-    ctx.config.check_transform(&ctx.log);
+    let ctx = AppCtx::new(config, &log);
     drop(spinner);
+
+    let ctx = match ctx {
+        Ok(ctx) => ctx,
+        Err(e) => {
+            log.err(e);
+            exit(1)
+        }
+    };
 
     if let Some(output) = &ctx.config.output {
         // Try to create the output file now and fail early so that
@@ -104,5 +111,7 @@ fn main() {
     }
 
     let results = fclones(&ctx);
-    write_report(&ctx, &results)
+    if let Err(e) = write_report(&ctx, &results) {
+        ctx.log.err(format!("Failed to write report: {}", e))
+    }
 }

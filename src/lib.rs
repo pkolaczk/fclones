@@ -1,11 +1,9 @@
 use std::cell::RefCell;
 use std::cmp::Reverse;
-use std::collections::HashMap;
 use std::env::current_dir;
 use std::ffi::{OsStr, OsString};
 use std::fs::File;
 use std::io::{BufWriter, Write};
-use std::process::exit;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::Arc;
@@ -26,9 +24,14 @@ use crate::log::Log;
 use crate::path::Path;
 use crate::progress::FastProgressBar;
 use crate::report::Reporter;
+use crate::selector::PathSelector;
 use crate::semaphore::Semaphore;
 use crate::transform::Transform;
 use crate::walk::Walk;
+use core::fmt;
+use std::collections::HashMap;
+use std::fmt::{Display, Formatter};
+use std::io;
 
 pub mod config;
 pub mod log;
@@ -47,52 +50,89 @@ mod transform;
 mod util;
 mod walk;
 
-/// Holds stuff needed globally by the whole application
-pub struct AppCtx {
-    pub config: Config,
-    pub log: Log,
-    devices: DiskDevices,
+#[derive(Debug)]
+pub struct Error {
+    pub message: String,
 }
 
-impl AppCtx {
-    pub fn new(config: Config, log: Log) -> AppCtx {
+impl Error {
+    pub fn new(msg: String) -> Error {
+        Error { message: msg }
+    }
+}
+
+impl std::error::Error for Error {}
+
+impl Display for Error {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.message)
+    }
+}
+
+impl From<String> for Error {
+    fn from(s: String) -> Self {
+        Error { message: s }
+    }
+}
+
+/// Holds stuff needed globally by the whole application
+pub struct AppCtx<'a> {
+    pub config: Config,
+    pub log: &'a Log,
+    devices: DiskDevices,
+    transform: Option<Transform>,
+    path_selector: PathSelector,
+}
+
+impl<'a> AppCtx<'a> {
+    pub fn new(config: Config, log: &Log) -> Result<AppCtx, Error> {
         let thread_pool_sizes = config.thread_pool_sizes();
         let devices = DiskDevices::new(&thread_pool_sizes);
-        // TODO: return Result instead of exiting on error
-        Self::check_thread_pools(&log, &devices, &thread_pool_sizes);
+        let transform = match config.transform() {
+            None => None,
+            Some(Ok(transform)) => Some(transform),
+            Some(Err(e)) => return Err(Error::new(format!("Invalid transform: {}", e))),
+        };
+        let base_dir = Path::from(current_dir().unwrap_or_default());
+        let selector = config
+            .path_selector(&base_dir)
+            .map_err(|e| format!("Invalid pattern: {}", e))?;
 
-        AppCtx {
+        Self::check_pool_config(thread_pool_sizes, &devices)?;
+
+        Ok(AppCtx {
             config,
             log,
             devices,
-        }
+            transform,
+            path_selector: selector,
+        })
     }
 
-    /// Checks if `thread_pool_sizes` map contains unknown thread pool names.
-    /// If unrecognized keys are found, prints an error message and exits
-    fn check_thread_pools(
-        log: &Log,
+    /// Checks if all thread pool names refer to existing pools or devices
+    fn check_pool_config(
+        thread_pool_sizes: HashMap<OsString, Parallelism>,
         devices: &DiskDevices,
-        thread_pool_sizes: &HashMap<OsString, Parallelism>,
-    ) {
+    ) -> Result<(), Error> {
         let mut allowed_pool_names = DiskDevices::device_types();
         allowed_pool_names.push("main");
         allowed_pool_names.push("default");
-
         for (name, _) in thread_pool_sizes.iter() {
             let name = name.to_string_lossy();
             match name.strip_prefix("dev:") {
                 Some(name) if devices.get_by_name(OsStr::new(name)).is_none() => {
-                    log.err(format!("Unknown device: {}", name));
-                    exit(1);
+                    return Err(Error::new(format!("Unknown device: {}", name)));
                 }
                 None if !allowed_pool_names.contains(&name.as_ref()) => {
-                    log.err(format!("Unknown thread pool or device type: {}", name));
-                    exit(1);
+                    return Err(Error::new(format!(
+                        "Unknown thread pool or device type: {}",
+                        name
+                    )));
                 }
                 _ => {}
             }
         }
+        Ok(())
     }
 }
 
@@ -268,8 +308,6 @@ where
 
 /// Walks the directory tree and collects matching files in parallel into a vector
 fn scan_files(ctx: &AppCtx) -> Vec<Vec<FileInfo>> {
-    let base_dir = Path::from(current_dir().unwrap_or_default());
-    let path_selector = ctx.config.path_selector(&ctx.log, &base_dir);
     let file_collector = ThreadLocal::new();
     let spinner = ctx.log.spinner("Scanning files");
     let spinner_tick = &|_: &Path| spinner.tick();
@@ -283,7 +321,7 @@ fn scan_files(ctx: &AppCtx) -> Vec<Vec<FileInfo>> {
     walk.depth = config.depth.unwrap_or(usize::MAX);
     walk.skip_hidden = config.skip_hidden;
     walk.follow_links = config.follow_links;
-    walk.path_selector = path_selector;
+    walk.path_selector = ctx.path_selector.clone();
     walk.log = Some(&ctx.log);
     walk.on_visit = spinner_tick;
     walk.run(ctx.config.input_paths(), |path| {
@@ -686,9 +724,9 @@ pub fn fclones(ctx: &AppCtx) -> Vec<FileGroup<Path>> {
     let mut size_groups_pruned = remove_same_files(&ctx, size_groups);
     update_file_locations(ctx, &mut size_groups_pruned);
 
-    let groups = match ctx.config.transform(&ctx.log) {
-        Some(transform) => group_transformed(ctx, &transform, size_groups_pruned),
-        None => {
+    let groups = match &ctx.transform {
+        Some(transform) => group_transformed(ctx, transform, size_groups_pruned),
+        _ => {
             let prefix_len = prefix_len(&ctx.devices, flat_iter(&size_groups_pruned));
             let prefix_groups = group_by_prefix(&ctx, prefix_len, size_groups_pruned);
             let suffix_groups = group_by_suffix(&ctx, prefix_groups);
@@ -721,26 +759,16 @@ fn stdout_reporter(progress: Arc<FastProgressBar>) -> Reporter<Box<dyn Write>> {
 }
 
 /// Creates a reporter that writes to the given file.
-/// Writes and error message and exists the application if the file cannot be open.
 fn file_reporter(
-    ctx: &AppCtx,
     path: &std::path::Path,
     progress: Arc<FastProgressBar>,
-) -> Reporter<Box<dyn Write>> {
-    match File::create(path) {
-        Ok(file) => {
-            let out: Box<dyn Write> = Box::new(BufWriter::new(file));
-            Reporter::new(out, false, progress)
-        }
-        Err(e) => {
-            ctx.log
-                .err(format!("Could not create {}: {}", path.display(), e));
-            exit(1)
-        }
-    }
+) -> io::Result<Reporter<Box<dyn Write>>> {
+    let file = File::create(path)?;
+    let out: Box<dyn Write> = Box::new(BufWriter::new(file));
+    Ok(Reporter::new(out, false, progress))
 }
 
-pub fn write_report(ctx: &AppCtx, groups: &[FileGroup<Path>]) {
+pub fn write_report(ctx: &AppCtx, groups: &[FileGroup<Path>]) -> io::Result<()> {
     let remaining_files = groups.total_count();
     let progress = ctx
         .log
@@ -748,19 +776,15 @@ pub fn write_report(ctx: &AppCtx, groups: &[FileGroup<Path>]) {
 
     // No progress bar when we write to terminal
     let mut reporter = match &ctx.config.output {
-        Some(path) => file_reporter(ctx, path, progress),
+        Some(path) => file_reporter(path, progress)?,
         None => stdout_reporter(progress),
     };
 
-    let result = match &ctx.config.format {
+    match &ctx.config.format {
         OutputFormat::Text => reporter.write_as_text(groups),
         OutputFormat::Fdupes => reporter.write_as_fdupes(groups),
         OutputFormat::Csv => reporter.write_as_csv(groups),
         OutputFormat::Json => reporter.write_as_json(groups),
-    };
-    match result {
-        Ok(()) => (),
-        Err(e) => ctx.log.err(format!("Failed to write report: {}", e)),
     }
 }
 
@@ -1156,7 +1180,7 @@ mod test {
             ctx.config.output = Some(report_file.clone());
 
             let results = fclones(&ctx);
-            write_report(&ctx, &results);
+            write_report(&ctx, &results).unwrap();
 
             assert!(report_file.exists());
             let mut report = String::new();

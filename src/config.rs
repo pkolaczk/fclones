@@ -2,18 +2,17 @@ use std::collections::HashMap;
 use std::ffi::OsString;
 use std::io::{stdin, BufRead, BufReader};
 use std::path::PathBuf;
-use std::process::exit;
 
 use clap::arg_enum;
 use clap::AppSettings;
 use structopt::StructOpt;
 
 use crate::files::FileLen;
-use crate::log::Log;
 use crate::path::Path;
-use crate::pattern::{Pattern, PatternOpts};
+use crate::pattern::{Pattern, PatternError, PatternOpts};
 use crate::selector::PathSelector;
 use crate::transform::Transform;
+use std::io;
 
 arg_enum! {
     #[derive(Debug, StructOpt)]
@@ -213,29 +212,40 @@ pub struct Config {
 }
 
 impl Config {
-    pub fn path_selector(&self, log: &Log, base_dir: &Path) -> PathSelector {
+    fn compile_pattern(&self, s: &str) -> Result<Pattern, PatternError> {
         let pattern_opts = if self.caseless {
             PatternOpts::case_insensitive()
         } else {
             PatternOpts::default()
         };
-        let pattern = |s: &String| {
-            let pattern = if self.regex {
-                Pattern::regex_with(s.as_str(), &pattern_opts)
-            } else {
-                Pattern::glob_with(s.as_str(), &pattern_opts)
-            };
+        if self.regex {
+            Pattern::regex_with(s, &pattern_opts)
+        } else {
+            Pattern::glob_with(s, &pattern_opts)
+        }
+    }
 
-            pattern.unwrap_or_else(|e| {
-                log.err(e);
-                exit(1);
-            })
-        };
+    pub fn path_selector(&self, base_dir: &Path) -> Result<PathSelector, PatternError> {
+        let include_names: Result<Vec<Pattern>, PatternError> = self
+            .name_patterns
+            .iter()
+            .map(|p| self.compile_pattern(p))
+            .collect();
+        let include_paths: Result<Vec<Pattern>, PatternError> = self
+            .path_patterns
+            .iter()
+            .map(|p| self.compile_pattern(p))
+            .collect();
+        let exclude_paths: Result<Vec<Pattern>, PatternError> = self
+            .exclude_patterns
+            .iter()
+            .map(|p| self.compile_pattern(p))
+            .collect();
 
-        PathSelector::new(base_dir.clone())
-            .include_names(self.name_patterns.iter().map(pattern).collect())
-            .include_paths(self.path_patterns.iter().map(pattern).collect())
-            .exclude_paths(self.exclude_patterns.iter().map(pattern).collect())
+        Ok(PathSelector::new(base_dir.clone())
+            .include_names(include_names?)
+            .include_paths(include_paths?)
+            .exclude_paths(exclude_paths?))
     }
 
     pub fn rf_over(&self) -> usize {
@@ -291,33 +301,20 @@ impl Config {
         }
     }
 
-    /// Validates the transform command if defined; logs error and exits if broken
-    pub fn check_transform(&self, log: &Log) {
-        self.transform
-            .as_ref()
-            .map(|command| self.build_transform(command, log));
+    fn build_transform(&self, command: &str) -> io::Result<Transform> {
+        let mut tr = Transform::new(command.to_string(), self.in_place)?;
+        if self.no_copy {
+            tr.copy = false
+        };
+        Ok(tr)
     }
 
-    /// Constructs the transform object and clears the transform command from this object.
-    pub fn transform(&self, log: &Log) -> Option<Transform> {
+    /// Constructs the transform object.
+    /// Returns None if the transform was not set
+    pub fn transform(&self) -> Option<io::Result<Transform>> {
         self.transform
             .as_ref()
-            .map(|command| self.build_transform(command, log))
-    }
-
-    fn build_transform(&self, command: &str, log: &Log) -> Transform {
-        match Transform::new(command.to_string(), self.in_place) {
-            Ok(mut tr) => {
-                if self.no_copy {
-                    tr.copy = false
-                };
-                tr
-            }
-            Err(e) => {
-                log.err(e);
-                exit(1);
-            }
-        }
+            .map(|command| self.build_transform(command))
     }
 
     pub fn thread_pool_sizes(&self) -> HashMap<OsString, Parallelism> {
