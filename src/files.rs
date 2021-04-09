@@ -263,7 +263,7 @@ pub fn file_info_or_log_err(file: Path, devices: &DiskDevices, log: &Log) -> Opt
         Ok(info) => Some(info),
         Err(e) if e.kind() == ErrorKind::NotFound => None,
         Err(e) => {
-            log.err(e);
+            log.warn(e);
             None
         }
     }
@@ -327,7 +327,7 @@ pub fn file_id_or_log_err(file: &Path, log: &Log) -> Option<FileId> {
         Ok(id) => Some(id),
         Err(e) if e.kind() == ErrorKind::NotFound => None,
         Err(e) => {
-            log.err(e);
+            log.warn(e);
             None
         }
     }
@@ -590,7 +590,7 @@ pub fn file_hash_or_log_err(
         Ok(hash) => Some(hash),
         Err(e) if e.kind() == ErrorKind::NotFound => None,
         Err(e) => {
-            log.err(format!(
+            log.warn(format!(
                 "Failed to compute hash of file {}: {}",
                 path.display(),
                 e

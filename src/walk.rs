@@ -132,7 +132,7 @@ impl<'a> Walk<'a> {
     {
         if self.path_selector.matches_dir(&path) {
             Entry::from_path(path.clone())
-                .map_err(|e| self.log_err(format!("Failed to stat {}: {}", path.display(), e)))
+                .map_err(|e| self.log_warn(format!("Failed to stat {}: {}", path.display(), e)))
                 .into_iter()
                 .for_each(|entry| self.visit_entry(entry, scope, level, state))
         }
@@ -201,7 +201,7 @@ impl<'a> Walk<'a> {
         if self.follow_links {
             match self.resolve_link(&path) {
                 Ok(target) => self.visit_path(target, scope, level, state),
-                Err(e) => self.log_err(format!("Failed to read link {}: {}", path.display(), e)),
+                Err(e) => self.log_warn(format!("Failed to read link {}: {}", path.display(), e)),
             }
         }
     }
@@ -225,7 +225,7 @@ impl<'a> Walk<'a> {
                         scope.spawn(move |s| self.visit_entry(entry, s, level + 1, state))
                     }
                 }
-                Err(e) => self.log_err(format!("Failed to read dir {}: {}", path.display(), e)),
+                Err(e) => self.log_warn(format!("Failed to read dir {}: {}", path.display(), e)),
             }
         }
     }
@@ -270,9 +270,9 @@ impl<'a> Walk<'a> {
         }
     }
 
-    /// Logs an error
-    fn log_err(&self, msg: String) {
-        self.log.iter().for_each(|l| l.err(&msg))
+    /// Logs a warning
+    fn log_warn(&self, msg: String) {
+        self.log.iter().for_each(|l| l.warn(&msg))
     }
 }
 

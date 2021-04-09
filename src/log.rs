@@ -102,7 +102,8 @@ impl Log {
             "{} {}: {} {}",
             style(timestamp.format(Self::TIMESTAMP_FMT))
                 .for_stderr()
-                .green(),
+                .dim()
+                .white(),
             style(&self.program_name).for_stderr().yellow(),
             style(" info:").for_stderr().green(),
             msg
@@ -116,7 +117,8 @@ impl Log {
             "{} {}: {} {}",
             style(timestamp.format(Self::TIMESTAMP_FMT))
                 .for_stderr()
-                .green(),
+                .dim()
+                .white(),
             style(&self.program_name).for_stderr().yellow(),
             style(" warn:").for_stderr().yellow(),
             msg
@@ -130,7 +132,8 @@ impl Log {
             "{} {}: {} {}",
             style(timestamp.format(Self::TIMESTAMP_FMT))
                 .for_stderr()
-                .green(),
+                .dim()
+                .white(),
             style(&self.program_name).for_stderr().yellow(),
             style("error:").for_stderr().red(),
             msg
