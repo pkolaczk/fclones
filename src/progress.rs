@@ -198,6 +198,7 @@ mod test {
     fn all_ticks_should_be_counted() {
         let collection = vec![0; 100000];
         let pb = ProgressBar::new(collection.len() as u64);
+        pb.set_draw_target(ProgressDrawTarget::hidden());
         let pb = FastProgressBar::wrap(pb);
         collection
             .par_iter()

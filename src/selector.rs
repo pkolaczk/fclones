@@ -9,7 +9,7 @@ use crate::pattern::Pattern;
 /// A path is selected only if it matches at least one include pattern
 /// and doesn't match any exclude patterns.
 /// An empty include pattern vector matches all paths.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct PathSelector {
     base_dir: Arc<Path>,
     included_names: Vec<Pattern>,
