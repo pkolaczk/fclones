@@ -1,3 +1,6 @@
+//! Type-safe wrappers for file position and length and other
+//! file-system related utilities.
+
 use core::fmt;
 use std::cell::RefCell;
 use std::cmp::{max, min};

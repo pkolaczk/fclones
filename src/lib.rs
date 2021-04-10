@@ -9,6 +9,7 @@ use std::sync::Arc;
 use crossbeam_utils::thread;
 use itertools::Itertools;
 use rayon::prelude::*;
+use serde::*;
 use sysinfo::DiskType;
 use thread_local::ThreadLocal;
 
@@ -35,13 +36,13 @@ use std::io::{BufWriter, Write};
 
 pub mod config;
 pub mod files;
-pub mod group;
 pub mod log;
 pub mod path;
 pub mod progress;
 pub mod report;
 
 mod device;
+mod group;
 mod pattern;
 mod regex;
 mod selector;
@@ -133,6 +134,62 @@ impl<'a> AppCtx<'a> {
             }
         }
         Ok(())
+    }
+}
+
+/// A group of files that have something in common, e.g. same size or same hash
+#[derive(Serialize, Debug)]
+pub struct FileGroup<F> {
+    /// Length of each file
+    pub file_len: FileLen,
+    /// Hash of a part or the whole of the file
+    pub file_hash: FileHash,
+    /// Group of files with the same length and hash
+    pub files: Vec<F>,
+}
+
+/// Computes summaries of the results obtained from each grouping stage.
+pub trait StageMetrics {
+    /// Returns the total count of the files
+    fn total_count(self) -> usize;
+
+    /// Returns the sum of file lengths
+    fn total_size(self) -> FileLen;
+
+    /// Returns the total count of redundant files
+    fn selected_count(self, rf_over: usize, rf_under: usize) -> usize;
+
+    /// Returns the amount of data in redundant files
+    fn selected_size(self, rf_over: usize, rf_under: usize) -> FileLen;
+}
+
+impl<'a, I, F> StageMetrics for I
+where
+    I: IntoIterator<Item = &'a FileGroup<F>> + 'a,
+    F: 'a,
+{
+    fn total_count(self) -> usize {
+        self.into_iter().map(|g| g.files.len()).sum()
+    }
+
+    fn total_size(self) -> FileLen {
+        self.into_iter()
+            .map(|g| g.file_len * g.files.len() as u64)
+            .sum()
+    }
+
+    fn selected_count(self, rf_over: usize, rf_under: usize) -> usize {
+        self.into_iter()
+            .filter(|&g| g.files.len() < rf_under)
+            .map(|g| g.files.len().saturating_sub(rf_over))
+            .sum()
+    }
+
+    fn selected_size(self, rf_over: usize, rf_under: usize) -> FileLen {
+        self.into_iter()
+            .filter(|&g| g.files.len() < rf_under)
+            .map(|g| g.file_len * g.files.len().saturating_sub(rf_over) as u64)
+            .sum()
     }
 }
 
@@ -718,6 +775,72 @@ fn group_by_contents(
     groups
 }
 
+/// Groups identical files together by 128-bit hash of their contents.
+/// Depending on filtering settings, can find unique, duplicate, over- or under-replicated files.
+///
+/// # Input
+/// The input set of files or paths to scan should be given in the `config.paths` property.
+/// When `config.recursive` is set to true, the search descends into
+/// subdirectories recursively (default is false).
+///
+/// # Output
+/// Returns a vector of groups of absolute paths.
+/// Each group of files has a common hash and length.
+/// Groups are sorted descending by file size.
+///
+/// # Errors
+/// An error is returned immediately if the configuration is invalid.
+/// I/O errors during processing are logged as warnings and unreadable files are skipped.
+/// If panics happen they are likely a result of a bug and should be reported.
+///
+/// # Performance characteristics
+/// The worst-case running time to is roughly proportional to the time required to
+/// open and read all files. Depending on the number of matching files and parameters of the
+/// query, that time can be lower because some files can be skipped from some stages of processing.
+/// The expected memory utilisation is roughly proportional the number of files and
+/// their path lengths.
+///
+/// # Threading
+/// This function blocks caller's thread until all files are processed.
+/// To speed up processing, it spawns multiple threads internally.
+/// Some processing is performed on the default Rayon thread pool, therefore this function
+/// must not be called on Rayon thread pool to avoid a deadlock.
+/// The parallelism level is automatically set based on the type of storage and can be overridden
+/// in the configuration.
+///
+/// # Algorithm
+/// Files are grouped in multiple stages and filtered after each stage.
+/// Files that turn out to be unique at some point are skipped from further stages.
+/// Stages are ordered by increasing I/O cost. On rotational drives,
+/// an attempt is made to sort files by physical data location before each grouping stage
+/// to reduce disk seek times.
+///
+/// 1. Create a list of files to process by walking directory tree if recursive mode selected.
+/// 2. Get length and identifier of each file.
+/// 3. Group files by length.
+/// 4. In each group, remove duplicate files with the same identifier.
+/// 5. Group files by hash of the prefix.
+/// 6. Group files by hash of the suffix.
+/// 7. Group files by hash of their full contents.
+///
+/// # Example
+/// ```
+/// use fclones::log::Log;
+/// use fclones::config::Config;
+/// use fclones::{group_files, write_report};
+/// use std::path::PathBuf;
+///
+/// let log = Log::new();
+/// let mut config = Config::default();
+/// config.paths = vec![PathBuf::from("/path/to/a/dir")];
+/// config.recursive = true;
+///
+/// let groups = group_files(&config, &log).unwrap();
+/// println!("Found {} groups: ", groups.len());
+///
+/// // print standard fclones report to stdout:
+/// write_report(&config, &log, &groups).unwrap();
+/// ```
 pub fn group_files(config: &Config, log: &Log) -> Result<Vec<FileGroup<Path>>, Error> {
     log.info("Started");
     let spinner = log.spinner("Initializing");
@@ -773,7 +896,16 @@ fn file_reporter(
     Ok(Reporter::new(out, false, progress))
 }
 
-/// Writes the list of groups to the given stream
+/// Writes the list of groups to a file or the standard output.
+///
+/// # Parameters
+/// - `config.output`: a path to the output file, `None` for standard output
+/// - `config.format`: selects the format of the output, see [`config::OutputFormat`]
+/// - `log`: used for drawing a progress bar to standard error
+/// - `groups`: list of groups of files to print, e.g. obtained from [`group_files`]
+///
+/// # Errors
+/// Returns [`io::Error`] on I/O write error or if the output file cannot be created.
 pub fn write_report(config: &Config, log: &Log, groups: &[FileGroup<Path>]) -> io::Result<()> {
     let remaining_files = groups.total_count();
     let progress = log.progress_bar("Writing report", remaining_files as u64);
