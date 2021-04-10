@@ -17,7 +17,7 @@ use crate::files::{FileHash, FileLen};
 /// The amortized complexity of adding an item is O(1).
 /// The complexity of reading all groups is O(N).
 ///
-pub struct GroupMap<T, K, V, F>
+pub(crate) struct GroupMap<T, K, V, F>
 where
     K: PartialEq + Hash,
     F: Fn(T) -> (K, V),

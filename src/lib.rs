@@ -2,13 +2,10 @@ use std::cell::RefCell;
 use std::cmp::Reverse;
 use std::env::current_dir;
 use std::ffi::{OsStr, OsString};
-use std::fs::File;
-use std::io::{BufWriter, Write};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::Arc;
 
-use console::Term;
 use crossbeam_utils::thread;
 use itertools::Itertools;
 use rayon::prelude::*;
@@ -28,22 +25,25 @@ use crate::selector::PathSelector;
 use crate::semaphore::Semaphore;
 use crate::transform::Transform;
 use crate::walk::Walk;
+use console::Term;
 use core::fmt;
 use std::collections::HashMap;
 use std::fmt::{Display, Formatter};
+use std::fs::File;
 use std::io;
+use std::io::{BufWriter, Write};
 
 pub mod config;
+pub mod files;
+pub mod group;
 pub mod log;
 pub mod path;
+pub mod progress;
+pub mod report;
 
 mod device;
-mod files;
-mod group;
 mod pattern;
-mod progress;
 mod regex;
-mod report;
 mod selector;
 mod semaphore;
 mod transform;
@@ -76,8 +76,8 @@ impl From<String> for Error {
 }
 
 /// Holds stuff needed globally by the whole application
-pub struct AppCtx<'a> {
-    pub config: Config,
+struct AppCtx<'a> {
+    pub config: &'a Config,
     pub log: &'a Log,
     devices: DiskDevices,
     transform: Option<Transform>,
@@ -85,7 +85,7 @@ pub struct AppCtx<'a> {
 }
 
 impl<'a> AppCtx<'a> {
-    pub fn new(config: Config, log: &Log) -> Result<AppCtx, Error> {
+    pub fn new(config: &'a Config, log: &'a Log) -> Result<AppCtx<'a>, Error> {
         let thread_pool_sizes = config.thread_pool_sizes();
         let devices = DiskDevices::new(&thread_pool_sizes);
         let transform = match config.transform() {
@@ -718,14 +718,19 @@ fn group_by_contents(
     groups
 }
 
-pub fn fclones(ctx: &AppCtx) -> Vec<FileGroup<Path>> {
+pub fn group_files(config: &Config, log: &Log) -> Result<Vec<FileGroup<Path>>, Error> {
+    log.info("Started");
+    let spinner = log.spinner("Initializing");
+    let ctx = AppCtx::new(config, log)?;
+
+    drop(spinner);
     let matching_files = scan_files(&ctx);
     let size_groups = group_by_size(&ctx, matching_files);
     let mut size_groups_pruned = remove_same_files(&ctx, size_groups);
-    update_file_locations(ctx, &mut size_groups_pruned);
+    update_file_locations(&ctx, &mut size_groups_pruned);
 
     let groups = match &ctx.transform {
-        Some(transform) => group_transformed(ctx, transform, size_groups_pruned),
+        Some(transform) => group_transformed(&ctx, transform, size_groups_pruned),
         _ => {
             let prefix_len = prefix_len(&ctx.devices, flat_iter(&size_groups_pruned));
             let prefix_groups = group_by_prefix(&ctx, prefix_len, size_groups_pruned);
@@ -744,7 +749,7 @@ pub fn fclones(ctx: &AppCtx) -> Vec<FileGroup<Path>> {
     groups.retain(|g| g.files.len() < ctx.config.rf_under());
     groups.par_sort_by_key(|g| Reverse((g.file_len, g.file_hash)));
     groups.par_iter_mut().for_each(|g| g.files.sort());
-    groups
+    Ok(groups)
 }
 
 /// Creates a reporter that writes to the standard output
@@ -768,19 +773,18 @@ fn file_reporter(
     Ok(Reporter::new(out, false, progress))
 }
 
-pub fn write_report(ctx: &AppCtx, groups: &[FileGroup<Path>]) -> io::Result<()> {
+/// Writes the list of groups to the given stream
+pub fn write_report(config: &Config, log: &Log, groups: &[FileGroup<Path>]) -> io::Result<()> {
     let remaining_files = groups.total_count();
-    let progress = ctx
-        .log
-        .progress_bar("Writing report", remaining_files as u64);
+    let progress = log.progress_bar("Writing report", remaining_files as u64);
 
     // No progress bar when we write to terminal
-    let mut reporter = match &ctx.config.output {
+    let mut reporter = match &config.output {
         Some(path) => file_reporter(path, progress)?,
         None => stdout_reporter(progress),
     };
 
-    match &ctx.config.format {
+    match &config.format {
         OutputFormat::Text => reporter.write_as_text(groups),
         OutputFormat::Fdupes => reporter.write_as_fdupes(groups),
         OutputFormat::Csv => reporter.write_as_csv(groups),
@@ -790,7 +794,7 @@ pub fn write_report(ctx: &AppCtx, groups: &[FileGroup<Path>]) -> io::Result<()> 
 
 #[cfg(test)]
 mod test {
-    use std::fs::{hard_link, OpenOptions};
+    use std::fs::{hard_link, File, OpenOptions};
     use std::io::{Read, Write};
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicBool, Ordering};
@@ -994,9 +998,10 @@ mod test {
             write_test_file(&file1, b"aaa", b"", b"");
             write_test_file(&file2, b"aaa", b"", b"");
 
-            let mut ctx = test_ctx();
-            ctx.config.paths = vec![file1, file2];
-            let results = fclones(&ctx);
+            let log = test_log();
+            let mut config = Config::default();
+            config.paths = vec![file1, file2];
+            let results = group_files(&config, &log).unwrap();
             assert_eq!(results.len(), 1);
             assert_eq!(results[0].file_len, FileLen(3));
             assert_eq!(results[0].files.len(), 2);
@@ -1011,10 +1016,11 @@ mod test {
             write_test_file(&file1, &[0; MAX_PREFIX_LEN], &[1; 4096], &[2; 4096]);
             write_test_file(&file2, &[0; MAX_PREFIX_LEN], &[1; 4096], &[2; 4096]);
 
-            let mut ctx = test_ctx();
-            ctx.config.paths = vec![file1, file2];
+            let log = test_log();
+            let mut config = Config::default();
+            config.paths = vec![file1, file2];
 
-            let results = fclones(&ctx);
+            let results = group_files(&config, &log).unwrap();
             assert_eq!(results.len(), 1);
             assert_eq!(results[0].files.len(), 2);
         });
@@ -1028,11 +1034,12 @@ mod test {
             write_test_file(&file1, b"aaaa", b"", b"");
             write_test_file(&file2, b"aaa", b"", b"");
 
-            let mut ctx = test_ctx();
-            ctx.config.paths = vec![file1.clone(), file2.clone()];
-            ctx.config.rf_over = Some(0);
+            let log = test_log();
+            let mut config = Config::default();
+            config.paths = vec![file1.clone(), file2.clone()];
+            config.rf_over = Some(0);
 
-            let results = fclones(&ctx);
+            let results = group_files(&config, &log).unwrap();
             assert_eq!(results.len(), 2);
             assert_eq!(
                 results[0].files,
@@ -1053,11 +1060,12 @@ mod test {
             write_test_file(&file1, b"aaa", b"", b"");
             write_test_file(&file2, b"bbb", b"", b"");
 
-            let mut ctx = test_ctx();
-            ctx.config.paths = vec![file1.clone(), file2.clone()];
-            ctx.config.unique = true;
+            let log = test_log();
+            let mut config = Config::default();
+            config.paths = vec![file1.clone(), file2.clone()];
+            config.unique = true;
 
-            let results = fclones(&ctx);
+            let results = group_files(&config, &log).unwrap();
             assert_eq!(results.len(), 2);
             assert_eq!(results[0].files.len(), 1);
             assert_eq!(results[1].files.len(), 1);
@@ -1074,11 +1082,12 @@ mod test {
             write_test_file(&file1, &prefix, &mid, b"suffix1");
             write_test_file(&file2, &prefix, &mid, b"suffix2");
 
-            let mut ctx = test_ctx();
-            ctx.config.paths = vec![file1.clone(), file2.clone()];
-            ctx.config.unique = true;
+            let log = test_log();
+            let mut config = Config::default();
+            config.paths = vec![file1.clone(), file2.clone()];
+            config.unique = true;
 
-            let results = fclones(&ctx);
+            let results = group_files(&config, &log).unwrap();
             assert_eq!(results.len(), 2);
             assert_eq!(results[0].files.len(), 1);
             assert_eq!(results[1].files.len(), 1);
@@ -1095,11 +1104,12 @@ mod test {
             write_test_file(&file1, &prefix, b"middle1", &suffix);
             write_test_file(&file2, &prefix, b"middle2", &suffix);
 
-            let mut ctx = test_ctx();
-            ctx.config.paths = vec![file1.clone(), file2.clone()];
-            ctx.config.unique = true;
+            let log = test_log();
+            let mut config = Config::default();
+            config.paths = vec![file1.clone(), file2.clone()];
+            config.unique = true;
 
-            let results = fclones(&ctx);
+            let results = group_files(&config, &log).unwrap();
             assert_eq!(results.len(), 2);
             assert_eq!(results[0].files.len(), 1);
             assert_eq!(results[1].files.len(), 1);
@@ -1114,11 +1124,12 @@ mod test {
             write_test_file(&file1, b"aaa", b"", b"");
             hard_link(&file1, &file2).unwrap();
 
-            let mut ctx = test_ctx();
-            ctx.config.paths = vec![file1.clone(), file2.clone()];
-            ctx.config.unique = true;
+            let log = test_log();
+            let mut config = Config::default();
+            config.paths = vec![file1.clone(), file2.clone()];
+            config.unique = true;
 
-            let results = fclones(&ctx);
+            let results = group_files(&config, &log).unwrap();
             assert_eq!(results.len(), 1);
             assert_eq!(results[0].files.len(), 1);
         });
@@ -1129,12 +1140,13 @@ mod test {
         with_dir("target/test/main/duplicate_input_files", |root| {
             let file1 = root.join("file1");
             write_test_file(&file1, b"foo", b"", b"");
-            let mut ctx = test_ctx();
-            ctx.config.paths = vec![file1.clone(), file1.clone(), file1.clone()];
-            ctx.config.unique = true;
-            ctx.config.hard_links = true;
+            let log = test_log();
+            let mut config = Config::default();
+            config.paths = vec![file1.clone(), file1.clone(), file1.clone()];
+            config.unique = true;
+            config.hard_links = true;
 
-            let results = fclones(&ctx);
+            let results = group_files(&config, &log).unwrap();
             assert_eq!(results.len(), 1);
             assert_eq!(results[0].files.len(), 1);
         });
@@ -1155,12 +1167,13 @@ mod test {
                 let file2 = root.join("dir/file1");
                 write_test_file(&file1, b"foo", b"", b"");
 
-                let mut ctx = test_ctx();
-                ctx.config.paths = vec![file1.clone(), file2.clone()];
-                ctx.config.unique = true;
-                ctx.config.hard_links = true;
+                let log = test_log();
+                let mut config = Config::default();
+                config.paths = vec![file1.clone(), file2.clone()];
+                config.unique = true;
+                config.hard_links = true;
 
-                let results = fclones(&ctx);
+                let results = group_files(&config, &log).unwrap();
                 assert_eq!(results.len(), 1);
                 assert_eq!(results[0].files.len(), 1);
             },
@@ -1174,13 +1187,14 @@ mod test {
             write_test_file(&file, b"foo", b"", b"");
 
             let report_file = root.join("report.txt");
-            let mut ctx = test_ctx();
-            ctx.config.paths = vec![file.clone()];
-            ctx.config.unique = true;
-            ctx.config.output = Some(report_file.clone());
+            let log = test_log();
+            let mut config = Config::default();
+            config.paths = vec![file.clone()];
+            config.unique = true;
+            config.output = Some(report_file.clone());
 
-            let results = fclones(&ctx);
-            write_report(&ctx, &results).unwrap();
+            let results = group_files(&config, &log).unwrap();
+            write_report(&config, &log, &results).unwrap();
 
             assert!(report_file.exists());
             let mut report = String::new();
@@ -1203,9 +1217,9 @@ mod test {
         file.write(suffix).unwrap();
     }
 
-    fn test_ctx() -> AppCtx {
+    fn test_log() -> Log {
         let mut log = Log::new();
         log.no_progress = true;
-        AppCtx::new(Default::default(), log)
+        log
     }
 }
