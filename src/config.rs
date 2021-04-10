@@ -1,3 +1,5 @@
+//! Main program configuration.
+
 use std::collections::HashMap;
 use std::ffi::OsString;
 use std::io::{stdin, BufRead, BufReader};

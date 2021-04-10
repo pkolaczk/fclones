@@ -1,3 +1,5 @@
+//! Output formatting.
+
 use std::io;
 use std::io::Write;
 use std::sync::Arc;
@@ -5,9 +7,9 @@ use std::sync::Arc;
 use console::style;
 use serde::{Serialize, Serializer};
 
-use crate::group::FileGroup;
 use crate::path::Path;
 use crate::progress::FastProgressBar;
+use crate::FileGroup;
 
 pub struct Reporter<W: Write> {
     out: W,

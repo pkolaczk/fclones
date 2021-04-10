@@ -1,3 +1,5 @@
+//! Memory-efficient file path representation.
+
 use std::ffi::{CStr, CString, OsString};
 use std::fmt;
 use std::fmt::Display;
@@ -18,11 +20,12 @@ pub const PATH_ESCAPE_CHAR: &str = "\\";
 #[cfg(windows)]
 pub const PATH_ESCAPE_CHAR: &str = "^";
 
-/// Memory-efficient path representation.
-/// When storing multiple paths with common parent, the standard PathBuf would keep
-/// the parent duplicated in memory, wasting a lot of memory.
-/// This shares the common parent between many paths.
-/// The price is a tiny cost of managing Arc references.
+/// Memory-efficient file path representation.
+///
+/// When storing multiple paths with common parent, the standard [`std::path::PathBuf`]
+/// would keep the parent path text duplicated in memory, wasting a lot of memory.
+/// This structure here shares the common parent between many paths by reference-counted
+/// references.
 #[derive(Clone, Debug, Hash, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Path {
     parent: Option<Arc<Path>>,

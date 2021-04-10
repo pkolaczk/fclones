@@ -1,3 +1,5 @@
+//! Fast, concurrent, lockless progress bars.
+
 use atomic_counter::{AtomicCounter, RelaxedCounter};
 use console::style;
 use indicatif::{ProgressBar, ProgressDrawTarget, ProgressStyle};

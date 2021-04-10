@@ -2,10 +2,7 @@ use std::collections::BTreeMap;
 use std::hash::Hash;
 use std::marker::PhantomData;
 
-use serde::*;
 use smallvec::SmallVec;
-
-use crate::files::{FileHash, FileLen};
 
 /// Groups items by key.
 /// After all items have been added, this structure can be transformed into
@@ -62,66 +59,6 @@ where
 
     fn into_iter(self) -> Self::IntoIter {
         self.groups.into_iter()
-    }
-}
-
-/// Represents a group of files that have something in common, e.g. same size or same hash
-#[derive(Serialize, Debug)]
-pub struct FileGroup<F> {
-    /// Length of each file
-    pub file_len: FileLen,
-    /// Hash of a part or the whole of the file
-    pub file_hash: FileHash,
-    /// Group of files with the same length and hash
-    pub files: Vec<F>,
-}
-
-/// Computes metrics for reporting summaries of each processing stage.
-pub trait GroupedFileSetMetrics {
-    /// Returns the total count of the files
-    fn total_count(self) -> usize;
-
-    /// Returns the sum of file lengths
-    fn total_size(self) -> FileLen;
-
-    /// Returns the total count of redundant files
-    /// # Arguments
-    /// * `max_rf` - maximum number of replicas allowed (they won't be counted as redundant)
-    fn selected_count(self, rf_over: usize, rf_under: usize) -> usize;
-
-    /// Returns the amount of data in redundant files
-    /// # Arguments
-    /// * `max_rf` - maximum number of replicas allowed (they won't be counted as redundant)
-    fn selected_size(self, rf_over: usize, rf_under: usize) -> FileLen;
-}
-
-impl<'a, I, F> GroupedFileSetMetrics for I
-where
-    I: IntoIterator<Item = &'a FileGroup<F>> + 'a,
-    F: 'a,
-{
-    fn total_count(self) -> usize {
-        self.into_iter().map(|g| g.files.len()).sum()
-    }
-
-    fn total_size(self) -> FileLen {
-        self.into_iter()
-            .map(|g| g.file_len * g.files.len() as u64)
-            .sum()
-    }
-
-    fn selected_count(self, rf_over: usize, rf_under: usize) -> usize {
-        self.into_iter()
-            .filter(|&g| g.files.len() < rf_under)
-            .map(|g| g.files.len().saturating_sub(rf_over))
-            .sum()
-    }
-
-    fn selected_size(self, rf_over: usize, rf_under: usize) -> FileLen {
-        self.into_iter()
-            .filter(|&g| g.files.len() < rf_under)
-            .map(|g| g.file_len * g.files.len().saturating_sub(rf_over) as u64)
-            .sum()
     }
 }
 

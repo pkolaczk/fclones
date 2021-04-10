@@ -1,3 +1,5 @@
+//! Logging and progress reporting.
+
 use std::sync::{Arc, Mutex, Weak};
 
 use console::style;
