@@ -364,7 +364,7 @@ where
 }
 
 /// Walks the directory tree and collects matching files in parallel into a vector
-fn scan_files(ctx: &AppCtx) -> Vec<Vec<FileInfo>> {
+fn scan_files(ctx: &AppCtx<'_>) -> Vec<Vec<FileInfo>> {
     let file_collector = ThreadLocal::new();
     let spinner = ctx.log.spinner("Scanning files");
     let spinner_tick = &|_: &Path| spinner.tick();
@@ -409,7 +409,7 @@ fn scan_files(ctx: &AppCtx) -> Vec<Vec<FileInfo>> {
     files
 }
 
-fn group_by_size(ctx: &AppCtx, files: Vec<Vec<FileInfo>>) -> Vec<FileGroup<FileInfo>> {
+fn group_by_size(ctx: &AppCtx<'_>, files: Vec<Vec<FileInfo>>) -> Vec<FileGroup<FileInfo>> {
     let file_count: usize = files.iter().map(|v| v.len()).sum();
     let progress = ctx.log.progress_bar("Grouping by size", file_count as u64);
 
@@ -444,7 +444,7 @@ fn group_by_size(ctx: &AppCtx, files: Vec<Vec<FileInfo>>) -> Vec<FileGroup<FileI
 
 /// Removes duplicate files matching by full-path or by inode-id.
 /// Deduplication by inode-id is not performed if the flag to preserve hard-links (-H) is set.
-fn deduplicate<F>(ctx: &AppCtx, files: &mut Vec<FileInfo>, progress: F)
+fn deduplicate<F>(ctx: &AppCtx<'_>, files: &mut Vec<FileInfo>, progress: F)
 where
     F: Fn(&Path) + Sync + Send,
 {
@@ -474,7 +474,10 @@ where
     }
 }
 
-fn remove_same_files(ctx: &AppCtx, groups: Vec<FileGroup<FileInfo>>) -> Vec<FileGroup<FileInfo>> {
+fn remove_same_files(
+    ctx: &AppCtx<'_>,
+    groups: Vec<FileGroup<FileInfo>>,
+) -> Vec<FileGroup<FileInfo>> {
     let file_count: usize = groups.total_count();
     let progress = ctx
         .log
@@ -512,7 +515,7 @@ fn atomic_counter_vec(len: usize) -> Vec<AtomicU32> {
     v
 }
 
-fn update_file_locations(ctx: &AppCtx, groups: &mut Vec<FileGroup<FileInfo>>) {
+fn update_file_locations(ctx: &AppCtx<'_>, groups: &mut Vec<FileGroup<FileInfo>>) {
     #[cfg(target_os = "linux")]
     {
         let count = groups.total_count();
@@ -551,7 +554,7 @@ fn update_file_locations(ctx: &AppCtx, groups: &mut Vec<FileGroup<FileInfo>>) {
 
 /// Transforms files by piping them to an external program and groups them by their hashes
 fn group_transformed(
-    ctx: &AppCtx,
+    ctx: &AppCtx<'_>,
     transform: &Transform,
     groups: Vec<FileGroup<FileInfo>>,
 ) -> Vec<FileGroup<FileInfo>> {
@@ -618,7 +621,7 @@ fn prefix_len<'a>(
 
 /// Groups files by a hash of their first few thousand bytes.
 fn group_by_prefix(
-    ctx: &AppCtx,
+    ctx: &AppCtx<'_>,
     prefix_len: FileLen,
     groups: Vec<FileGroup<FileInfo>>,
 ) -> Vec<FileGroup<FileInfo>> {
@@ -685,7 +688,7 @@ fn suffix_threshold<'a>(
     max_device_property(partitions, files, |dd| dd.suffix_threshold())
 }
 
-fn group_by_suffix(ctx: &AppCtx, groups: Vec<FileGroup<FileInfo>>) -> Vec<FileGroup<FileInfo>> {
+fn group_by_suffix(ctx: &AppCtx<'_>, groups: Vec<FileGroup<FileInfo>>) -> Vec<FileGroup<FileInfo>> {
     let suffix_len = suffix_len(&ctx.devices, flat_iter(&groups));
     let suffix_threshold = suffix_threshold(&ctx.devices, flat_iter(&groups));
     let pre_filter = |g: &FileGroup<FileInfo>| g.file_len >= suffix_threshold && g.files.len() > 1;
@@ -730,7 +733,7 @@ fn group_by_suffix(ctx: &AppCtx, groups: Vec<FileGroup<FileInfo>>) -> Vec<FileGr
 }
 
 fn group_by_contents(
-    ctx: &AppCtx,
+    ctx: &AppCtx<'_>,
     min_file_len: FileLen,
     groups: Vec<FileGroup<FileInfo>>,
 ) -> Vec<FileGroup<FileInfo>> {
