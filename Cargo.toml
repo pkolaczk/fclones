@@ -1,11 +1,18 @@
 [package]
 name = "fclones"
-description = "Finds duplicate, unique, under- or over-replicated files"
 version = "0.10.0"
+description = "Finds duplicate, unique, under- or over-replicated files"
 authors = ["Piotr Kołaczkowski <pkolaczk@gmail.com>"]
-edition = "2018"
+repository = "https://github.com/pkolaczk/fclones"
+categories = ["filesystem", "command-line-utilities"]
+keywords = ["duplicate", "dupe", "finder", "search"]
 license = "MIT"
 readme = "README.md"
+edition = "2018"
+exclude = [
+    ".circleci",
+    "release.sh"
+]
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 

@@ -1,2 +1,5 @@
 /target
+/vendor
 **/*.rs.bk
+.idea
+.rpm
