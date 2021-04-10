@@ -175,7 +175,7 @@ pub trait IntoPath {
 }
 
 #[derive(Clone, Debug)]
-pub struct FileInfo {
+pub(crate) struct FileInfo {
     pub path: Path,
     pub len: FileLen,
     // physical on-disk location of file data for access ordering optimisation
@@ -258,7 +258,11 @@ impl FileInfo {
 
 /// Returns file information for the given path.
 /// On failure, logs an error to stderr and returns `None`.
-pub fn file_info_or_log_err(file: Path, devices: &DiskDevices, log: &Log) -> Option<FileInfo> {
+pub(crate) fn file_info_or_log_err(
+    file: Path,
+    devices: &DiskDevices,
+    log: &Log,
+) -> Option<FileInfo> {
     match FileInfo::new(file, devices) {
         Ok(info) => Some(info),
         Err(e) if e.kind() == ErrorKind::NotFound => None,
@@ -271,7 +275,7 @@ pub fn file_info_or_log_err(file: Path, devices: &DiskDevices, log: &Log) -> Opt
 
 /// Useful for identifying files in presence of hardlinks
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
-pub struct FileId {
+pub(crate) struct FileId {
     pub inode: u128,
     pub device: u64,
 }
@@ -322,7 +326,7 @@ impl FileId {
     }
 }
 
-pub fn file_id_or_log_err(file: &Path, log: &Log) -> Option<FileId> {
+pub(crate) fn file_id_or_log_err(file: &Path, log: &Log) -> Option<FileId> {
     match FileId::new(&file) {
         Ok(id) => Some(id),
         Err(e) if e.kind() == ErrorKind::NotFound => None,
@@ -335,7 +339,7 @@ pub fn file_id_or_log_err(file: &Path, log: &Log) -> Option<FileId> {
 
 /// Returns the physical offset of the first data block of the file
 #[cfg(target_os = "linux")]
-pub fn get_physical_file_location(path: &Path) -> io::Result<Option<u64>> {
+pub(crate) fn get_physical_file_location(path: &Path) -> io::Result<Option<u64>> {
     let mut extents = fiemap::fiemap(&path.to_path_buf())?;
     match extents.next() {
         Some(fe) => Ok(Some(fe?.fe_physical)),
@@ -460,7 +464,7 @@ fn evict_page_cache_if_low_mem(file: &mut File, len: FileLen) {
 
 /// Determines how page cache should be used when computing a file hash.
 #[derive(Debug, Copy, Clone)]
-pub enum Caching {
+pub(crate) enum Caching {
     /// Don't send any special cache advice to the OS
     Default,
     /// Prefetch as much data as possible into cache, to speed up sequential access
@@ -541,7 +545,7 @@ fn scan<F: FnMut(&[u8])>(
 
 /// Computes the hash value over at most `len` bytes of the stream.
 /// Returns the number of the bytes read and a 128-bit hash value.
-pub fn stream_hash(
+pub(crate) fn stream_hash(
     stream: &mut impl Read,
     len: FileLen,
     buf_len: usize,
@@ -561,7 +565,7 @@ pub fn stream_hash(
 /// Computes hash of initial `len` bytes of a file.
 /// If the file does not exist or is not readable, print the error to stderr and return `None`.
 /// The returned hash is not cryptograhically secure.
-pub fn file_hash(
+pub(crate) fn file_hash(
     path: &Path,
     offset: FilePos,
     len: FileLen,
@@ -577,7 +581,7 @@ pub fn file_hash(
 
 /// Computes the file hash or logs an error and returns none if failed.
 /// If file is not found, no error is logged and `None` is returned.
-pub fn file_hash_or_log_err(
+pub(crate) fn file_hash_or_log_err(
     path: &Path,
     offset: FilePos,
     len: FileLen,

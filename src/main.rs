@@ -9,7 +9,8 @@ use structopt::StructOpt;
 use fclones::config::{Config, Parallelism};
 use fclones::log::Log;
 use fclones::path::PATH_ESCAPE_CHAR;
-use fclones::{fclones, write_report, AppCtx};
+
+use fclones::{group_files, write_report};
 
 use std::collections::HashMap;
 use std::ffi::{OsStr, OsString};
@@ -83,25 +84,12 @@ fn main() {
         log.no_progress = true;
     }
 
-    log.info("Started");
-    let spinner = log.spinner("Initializing");
     configure_main_thread_pool(&config.thread_pool_sizes());
-    let ctx = AppCtx::new(config, &log);
-    drop(spinner);
-
-    let ctx = match ctx {
-        Ok(ctx) => ctx,
-        Err(e) => {
-            log.err(e);
-            exit(1)
-        }
-    };
-
-    if let Some(output) = &ctx.config.output {
+    if let Some(output) = &config.output {
         // Try to create the output file now and fail early so that
         // the user doesn't waste time to only find that the report cannot be written at the end:
         if let Err(e) = File::create(output) {
-            ctx.log.err(format!(
+            log.err(format!(
                 "Cannot create output file {}: {}",
                 output.display(),
                 e
@@ -110,8 +98,15 @@ fn main() {
         }
     }
 
-    let results = fclones(&ctx);
-    if let Err(e) = write_report(&ctx, &results) {
-        ctx.log.err(format!("Failed to write report: {}", e))
+    let results = match group_files(&config, &log) {
+        Ok(groups) => groups,
+        Err(e) => {
+            log.err(e);
+            exit(1)
+        }
+    };
+
+    if let Err(e) = write_report(&config, &log, &results) {
+        log.err(format!("Failed to write report: {}", e))
     }
 }
