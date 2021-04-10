@@ -19,7 +19,7 @@ It easily outperforms many other popular duplicate finders by a wide margin (see
   - recursive/non-recursive file selection
   - recursion depth limit
   - filtering names and paths by extended UNIX globs 
-  - filtering names and paths by regular expressions (PCRE)
+  - filtering names and paths by regular expressions
   - filtering by min/max file size
   - proper handling of symlinks and hardlinks  
 * High performance
@@ -69,7 +69,7 @@ are attached directly to [Releases](https://github.com/pkolaczk/fclones/releases
 
 ### Building from Source 
 1. [Install Rust Toolchain](https://www.rust-lang.org/tools/install)
-2. Run `cargo install --git https://github.com/pkolaczk/fclones`
+2. Run `cargo install fclones`
 
 The build will write the binary to `.cargo/bin/fclones`. 
 
