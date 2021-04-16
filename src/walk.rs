@@ -9,6 +9,7 @@ use rayon::Scope;
 use crate::log::Log;
 use crate::path::Path;
 use crate::selector::PathSelector;
+use rayon::prelude::ParallelSliceMut;
 
 #[derive(Debug)]
 enum EntryType {
@@ -230,6 +231,17 @@ impl<'a> Walk<'a> {
         }
     }
 
+    #[cfg(unix)]
+    fn sort_dir_entries_by_inode(entries: &mut Vec<DirEntry>) {
+        use std::os::unix::fs::DirEntryExt;
+        entries.par_sort_unstable_by_key(|entry| entry.ino())
+    }
+
+    #[cfg(not(unix))]
+    fn sort_dir_entries_by_inode(_: &mut Vec<DirEntry>) {
+        // do nothing
+    }
+
     /// Sorts dir entries so that regular files are at the end.
     /// Because each worker's queue is a LIFO, the files would be picked up first and the
     /// dirs would be on the other side, amenable for stealing by other workers.
@@ -238,7 +250,11 @@ impl<'a> Walk<'a> {
         let mut links = vec![];
         let mut dirs = vec![];
         let path = Arc::new(parent);
-        rd.filter_map(|e| e.ok())
+        let mut entries: Vec<DirEntry> = rd.filter_map(|e| e.ok()).collect();
+        // Accessing entries in the order of identifiers should be faster on rotational drives
+        Self::sort_dir_entries_by_inode(&mut entries);
+        entries
+            .into_iter()
             .filter_map(|e| Entry::from_dir_entry(&path, e).ok())
             .for_each(|e| match e.tpe {
                 EntryType::File => files.push(e),
