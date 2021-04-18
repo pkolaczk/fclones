@@ -82,11 +82,11 @@ pub struct Config {
     #[structopt(short = "I", long)]
     pub stdin: bool,
 
-    /// Descends into directories recursively
-    #[structopt(short = "R", long)]
-    pub recursive: bool,
-
-    /// Limits recursion depth
+    /// Limits recursion depth.
+    ///
+    /// 0 disables descending into directories.
+    /// 1 descends into directories specified explicitly as input paths,
+    /// but does not descend into subdirectories.
     #[structopt(short = "d", long)]
     pub depth: Option<usize>,
 
@@ -208,7 +208,11 @@ pub struct Config {
     #[structopt(short = "Q", long)]
     pub quiet: bool,
 
-    /// A list of input paths. Accepts files and directories.
+    /// A list of input paths.
+    ///
+    /// Accepts files and directories.
+    /// By default descends into directories recursively, unless a recursion depth
+    /// limit is specified with `--depth`.
     #[structopt(parse(from_os_str), required_unless("stdin"))]
     pub paths: Vec<PathBuf>,
 }
