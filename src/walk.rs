@@ -66,7 +66,6 @@ impl Entry {
 /// Many walks can be initiated from the same instance.
 pub struct Walk<'a> {
     pub base_dir: Arc<Path>,
-    pub recursive: bool,
     pub depth: usize,
     pub skip_hidden: bool,
     pub follow_links: bool,
@@ -87,7 +86,6 @@ impl<'a> Walk<'a> {
         let base_dir = Path::from(&current_dir().unwrap_or_default());
         Walk {
             base_dir: Arc::new(base_dir.clone()),
-            recursive: true,
             depth: usize::MAX,
             skip_hidden: false,
             follow_links: false,
@@ -219,7 +217,7 @@ impl<'a> Walk<'a> {
         F: Fn(Path) + Sync + Send,
         's: 'w,
     {
-        if self.recursive && level <= self.depth && self.path_selector.matches_dir(&path) {
+        if level < self.depth && self.path_selector.matches_dir(&path) {
             match std::fs::read_dir(path.to_path_buf()) {
                 Ok(rd) => {
                     for entry in Self::sorted_entries(path, rd) {

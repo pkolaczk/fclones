@@ -374,7 +374,6 @@ fn scan_files(ctx: &AppCtx<'_>) -> Vec<Vec<FileInfo>> {
     let max_size = config.max_size.unwrap_or(FileLen::MAX);
 
     let mut walk = Walk::new();
-    walk.recursive = config.recursive;
     walk.depth = config.depth.unwrap_or(usize::MAX);
     walk.skip_hidden = config.skip_hidden;
     walk.follow_links = config.follow_links;
@@ -836,7 +835,6 @@ fn group_by_contents(
 /// let log = Log::new();
 /// let mut config = Config::default();
 /// config.paths = vec![PathBuf::from("/path/to/a/dir")];
-/// config.recursive = true;
 ///
 /// let groups = group_files(&config, &log).unwrap();
 /// println!("Found {} groups: ", groups.len());

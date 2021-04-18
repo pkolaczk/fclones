@@ -74,60 +74,46 @@ are attached directly to [Releases](https://github.com/pkolaczk/fclones/releases
 The build will write the binary to `.cargo/bin/fclones`. 
 
 ## Usage
-Find duplicate files in the current directory, without descending into subdirectories 
-(in Unix-like shells with globbing support):
+Find duplicate, unique, under-replicated or over-replicated files in the current directory, 
+including subdirectories:
 
-    fclones * 
+    fclones .
+    fclones . --unique 
+    fclones . --rf-under 3
+    fclones . --rf-over 3
 
-Find duplicate files in the current directory, without descending into subdirectories (portable):
- 
-    fclones . -R --depth 1 
+You can search in multiple directories:
 
-Find common files in two directories, without descending into subdirectories 
-(in Unix-like shells with globbing support):
+    fclones dir1 dir2 dir3
 
-    fclones dir1/* dir2/*  
-
-Find common files in two directories, without descending into subdirectories (portable):
-
-    fclones dir1 dir2 -R --depth 1  
-
-Find duplicate files in the current directory, including subdirectories:
-
-    fclones . -R
+Limiting recursion depth:
     
-Find unique files in the current directory and its subdirectories:
-    
-    fclones . -R --unique 
+    fclones . --depth 1   # scan only files in the current dir, skip subdirs
+    fclones * --depth 0   # similar as above in shells that expand `*` 
 
-Find files that have more than 3 replicas:
-
-    fclones . -R --rf-over 3
-    
-Find files that have less than 3 replicas:
-
-    fclones . -R --rf-under 3
+Caution: Versions up to 0.10 did not descend into directories by default.
+In those old versions, add `-R` flag to enable recursive directory walking.
 
 ### Filtering
 Find duplicate files of size at least 100 MB: 
 
-    fclones . -R -s 100M
+    fclones . -s 100M
 
-Find duplicate pictures in the current directory:
+Filter by file name or path pattern:
 
-    fclones . -R --names '*.jpg' '*.png' 
+    fclones . --names '*.jpg' '*.png' 
                 
 Run `fclones` on files selected by `find` (note: this is likely slower than built-in filtering):
 
-    find . -name '*.c' | fclones --stdin
+    find . -name '*.c' | fclones --stdin --depth 0
 
 Follow symbolic links, but don't escape out of the home folder:
 
-    fclones . -R -L --paths '/home/**'
+    fclones . -L --paths '/home/**'
     
 Exclude a part of the directory tree from the scan:
 
-    fclones / -R --exclude '/dev/**' '/proc/**'    
+    fclones / --exclude '/dev/**' '/proc/**'    
     
 ### Preprocessing files
 Use `--transform` option to safely transform files by an external command.
@@ -135,25 +121,26 @@ By default, the transformation happens on a copy of file data, to avoid accident
 
 Strip exif before matching duplicate jpg images:
 
-    fclones . -R --names '*.jpg' --caseless --transform 'exiv2 -d a $IN' --in-place     
+    fclones . --names '*.jpg' --caseless --transform 'exiv2 -d a $IN' --in-place     
     
 ### Other    
     
 List more options:
     
-    fclones -h
+    fclones -h      # short help
+    fclones --help  # detailed help
 
 ### Notes on quoting and path globbing
 * On Unix-like systems, when using globs, one must be very careful to avoid accidental expansion of globs by the shell.
   In many cases having globs expanded by the shell instead of by `fclones` is not what you want. In such cases, you
   need to quote the globs:
     
-      fclones . -R --names '*.jpg'       
+      fclones . --names '*.jpg'       
        
 * On Windows, the default shell doesn't remove quotes before passing the arguments to the program, 
   therefore you need to pass globs unquoted:
   
-      fclones . -R --names *.jpg
+      fclones . --names *.jpg
       
 * On Windows, the default shell doesn't support path globbing, therefore wildcard characters such as * and ? used 
   in paths will be passed literally, and they are likely to create invalid paths. For example, the following 
@@ -162,9 +149,8 @@ List more options:
   
       fclones *
       
-  If you need path globbing, and your shell does not support it, 
-  use a combination of recursive search `-R` with `--depth` limit and 
-  built-in path globbing provided by `--names` or `--paths`.     
+  If you need path globbing, and your shell does not support it,
+  use the builtin path globbing provided by `--names` or `--paths`.     
                           
 ## The Algorithm
 Files are processed in several stages. Each stage except the last one is parallel, but 
