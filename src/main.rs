@@ -80,6 +80,31 @@ fn main() {
     });
 
     let config: Config = Config::from_clap(&matches);
+
+    let mut access_error = false;
+    let mut has_input_files: bool = false;
+    for path in config.paths.iter() {
+        match std::fs::metadata(path) {
+            Ok(metadata) if metadata.is_dir() && config.depth == Some(0) => log.warn(format!(
+                "Skipping directory {} because recursive scan is disabled.",
+                path.display()
+            )),
+            Err(e) => {
+                log.err(format!("Can't access {}: {}", path.display(), e));
+                access_error = true;
+            }
+            Ok(_) => has_input_files = true,
+        }
+    }
+
+    if access_error {
+        exit(1);
+    }
+    if !has_input_files {
+        log.err("No input files");
+        exit(1);
+    }
+
     if config.quiet {
         log.no_progress = true;
     }
