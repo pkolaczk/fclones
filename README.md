@@ -1,5 +1,7 @@
 # FClones — Efficient Duplicate File Finder
 [![CircleCI](https://circleci.com/gh/pkolaczk/fclones.svg?style=shield)](https://circleci.com/gh/pkolaczk/fclones)
+[![crates.io](https://img.shields.io/crates/v/fclones.svg)](https://crates.io/crates/fclones)
+[![Documentation](https://docs.rs/fclones/badge.svg)](https://docs.rs/fclones)
 
 Sometimes you accidentally copied your files in too many places - `fclones` will find them even if the duplicates
 got different names. It can also be used to find unique or under-replicated files, e.g. to check if your 
