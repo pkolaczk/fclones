@@ -60,14 +60,14 @@ pub struct Parallelism {
     pub sequential: usize,
 }
 
-/// Finds duplicate, unique, under- or over-replicated files
+// Configuration of the `find` subcommand
 #[derive(Debug, StructOpt, Default)]
 #[structopt(
-    name = "fclones",
     setting(AppSettings::ColoredHelp),
-    setting(AppSettings::DeriveDisplayOrder)
+    setting(AppSettings::DeriveDisplayOrder),
+    setting(AppSettings::DisableVersion),
 )]
-pub struct Config {
+pub struct FindConfig {
     /// Writes the report to a file instead of the standard output
     #[structopt(short = "o", long, value_name("path"))]
     pub output: Option<PathBuf>,
@@ -78,7 +78,7 @@ pub struct Config {
     pub format: OutputFormat,
 
     /// Reads the list of input paths from the standard input instead of the arguments.
-    /// This flag is mostly useful together with `find` utility.
+    /// This flag is mostly useful together with Unix `find` utility.
     #[structopt(short = "I", long)]
     pub stdin: bool,
 
@@ -130,8 +130,8 @@ pub struct Config {
     pub in_place: bool,
 
     /// Doesn't copy the file to a temporary location before transforming,
-    /// when $IN parameter is specified in the --transform command.
-    /// If this flag is present, $IN will point to the original file.
+    /// when `$IN` parameter is specified in the `--transform` command.
+    /// If this flag is present, `$IN` will point to the original file.
     /// Caution:
     /// this option may speed up processing, but it may cause loss of data because it lets
     /// the transform command to work directly on the original file.
@@ -204,10 +204,6 @@ pub struct Config {
       verbatim_doc_comment)]
     pub threads: Vec<(OsString, Parallelism)>,
 
-    /// Suppresses progress reporting
-    #[structopt(short = "Q", long)]
-    pub quiet: bool,
-
     /// A list of input paths.
     ///
     /// Accepts files and directories.
@@ -217,7 +213,7 @@ pub struct Config {
     pub paths: Vec<PathBuf>,
 }
 
-impl Config {
+impl FindConfig {
     fn compile_pattern(&self, s: &str) -> Result<Pattern, PatternError> {
         let pattern_opts = if self.caseless {
             PatternOpts::case_insensitive()
@@ -330,4 +326,49 @@ impl Config {
         }
         map
     }
+}
+
+#[derive(Debug, StructOpt)]
+#[structopt(
+    setting(AppSettings::DisableVersion),
+    setting(AppSettings::ColoredHelp)
+)]
+pub struct DedupeConfig {
+    /// Don't perform any changes on the file-system; only log what would be done
+    #[structopt(long)]
+    dry_run: bool,
+
+    /// Path to the file containing the output of earlier `fclones find ...` execution
+    #[structopt(parse(from_os_str))]
+    file: PathBuf
+}
+
+#[derive(Debug, StructOpt)]
+pub enum Command {
+    /// Finds duplicate, unique, under- or over-replicated files
+    Find(FindConfig),
+    /// Removes redundant files earlier found by `find`
+    Remove(DedupeConfig),
+    /// Replaces redundant files earlier found by `find` with soft links
+    SoftLink(DedupeConfig),
+    /// Replaces redundant files earlier found by `find` with hard links
+    HardLink(DedupeConfig),
+}
+
+
+/// Finds and cleans up redundant files
+#[derive(Debug, StructOpt)]
+#[structopt(
+    name = "fclones",
+    setting(AppSettings::ColoredHelp),
+    setting(AppSettings::DeriveDisplayOrder)
+)]
+pub struct Config {
+    /// Suppresses progress reporting
+    #[structopt(short = "Q", long)]
+    pub quiet: bool,
+
+    /// Finds files
+    #[structopt(subcommand)]
+    pub command: Command
 }
