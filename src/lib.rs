@@ -78,7 +78,7 @@ impl From<String> for Error {
 
 /// Holds stuff needed globally by the whole application
 struct AppCtx<'a> {
-    pub config: &'a Config,
+    pub config: &'a FindConfig,
     pub log: &'a Log,
     devices: DiskDevices,
     transform: Option<Transform>,
@@ -86,7 +86,7 @@ struct AppCtx<'a> {
 }
 
 impl<'a> AppCtx<'a> {
-    pub fn new(config: &'a Config, log: &'a Log) -> Result<AppCtx<'a>, Error> {
+    pub fn new(config: &'a FindConfig, log: &'a Log) -> Result<AppCtx<'a>, Error> {
         let thread_pool_sizes = config.thread_pool_sizes();
         let devices = DiskDevices::new(&thread_pool_sizes);
         let transform = match config.transform() {
@@ -828,12 +828,12 @@ fn group_by_contents(
 /// # Example
 /// ```
 /// use fclones::log::Log;
-/// use fclones::config::Config;
+/// use fclones::config::FindConfig;
 /// use fclones::{group_files, write_report};
 /// use std::path::PathBuf;
 ///
 /// let log = Log::new();
-/// let mut config = Config::default();
+/// let mut config = FindConfig::default();
 /// config.paths = vec![PathBuf::from("/path/to/a/dir")];
 ///
 /// let groups = group_files(&config, &log).unwrap();
@@ -842,7 +842,7 @@ fn group_by_contents(
 /// // print standard fclones report to stdout:
 /// write_report(&config, &log, &groups).unwrap();
 /// ```
-pub fn group_files(config: &Config, log: &Log) -> Result<Vec<FileGroup<Path>>, Error> {
+pub fn group_files(config: &FindConfig, log: &Log) -> Result<Vec<FileGroup<Path>>, Error> {
     log.info("Started");
     let spinner = log.spinner("Initializing");
     let ctx = AppCtx::new(config, log)?;
@@ -907,7 +907,7 @@ fn file_reporter(
 ///
 /// # Errors
 /// Returns [`io::Error`] on I/O write error or if the output file cannot be created.
-pub fn write_report(config: &Config, log: &Log, groups: &[FileGroup<Path>]) -> io::Result<()> {
+pub fn write_report(config: &FindConfig, log: &Log, groups: &[FileGroup<Path>]) -> io::Result<()> {
     let remaining_files = groups.total_count();
     let progress = log.progress_bar("Writing report", remaining_files as u64);
 
@@ -1132,7 +1132,7 @@ mod test {
             write_test_file(&file2, b"aaa", b"", b"");
 
             let log = test_log();
-            let mut config = Config::default();
+            let mut config = FindConfig::default();
             config.paths = vec![file1, file2];
             let results = group_files(&config, &log).unwrap();
             assert_eq!(results.len(), 1);
@@ -1150,7 +1150,7 @@ mod test {
             write_test_file(&file2, &[0; MAX_PREFIX_LEN], &[1; 4096], &[2; 4096]);
 
             let log = test_log();
-            let mut config = Config::default();
+            let mut config = FindConfig::default();
             config.paths = vec![file1, file2];
 
             let results = group_files(&config, &log).unwrap();
@@ -1168,7 +1168,7 @@ mod test {
             write_test_file(&file2, b"aaa", b"", b"");
 
             let log = test_log();
-            let mut config = Config::default();
+            let mut config = FindConfig::default();
             config.paths = vec![file1.clone(), file2.clone()];
             config.rf_over = Some(0);
 
@@ -1194,7 +1194,7 @@ mod test {
             write_test_file(&file2, b"bbb", b"", b"");
 
             let log = test_log();
-            let mut config = Config::default();
+            let mut config = FindConfig::default();
             config.paths = vec![file1.clone(), file2.clone()];
             config.unique = true;
 
@@ -1216,7 +1216,7 @@ mod test {
             write_test_file(&file2, &prefix, &mid, b"suffix2");
 
             let log = test_log();
-            let mut config = Config::default();
+            let mut config = FindConfig::default();
             config.paths = vec![file1.clone(), file2.clone()];
             config.unique = true;
 
@@ -1238,7 +1238,7 @@ mod test {
             write_test_file(&file2, &prefix, b"middle2", &suffix);
 
             let log = test_log();
-            let mut config = Config::default();
+            let mut config = FindConfig::default();
             config.paths = vec![file1.clone(), file2.clone()];
             config.unique = true;
 
@@ -1258,7 +1258,7 @@ mod test {
             hard_link(&file1, &file2).unwrap();
 
             let log = test_log();
-            let mut config = Config::default();
+            let mut config = FindConfig::default();
             config.paths = vec![file1.clone(), file2.clone()];
             config.unique = true;
 
@@ -1274,7 +1274,7 @@ mod test {
             let file1 = root.join("file1");
             write_test_file(&file1, b"foo", b"", b"");
             let log = test_log();
-            let mut config = Config::default();
+            let mut config = FindConfig::default();
             config.paths = vec![file1.clone(), file1.clone(), file1.clone()];
             config.unique = true;
             config.hard_links = true;
@@ -1301,7 +1301,7 @@ mod test {
                 write_test_file(&file1, b"foo", b"", b"");
 
                 let log = test_log();
-                let mut config = Config::default();
+                let mut config = FindConfig::default();
                 config.paths = vec![file1.clone(), file2.clone()];
                 config.unique = true;
                 config.hard_links = true;
@@ -1321,7 +1321,7 @@ mod test {
 
             let report_file = root.join("report.txt");
             let log = test_log();
-            let mut config = Config::default();
+            let mut config = FindConfig::default();
             config.paths = vec![file.clone()];
             config.unique = true;
             config.output = Some(report_file.clone());

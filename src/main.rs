@@ -6,7 +6,7 @@ use indoc::indoc;
 use regex::Regex;
 use structopt::StructOpt;
 
-use fclones::config::{Config, Parallelism};
+use fclones::config::{Config, DedupeConfig, FindConfig, Parallelism, Command};
 use fclones::log::Log;
 use fclones::path::PATH_ESCAPE_CHAR;
 
@@ -43,6 +43,12 @@ fn configure_main_thread_pool(pool_sizes: &HashMap<OsString, Parallelism>) {
         .unwrap();
 }
 
+enum DedupeOp {
+    Remove,
+    SoftLink,
+    HardLink,
+}
+
 fn main() {
     let mut log = Log::new();
     let after_help = &paint_help(indoc!(
@@ -65,7 +71,8 @@ fn main() {
     "
     ));
 
-    let clap = Config::clap().after_help(after_help.as_str());
+    let clap = Config::clap(); // .after_help(after_help.as_str());
+
     let matches = clap.get_matches_safe().unwrap_or_else(|e| {
         // a hack to remove "error: " from the message,
         // until we switch to Clap 3.x, which will have the `cause` field
@@ -80,7 +87,19 @@ fn main() {
     });
 
     let config: Config = Config::from_clap(&matches);
+    if config.quiet {
+        log.no_progress = true;
+    }
 
+    match config.command {
+        Command::Find(config) => find(&config, &mut log),
+        Command::Remove(config) => dedupe(&config, DedupeOp::Remove, &mut log),
+        Command::SoftLink(config) => dedupe(&config, DedupeOp::SoftLink, &mut log),
+        Command::HardLink(config) => dedupe(&config, DedupeOp::HardLink, &mut log),
+    }
+}
+
+fn find(config: &FindConfig, log: &mut Log) {
     let mut access_error = false;
     let mut has_input_files: bool = false;
     for path in config.paths.iter() {
@@ -103,10 +122,6 @@ fn main() {
     if !has_input_files {
         log.err("No input files");
         exit(1);
-    }
-
-    if config.quiet {
-        log.no_progress = true;
     }
 
     configure_main_thread_pool(&config.thread_pool_sizes());
@@ -135,3 +150,5 @@ fn main() {
         log.err(format!("Failed to write report: {}", e))
     }
 }
+
+fn dedupe(config: &DedupeConfig, op: DedupeOp, log: &mut Log) {}
