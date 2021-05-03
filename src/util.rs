@@ -1,3 +1,19 @@
+use serde::{Serialize, Serializer};
+use std::cell::Cell;
+
+/// Allows for serializing iterators
+pub struct IteratorWrapper<T>(pub Cell<Option<T>>);
+
+impl<I, P> Serialize for IteratorWrapper<I>
+where
+    I: IntoIterator<Item = P>,
+    P: Serialize,
+{
+    fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        s.collect_seq(self.0.take().unwrap())
+    }
+}
+
 #[cfg(test)]
 pub mod test {
     use std::fs::{create_dir_all, remove_dir_all};
