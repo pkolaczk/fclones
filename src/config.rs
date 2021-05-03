@@ -17,7 +17,7 @@ use crate::transform::Transform;
 use std::io;
 
 arg_enum! {
-    #[derive(Debug, StructOpt)]
+    #[derive(Clone, Debug, StructOpt)]
     pub enum OutputFormat {
         Text, Fdupes, Csv, Json
     }
@@ -65,7 +65,7 @@ pub struct Parallelism {
 #[structopt(
     setting(AppSettings::ColoredHelp),
     setting(AppSettings::DeriveDisplayOrder),
-    setting(AppSettings::DisableVersion),
+    setting(AppSettings::DisableVersion)
 )]
 pub struct FindConfig {
     /// Writes the report to a file instead of the standard output
@@ -336,11 +336,11 @@ impl FindConfig {
 pub struct DedupeConfig {
     /// Don't perform any changes on the file-system; only log what would be done
     #[structopt(long)]
-    dry_run: bool,
+    pub dry_run: bool,
 
     /// Path to the file containing the output of earlier `fclones find ...` execution
     #[structopt(parse(from_os_str))]
-    file: PathBuf
+    pub file: PathBuf,
 }
 
 #[derive(Debug, StructOpt)]
@@ -354,7 +354,6 @@ pub enum Command {
     /// Replaces redundant files earlier found by `find` with hard links
     HardLink(DedupeConfig),
 }
-
 
 /// Finds and cleans up redundant files
 #[derive(Debug, StructOpt)]
@@ -370,5 +369,5 @@ pub struct Config {
 
     /// Finds files
     #[structopt(subcommand)]
-    pub command: Command
+    pub command: Command,
 }

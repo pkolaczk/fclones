@@ -1,6 +1,6 @@
 use std::cell::RefCell;
 use std::cmp::Reverse;
-use std::env::current_dir;
+use std::env::{args, current_dir};
 use std::ffi::{OsStr, OsString};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::mpsc::{channel, Receiver, Sender};
@@ -20,19 +20,20 @@ use crate::files::*;
 use crate::group::*;
 use crate::log::Log;
 use crate::path::Path;
-use crate::progress::FastProgressBar;
-use crate::report::Reporter;
+
+use crate::report::{FileStats, ReportHeader, ReportWriter};
 use crate::selector::PathSelector;
 use crate::semaphore::Semaphore;
 use crate::transform::Transform;
 use crate::walk::Walk;
+use chrono::{DateTime, Utc};
 use console::Term;
 use core::fmt;
 use std::collections::HashMap;
 use std::fmt::{Display, Formatter};
 use std::fs::File;
 use std::io;
-use std::io::{BufWriter, Write};
+use std::io::BufWriter;
 
 pub mod config;
 pub mod files;
@@ -138,7 +139,7 @@ impl<'a> AppCtx<'a> {
 }
 
 /// A group of files that have something in common, e.g. same size or same hash
-#[derive(Serialize, Debug)]
+#[derive(Serialize, Debug, PartialEq, Eq)]
 pub struct FileGroup<F> {
     /// Length of each file
     pub file_len: FileLen,
@@ -876,27 +877,6 @@ pub fn group_files(config: &FindConfig, log: &Log) -> Result<Vec<FileGroup<Path>
     Ok(groups)
 }
 
-/// Creates a reporter that writes to the standard output
-fn stdout_reporter(progress: Arc<FastProgressBar>) -> Reporter<Box<dyn Write>> {
-    let stdout = Term::stdout();
-    let is_term = stdout.is_term();
-    if is_term {
-        progress.finish_and_clear()
-    }
-    let out: Box<dyn Write> = Box::new(BufWriter::new(stdout));
-    Reporter::new(out, is_term, progress)
-}
-
-/// Creates a reporter that writes to the given file.
-fn file_reporter(
-    path: &std::path::Path,
-    progress: Arc<FastProgressBar>,
-) -> io::Result<Reporter<Box<dyn Write>>> {
-    let file = File::create(path)?;
-    let out: Box<dyn Write> = Box::new(BufWriter::new(file));
-    Ok(Reporter::new(out, false, progress))
-}
-
 /// Writes the list of groups to a file or the standard output.
 ///
 /// # Parameters
@@ -908,20 +888,31 @@ fn file_reporter(
 /// # Errors
 /// Returns [`io::Error`] on I/O write error or if the output file cannot be created.
 pub fn write_report(config: &FindConfig, log: &Log, groups: &[FileGroup<Path>]) -> io::Result<()> {
-    let remaining_files = groups.total_count();
-    let progress = log.progress_bar("Writing report", remaining_files as u64);
-
-    // No progress bar when we write to terminal
-    let mut reporter = match &config.output {
-        Some(path) => file_reporter(path, progress)?,
-        None => stdout_reporter(progress),
+    let header = ReportHeader {
+        timestamp: DateTime::from(Utc::now()),
+        version: env!("CARGO_PKG_VERSION").to_owned(),
+        command: args().collect(),
+        stats: Some(FileStats {
+            group_count: groups.len(),
+            redundant_file_count: groups.selected_count(config.rf_over(), usize::MAX),
+            redundant_file_size: groups.selected_size(config.rf_over(), usize::MAX),
+        }),
     };
 
-    match &config.format {
-        OutputFormat::Text => reporter.write_as_text(groups),
-        OutputFormat::Fdupes => reporter.write_as_fdupes(groups),
-        OutputFormat::Csv => reporter.write_as_csv(groups),
-        OutputFormat::Json => reporter.write_as_json(groups),
+    match &config.output {
+        Some(path) => {
+            let progress = log.progress_bar("Writing report", groups.len() as u64);
+            let iter = groups.iter().inspect(|_g| progress.tick());
+            let file = BufWriter::new(File::create(path)?);
+            let mut reporter = ReportWriter::new(file, false);
+            reporter.write(&config.format, &header, iter)
+        }
+        None => {
+            let term = Term::stdout();
+            let color = term.is_term();
+            let mut reporter = ReportWriter::new(BufWriter::new(term), color);
+            reporter.write(&config.format, &header, groups.iter())
+        }
     }
 }
 
