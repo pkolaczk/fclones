@@ -13,11 +13,12 @@ use regex::escape;
 
 use crate::path::PATH_ESCAPE_CHAR;
 use crate::regex::Regex;
+use std::str::FromStr;
 
 #[derive(Debug)]
 pub struct PatternError {
-    cause: String,
-    input: String,
+    pub cause: String,
+    pub input: String,
 }
 
 impl Display for PatternError {
@@ -37,6 +38,14 @@ pub struct Pattern {
     src: String,
     anchored_regex: Regex,
     prefix_regex: Regex,
+}
+
+impl FromStr for Pattern {
+    type Err = PatternError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Pattern::glob(s)
+    }
 }
 
 pub struct PatternOpts {

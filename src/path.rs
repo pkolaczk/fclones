@@ -13,6 +13,7 @@ use serde::{Serialize, Serializer};
 use smallvec::SmallVec;
 
 use crate::path::string::{c_to_os_str, os_to_c_str};
+use std::borrow::Cow;
 
 #[cfg(unix)]
 pub const PATH_ESCAPE_CHAR: &str = "\\";
@@ -235,6 +236,25 @@ impl Path {
             result = parent.as_ref();
         }
         result
+    }
+
+    #[cfg(unix)]
+    pub fn shell_quote(&self) -> String {
+        shell_words::quote(self.to_string().as_str()).into()
+    }
+
+    #[cfg(windows)]
+    pub fn shell_quote(&self) -> String {
+        let s = self.to_string();
+        const SPECIAL_CHARS: [char; 13] = [
+            ' ', '"', '(', ')', '^', '%', '$', '~', '=', '+', '*', '?', '|', '/',
+        ];
+        let needs_quote = s.chars().into_iter().any(|c| SPECIAL_CHARS.contains(&c));
+        if needs_quote {
+            format!("\"{}\"", s)
+        } else {
+            s
+        }
     }
 }
 
