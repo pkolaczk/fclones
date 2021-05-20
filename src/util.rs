@@ -14,6 +14,18 @@ where
     }
 }
 
+/// Sorts an array using a key generation function that can fail.
+/// Items for which the key could not be obtained are sorted last.
+/// Returns vector of errors encountered when obtaining the keys.
+pub fn fallible_sort_by_key<T, K, E>(v: &mut Vec<T>, f: impl Fn(&T) -> Result<K, E>) -> Vec<E>
+where
+    K: Ord,
+{
+    let mut errors: Vec<E> = Vec::new();
+    v.sort_by_key(|t| f(t).map_err(|e| errors.push(e)).ok());
+    errors
+}
+
 #[cfg(test)]
 pub mod test {
     use std::fs::{create_dir_all, remove_dir_all};

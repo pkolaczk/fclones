@@ -42,8 +42,10 @@ pub mod path;
 pub mod progress;
 pub mod report;
 
+mod dedupe;
 mod device;
 mod group;
+mod lock;
 mod pattern;
 mod regex;
 mod selector;
@@ -52,6 +54,9 @@ mod transform;
 mod util;
 mod walk;
 
+pub use dedupe::{dedupe_script, DedupeOp, DedupeResult};
+
+/// Error reported by top-level fclones functions
 #[derive(Debug)]
 pub struct Error {
     pub message: String,
@@ -73,7 +78,13 @@ impl Display for Error {
 
 impl From<String> for Error {
     fn from(s: String) -> Self {
-        Error { message: s }
+        Error::new(s)
+    }
+}
+
+impl From<&str> for Error {
+    fn from(s: &str) -> Self {
+        Error::new(s.to_owned())
     }
 }
 

@@ -20,23 +20,34 @@ use std::borrow::Borrow;
 use std::cell::Cell;
 
 use crate::path::Path;
+use std::cmp::min;
 use std::fmt::Display;
 
-#[derive(Serialize)]
+/// Describes how many redundant files were found, in how many groups,
+/// how much space can be reclaimed, etc.
+#[derive(Debug, Eq, PartialEq, Serialize)]
 pub struct FileStats {
     pub group_count: usize,
     pub redundant_file_count: usize,
     pub redundant_file_size: FileLen,
 }
 
-#[derive(Serialize)]
+/// Data in the header of the whole report.
+#[derive(Debug, Eq, PartialEq, Serialize)]
 pub struct ReportHeader {
+    /// The program version that produced the report
     pub version: String,
+    /// The date and time when the report was produced
     pub timestamp: DateTime<FixedOffset>,
+    /// Full shell command containing arguments of the search run that produced the report
     pub command: Vec<String>,
+    /// Information on the number of duplicate files reported.
+    /// This is optional to allow streaming the report out before finding all files in the future.
     pub stats: Option<FileStats>,
 }
 
+/// Formats and writes duplicate files report to a stream.
+/// Supports many formats: text, csv, json, etc.
 pub struct ReportWriter<W: Write> {
     out: W,
     color: bool,
@@ -58,6 +69,7 @@ impl<W: Write> ReportWriter<W> {
     }
 
     /// Writes the report in human-readable text format.
+    ///
     /// A group of identical files starts with a group header at column 0,
     /// containing the size and hash of each file in the group.
     /// Then file paths are printed in separate, indented lines.
@@ -95,8 +107,8 @@ impl<W: Write> ReportWriter<W> {
         if let Some(stats) = &header.stats {
             self.write_header_line(&format!("Found {} file groups", stats.group_count))?;
             self.write_header_line(&format!(
-                "{} in {} redundant files can be removed",
-                stats.redundant_file_size, stats.redundant_file_count
+                "{} B ({}) in {} redundant files can be removed",
+                stats.redundant_file_size.0, stats.redundant_file_size, stats.redundant_file_count
             ))?;
         }
 
@@ -136,6 +148,7 @@ impl<W: Write> ReportWriter<W> {
     }
 
     /// Writes results in CSV format.
+    ///
     /// Each file group is written as one line.
     /// The number of columns is dynamic.
     /// Columns:
@@ -260,49 +273,172 @@ impl<W: Write> ReportWriter<W> {
     }
 }
 
+/// Iterates the contents of the report.
+/// Each emitted item is a group of duplicate files.
 pub struct TextReportIterator<R: Read> {
     stream: BufReader<R>,
+    line_buf: String,
 }
 
+/// Helper struct to encapsulate the data in the header before each group of identical files
+#[derive(Debug, Eq, PartialEq, Serialize)]
+struct GroupHeader {
+    count: usize,
+    file_len: FileLen,
+    file_hash: FileHash,
+}
+
+
+impl<R> TextReportIterator<R> where R: Read {
+    fn read_first_non_comment_line(&mut self) -> io::Result<Option<&str>> {
+        loop {
+            self.line_buf.clear();
+            self.stream.read_line(&mut self.line_buf)?;
+            let line = &self.line_buf;
+            if line.trim().is_empty() {
+                return Ok(None);
+            }
+            if !line.starts_with('#') {
+                break;
+            }
+        }
+        Ok(Some(&self.line_buf))
+    }
+
+    fn read_group_header(&mut self) -> io::Result<Option<GroupHeader>> {
+        let header_str = match self.read_first_non_comment_line()? {
+            None => return Ok(None),
+            Some(s) => s,
+        };
+
+        lazy_static! {
+            static ref GROUP_HEADER_RE: Regex =
+                Regex::new(r"^([a-f0-9]{32}), ([0-9]+) B [^*]* \* ([0-9]+):\n$").unwrap();
+        }
+
+        let captures = GROUP_HEADER_RE.captures(header_str).ok_or_else(|| {
+            Error::new(
+                ErrorKind::InvalidData,
+                format!("Malformed group header: {}", header_str),
+            )
+        })?;
+
+        Ok(Some(GroupHeader {
+            file_hash: FileHash(
+                u128::from_str_radix(captures.get(1).unwrap().as_str(), 16).unwrap(),
+            ),
+            file_len: FileLen(captures.get(2).unwrap().as_str().parse::<u64>().unwrap()),
+            count: captures.get(3).unwrap().as_str().parse::<usize>().unwrap(),
+        }))
+    }
+
+    fn read_paths(&mut self, count: usize) -> io::Result<Vec<Path>> {
+        let mut paths = Vec::with_capacity(min(count, 1024));
+        for _ in 0..count {
+            self.line_buf.clear();
+            let n = self.stream.read_line(&mut self.line_buf)?;
+            let path_str = &self.line_buf;
+            if n == 0 {
+                return Err(Error::new(
+                    ErrorKind::UnexpectedEof,
+                    "Unexpected end of file.",
+                ));
+            }
+            if !path_str.starts_with("    ") || path_str.trim().is_empty() {
+                return Err(Error::new(
+                    ErrorKind::InvalidData,
+                    format!("Path expected: {}", path_str),
+                ));
+            }
+            paths.push(Path::from(path_str.trim()));
+        }
+        Ok(paths)
+    }
+}
+
+impl<R: Read> FallibleIterator for TextReportIterator<R> {
+    type Item = FileGroup<Path>;
+    type Error = std::io::Error;
+
+    fn next(&mut self) -> Result<Option<Self::Item>, Self::Error> {
+        Ok(match self.read_group_header()? {
+            Some(header) => {
+                let paths = self.read_paths(header.count)?;
+                Some(FileGroup {
+                    file_len: header.file_len,
+                    file_hash: header.file_hash,
+                    files: paths,
+                })
+            }
+            None => None,
+        })
+    }
+}
+
+/// Reads a text report from a stream.
+///
+/// Currently supports only the default text report format.
+/// Does not load the whole report into memory.
+/// Allows iterating over groups of files.
 pub struct TextReportReader<R: Read> {
-    header: ReportHeader,
-    groups: TextReportIterator<R>,
+    pub header: ReportHeader,
+    pub groups: TextReportIterator<R>,
 }
 
 impl<R: Read> TextReportReader<R> {
-    fn read_extract(stream: &mut impl BufRead, regex: &Regex, msg: &str) -> io::Result<String> {
+    fn read_line(stream: &mut impl BufRead) -> io::Result<String> {
         let mut line_buf = String::new();
         stream.read_line(&mut line_buf)?;
-        Ok(regex
-            .captures(&line_buf.trim())
-            .ok_or_else(|| Error::new(ErrorKind::InvalidData, msg.to_owned()))?
-            .get(1)
-            .unwrap()
-            .as_str()
-            .to_owned())
+        Ok(line_buf)
     }
 
+    fn read_extract(
+        stream: &mut impl BufRead,
+        regex: &Regex,
+        msg: &str,
+    ) -> io::Result<Vec<String>> {
+        let line = Self::read_line(stream)?;
+        Ok(regex
+            .captures(line.trim())
+            .ok_or_else(|| Error::new(ErrorKind::InvalidData, msg.to_owned()))?
+            .iter()
+            .skip(1)
+            .map(|c| c.unwrap().as_str().to_owned())
+            .collect())
+    }
+
+    /// Creates a new reader for reading from the given stream and
+    /// decodes the report header.
+    /// Reports an io::Error with ErrorKind::InvalidData
+    /// if the report header is malformed.
     pub fn new(input_stream: R) -> io::Result<TextReportReader<R>> {
+        let mut stream = BufReader::new(input_stream);
+
         lazy_static! {
             static ref VERSION_RE: Regex =
-                Regex::new(r"^# Report by fclones ([0-9]+\.[0-9]+\.[0-9]+)$").unwrap();
-            static ref TIMESTAMP_RE: Regex = Regex::new(r"^# Timestamp: (.*)$").unwrap();
-            static ref COMMAND_RE: Regex = Regex::new(r"^# Command: (fclones.*)$").unwrap();
-            static ref GROUP_COUNT_RE: Regex = Regex::new(r"# Found ([0-9+]) groups").unwrap();
+                Regex::new(r"^# Report by fclones ([0-9]+\.[0-9]+\.[0-9]+)").unwrap();
+            static ref TIMESTAMP_RE: Regex = Regex::new(r"^# Timestamp: (.*)").unwrap();
+            static ref COMMAND_RE: Regex = Regex::new(r"^# Command: (.*)").unwrap();
+            static ref GROUP_COUNT_RE: Regex =
+                Regex::new(r"^# Found ([0-9+]) file groups").unwrap();
+            static ref STATS_RE: Regex =
+                Regex::new(r"^# ([0-9]+) B \([^)]+\) in ([0-9]+) redundant files can be removed")
+                    .unwrap();
         }
 
-        let mut stream = BufReader::new(input_stream);
         let version = Self::read_extract(
             &mut stream,
             &VERSION_RE,
             "Not a default fclones report. \
             Formats other than the default one are not supported yet.",
-        )?;
+        )?
+        .swap_remove(0);
         let timestamp = Self::read_extract(
             &mut stream,
             &TIMESTAMP_RE,
             "Malformed header: Missing timestamp",
-        )?;
+        )?
+        .swap_remove(0);
         let timestamp = DateTime::parse_from_rfc2822(&timestamp).map_err(|e| {
             Error::new(
                 ErrorKind::InvalidData,
@@ -313,93 +449,67 @@ impl<R: Read> TextReportReader<R> {
             &mut stream,
             &COMMAND_RE,
             "Malformed header: Missing command",
-        )?;
+        )?
+        .swap_remove(0);
         let command = shell_words::split(&command).map_err(|e| {
             Error::new(
                 ErrorKind::InvalidData,
                 format!("Malformed header: Failed to parse command arguments: {}", e),
             )
         })?;
-
-        // let config: Config = Config::from_iter_safe(&command).map_err(|e| {
-        //     let message: String = e.message;
-        //     let message: String = message.chars().take_while(|&c| c != '\n').collect();
-        //     Error::new(
-        //         ErrorKind::InvalidData,
-        //         format!("Malformed header: Incorrect fclones command: {}", message),
-        //     )
-        // })?;
+        let group_count = Self::read_extract(
+            &mut stream,
+            &GROUP_COUNT_RE,
+            "Malformed header: Missing group count",
+        )?
+        .swap_remove(0);
+        let group_count: usize = group_count.parse().map_err(|e| {
+            Error::new(
+                ErrorKind::InvalidData,
+                format!("Malformed header: Failed to parse group count: {}", e),
+            )
+        })?;
+        let stats_line = Self::read_extract(
+            &mut stream,
+            &STATS_RE,
+            "Malformed header: Missing file statistics line",
+        )?;
+        let redundant_file_size = FileLen(stats_line[0].parse().map_err(|e| {
+            Error::new(
+                ErrorKind::InvalidData,
+                format!(
+                    "Malformed header: Failed to parse file size {}: {}",
+                    stats_line[0], e
+                ),
+            )
+        })?);
+        let redundant_file_count: usize = stats_line[1].parse().map_err(|e| {
+            Error::new(
+                ErrorKind::InvalidData,
+                format!(
+                    "Malformed header: Failed to parse file count {}: {}",
+                    stats_line[1], e
+                ),
+            )
+        })?;
 
         let header = ReportHeader {
             version,
             timestamp,
             command,
-            stats: None,
+            stats: Some(FileStats {
+                group_count,
+                redundant_file_size,
+                redundant_file_count,
+            }),
         };
         Ok(TextReportReader {
             header,
-            groups: TextReportIterator { stream },
+            groups: TextReportIterator {
+                stream,
+                line_buf: String::new(),
+            },
         })
-    }
-}
-
-//
-impl<R: Read> FallibleIterator for TextReportIterator<R> {
-    type Item = FileGroup<Path>;
-    type Error = std::io::Error;
-
-    fn next(&mut self) -> Result<Option<Self::Item>, Self::Error> {
-        lazy_static! {
-            static ref GROUP_HEADER_RE: Regex =
-                Regex::new(r"^([a-f0-9]{32}), ([0-9]+) B [^*]* \* ([0-9]+):\n$").unwrap();
-        }
-
-        let mut line = String::new();
-        loop {
-            self.stream.read_line(&mut line)?;
-            if line.trim().is_empty() {
-                return Ok(None);
-            }
-            if !line.starts_with('#') {
-                break;
-            }
-        }
-
-        let captures = GROUP_HEADER_RE.captures(&line).ok_or_else(|| {
-            Error::new(
-                ErrorKind::InvalidData,
-                format!("Malformed group header: {}", &line),
-            )
-        })?;
-
-        let file_hash = u128::from_str_radix(captures.get(1).unwrap().as_str(), 16).unwrap();
-        let file_len = captures.get(2).unwrap().as_str().parse::<u64>().unwrap();
-        let count = captures.get(3).unwrap().as_str().parse::<usize>().unwrap();
-        println!("count: {}", count);
-        let mut paths = Vec::with_capacity(count);
-        for _ in 0..count {
-            line.clear();
-            let n = self.stream.read_line(&mut line)?;
-            if n == 0 {
-                return Err(Error::new(
-                    ErrorKind::UnexpectedEof,
-                    "Unexpected end of file.",
-                ));
-            }
-            if !line.starts_with("    ") || line.trim().is_empty() {
-                return Err(Error::new(
-                    ErrorKind::InvalidData,
-                    format!("Path expected: {}", line),
-                ));
-            }
-            paths.push(Path::from(line.trim()));
-        }
-
-        Ok(Some(FileGroup {
-            file_len: FileLen(file_len),
-            file_hash: FileHash(file_hash),
-            files: paths,
-        }))
     }
 }
 
@@ -412,14 +522,22 @@ mod test {
     use chrono::Utc;
     use tempfile::NamedTempFile;
 
-    #[test]
-    fn test_text_report_reader_reads_header() {
-        let header = ReportHeader {
+    fn dummy_report_header() -> ReportHeader {
+        ReportHeader {
             command: vec!["fclones".to_owned(), "find".to_owned(), ".".to_owned()],
             version: env!("CARGO_PKG_VERSION").to_owned(),
             timestamp: DateTime::from(Utc::now()),
-            stats: None,
-        };
+            stats: Some(FileStats {
+                group_count: 4,
+                redundant_file_count: 234,
+                redundant_file_size: FileLen(1000),
+            }),
+        }
+    }
+
+    #[test]
+    fn test_text_report_reader_reads_header() {
+        let header = dummy_report_header();
         let groups: Vec<FileGroup<Path>> = vec![];
 
         let output = NamedTempFile::new().unwrap();
@@ -435,17 +553,12 @@ mod test {
             reader.header.timestamp.timestamp(),
             header.timestamp.timestamp()
         );
+        assert_eq!(reader.header.stats, header.stats);
     }
 
     #[test]
     fn test_text_report_reader_reads_files() {
-        let header = ReportHeader {
-            command: vec!["fclones".to_owned(), "find".to_owned(), ".".to_owned()],
-            version: env!("CARGO_PKG_VERSION").to_owned(),
-            timestamp: DateTime::from(Utc::now()),
-            stats: None,
-        };
-
+        let header = dummy_report_header();
         let groups = vec![
             FileGroup {
                 file_len: FileLen(100),

@@ -2,8 +2,10 @@
 
 use std::collections::HashMap;
 use std::ffi::OsString;
+use std::io;
 use std::io::{stdin, BufRead, BufReader};
 use std::path::PathBuf;
+use std::str::FromStr;
 
 use clap::arg_enum;
 use clap::AppSettings;
@@ -14,7 +16,7 @@ use crate::path::Path;
 use crate::pattern::{Pattern, PatternError, PatternOpts};
 use crate::selector::PathSelector;
 use crate::transform::Transform;
-use std::io;
+use chrono::{DateTime, FixedOffset, Local};
 
 arg_enum! {
     #[derive(Clone, Debug, StructOpt)]
@@ -29,13 +31,25 @@ impl Default for OutputFormat {
     }
 }
 
+/// Parses date time string, accepts wide range of human-readable formats
+fn parse_date_time(s: &str) -> Result<DateTime<FixedOffset>, String> {
+    match dtparse::parse(s) {
+        Ok((dt, Some(offset))) => Ok(DateTime::from_utc(dt, offset)),
+        Ok((dt, None)) => {
+            let local_offset = *Local::now().offset();
+            Ok(DateTime::from_utc(dt, local_offset))
+        }
+        Err(e) => Err(format!("Failed to parse {} as date: {}", s, e.to_string())),
+    }
+}
+
 /// Parses string with format: `<device>:<seq parallelism>[,<rand parallelism>]`
-fn parse_thread_count_option(str: &str) -> Result<(OsString, Parallelism), String> {
-    let (key, value) = if str.contains(':') {
-        let index = str.rfind(':').unwrap();
-        (&str[0..index], &str[(index + 1)..])
+fn parse_thread_count_option(s: &str) -> Result<(OsString, Parallelism), String> {
+    let (key, value) = if s.contains(':') {
+        let index = s.rfind(':').unwrap();
+        (&s[0..index], &s[(index + 1)..])
     } else {
-        ("default", str)
+        ("default", s)
     };
     let key = OsString::from(key);
     let value = value.to_string();
@@ -51,7 +65,7 @@ fn parse_thread_count_option(str: &str) -> Result<(OsString, Parallelism), Strin
         Some(v) => v?,
         None => random,
     };
-    Ok((key, Parallelism { sequential, random }))
+    Ok((key, Parallelism { random, sequential }))
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -162,11 +176,11 @@ pub struct FindConfig {
     pub max_size: Option<FileLen>,
 
     /// Includes only file names matched fully by any of the given patterns.
-    #[structopt(short = "n", long = "names", value_name("pattern"))]
+    #[structopt(short = "n", long = "name", value_name("pattern"))]
     pub name_patterns: Vec<String>,
 
     /// Includes only paths matched fully by any of the given patterns.
-    #[structopt(short = "p", long = "paths", value_name("pattern"))]
+    #[structopt(short = "p", long = "path", value_name("pattern"))]
     pub path_patterns: Vec<String>,
 
     /// Excludes paths matched fully by any of the given patterns.
@@ -328,8 +342,54 @@ impl FindConfig {
     }
 }
 
+#[derive(Clone, Debug)]
+pub enum Priority {
+    Newest,
+    Oldest,
+    MostRecentlyModified,
+    LeastRecentlyModified,
+    MostRecentlyAccessed,
+    LeastRecentlyAccessed,
+    MostNested,
+    LeastNested,
+}
+
+impl Priority {
+    pub fn variants() -> Vec<&'static str> {
+        vec![
+            "newest",
+            "oldest",
+            "most-recently-modified",
+            "least-recently-modified",
+            "most-recently-accessed",
+            "least-recently-accessed",
+            "most-nested",
+            "least-nested",
+        ]
+    }
+}
+
+impl FromStr for Priority {
+    type Err = String;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_lowercase().as_str() {
+            "newest" => Ok(Priority::Newest),
+            "oldest" => Ok(Priority::Oldest),
+            "most-recently-modified" | "mrm" => Ok(Priority::MostRecentlyModified),
+            "least-recently-modified" | "lrm" => Ok(Priority::MostRecentlyModified),
+            "most-recently-accessed" | "mra" => Ok(Priority::MostRecentlyAccessed),
+            "least-recently-accessed" | "lra" => Ok(Priority::LeastRecentlyAccessed),
+            "most-nested" => Ok(Priority::MostNested),
+            "least-nested" => Ok(Priority::LeastNested),
+            _ => Err(format!("Unrecognized priority: {}", s)),
+        }
+    }
+}
+
+/// Configures which files should be removed
 #[derive(Debug, StructOpt)]
 #[structopt(
+    setting(AppSettings::DeriveDisplayOrder),
     setting(AppSettings::DisableVersion),
     setting(AppSettings::ColoredHelp)
 )]
@@ -337,6 +397,50 @@ pub struct DedupeConfig {
     /// Don't perform any changes on the file-system; only log what would be done
     #[structopt(long)]
     pub dry_run: bool,
+
+    /// Deduplicate only files that were modified before the given time.
+    /// If any of the files in a group was modified later, the whole group is skipped.
+    #[structopt(long, short("m"), value_name="timestamp", parse(try_from_str = parse_date_time))]
+    pub modified_before: Option<DateTime<FixedOffset>>,
+
+    /// The number of replicas to keep untouched.
+    ///
+    /// If not given, it is assumed to be the same as the
+    /// `--rf-over` value in the earlier `find` run.
+    #[structopt(short("n"), long, value_name = "count")]
+    pub rf_over: Option<usize>,
+
+    /// Don't remove or replace files with names that match these patterns.
+    #[structopt(long = "retain-name", value_name = "pattern")]
+    pub retain_name_patterns: Vec<Pattern>,
+
+    /// Don't remove or replace paths matching these patterns.
+    #[structopt(long = "retain-path", value_name = "pattern")]
+    pub retain_path_patterns: Vec<Pattern>,
+
+    /// Sets the priority for files to be retained.
+    #[structopt(long, value_name="priority", possible_values=&Priority::variants())]
+    pub retain_priority: Vec<Priority>,
+
+    /// File names matching these patterns get the highest priority to be dropped
+    /// (unless matched by any of the retain options).
+    #[structopt(long = "drop-name", value_name = "pattern")]
+    pub drop_name_patterns: Vec<Pattern>,
+
+    /// File names matching these patterns get the highest priority to be dropped
+    /// (unless matched by any of the retain options).
+    #[structopt(long = "drop-path", value_name = "pattern")]
+    pub drop_path_patterns: Vec<Pattern>,
+
+    /// Sets the priority for files to be removed or replaced by links.
+    #[structopt(long, value_name="priority", possible_values=&Priority::variants())]
+    pub drop_priority: Vec<Priority>,
+}
+
+#[derive(Debug, StructOpt)]
+pub struct DedupeCommand {
+    #[structopt(flatten)]
+    pub config: DedupeConfig,
 
     /// Path to the file containing the output of earlier `fclones find ...` execution
     #[structopt(parse(from_os_str))]
@@ -348,11 +452,11 @@ pub enum Command {
     /// Finds duplicate, unique, under- or over-replicated files
     Find(FindConfig),
     /// Removes redundant files earlier found by `find`
-    Remove(DedupeConfig),
+    Remove(DedupeCommand),
     /// Replaces redundant files earlier found by `find` with soft links
-    SoftLink(DedupeConfig),
+    SoftLink(DedupeCommand),
     /// Replaces redundant files earlier found by `find` with hard links
-    HardLink(DedupeConfig),
+    HardLink(DedupeCommand),
 }
 
 /// Finds and cleans up redundant files

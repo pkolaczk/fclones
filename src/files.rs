@@ -10,7 +10,7 @@ use std::hash::{Hash, Hasher};
 use std::io;
 use std::io::{ErrorKind, Read, Seek, SeekFrom};
 use std::iter::Sum;
-use std::ops::{Add, BitXor, Mul, Sub};
+use std::ops::{Add, AddAssign, BitXor, Mul, Sub};
 #[cfg(unix)]
 use std::os::unix::fs::OpenOptionsExt;
 #[cfg(unix)]
@@ -131,6 +131,12 @@ impl Add for FileLen {
     type Output = FileLen;
     fn add(self, rhs: Self) -> Self::Output {
         FileLen(self.0 + rhs.0)
+    }
+}
+
+impl AddAssign for FileLen {
+    fn add_assign(&mut self, rhs: Self) {
+        self.0 += rhs.0
     }
 }
 
@@ -558,7 +564,7 @@ pub(crate) fn stream_hash(
     let mut read_len: FileLen = FileLen(0);
     scan(stream, len, buf_len, |buf| {
         hasher.write(buf);
-        read_len = read_len + FileLen(buf.len() as u64);
+        read_len += FileLen(buf.len() as u64);
         (progress)(buf.len());
     })?;
     let (a, b) = hasher.finish128();
