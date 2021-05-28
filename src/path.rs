@@ -13,7 +13,6 @@ use serde::{Serialize, Serializer};
 use smallvec::SmallVec;
 
 use crate::path::string::{c_to_os_str, os_to_c_str};
-use std::borrow::Cow;
 
 #[cfg(unix)]
 pub const PATH_ESCAPE_CHAR: &str = "\\";

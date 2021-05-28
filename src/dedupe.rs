@@ -1,20 +1,17 @@
+use std::cmp::{min, Reverse};
+use std::fs::Metadata;
+use std::ops::AddAssign;
+use std::{fs, io};
+
+use chrono::{DateTime, FixedOffset, Local};
+
 use crate::config::{DedupeConfig, Priority};
-use crate::files::{FileHash, FileLen};
+use crate::files::FileLen;
 use crate::lock::FileLock;
 use crate::log::Log;
 use crate::path::Path;
 use crate::util::fallible_sort_by_key;
 use crate::{Error, FileGroup};
-
-use chrono::{DateTime, FixedOffset, Local};
-use fallible_iterator::FallibleIterator;
-
-use rayon::prelude::IntoParallelRefIterator;
-use std::cmp::{min, Reverse};
-use std::fmt::Display;
-use std::fs::Metadata;
-use std::ops::AddAssign;
-use std::{fs, io};
 
 /// Defines what to do with redundant files
 #[derive(Copy, Clone)]
@@ -29,45 +26,73 @@ pub enum DedupeOp {
 
 /// Portable abstraction for commands used to remove duplicates
 pub enum FsCommand {
-    Remove {
-        path: Path,
-        len: FileLen,
-    },
-    SoftLink {
-        target: Path,
-        link: Path,
-        len: FileLen,
-    },
-    HardLink {
-        target: Path,
-        link: Path,
-        len: FileLen,
-    },
+    Remove { path: Path, len: FileLen },
+    SoftLink { target: Path, link: Path },
+    HardLink { target: Path, link: Path },
 }
 
 impl FsCommand {
+    fn remove(path: &Path) -> io::Result<()> {
+        fs::remove_file(path.to_path_buf())
+            .map_err(|e| io::Error::new(e.kind(), format!("Failed to remove file {}: {}", path, e)))
+    }
+
+    #[cfg(unix)]
+    fn symlink_internal(target: &std::path::Path, link: &std::path::Path) -> io::Result<()> {
+        std::os::unix::fs::symlink(target, &link)
+    }
+
+    #[cfg(windows)]
+    fn symlink_internal(target: &std::path::Path, link: &std::path::Path) -> io::Result<()> {
+        std::os::windows::fs::symlink_file(target, link)
+    }
+
+    fn symlink(target: &Path, link: &Path) -> io::Result<()> {
+        Self::symlink_internal(&target.to_path_buf(), &link.to_path_buf()).map_err(|e| {
+            io::Error::new(
+                e.kind(),
+                format!(
+                    "Failed to create symbolic link from {} -> {}: {}",
+                    link, target, e
+                ),
+            )
+        })
+    }
+
+    fn hardlink(target: &Path, link: &Path) -> io::Result<()> {
+        fs::hard_link(&target.to_path_buf(), &link.to_path_buf()).map_err(|e| {
+            io::Error::new(
+                e.kind(),
+                format!(
+                    "Failed to create hard link from {} -> {}: {}",
+                    link, target, e
+                ),
+            )
+        })
+    }
+
     /// Executes the command and returns the number of bytes reclaimed
-    pub fn execute(&self) -> io::Result<FileLen> {
+    pub fn execute(&self) -> io::Result<()> {
         match self {
-            FsCommand::Remove { path, len } => {
-                fs::remove_file(path.to_path_buf())?;
-                Ok(*len)
-            }
-            FsCommand::SoftLink { target, link, len } => {
-                let link = link.to_path_buf();
-                fs::remove_file(&link)?;
-                #[cfg(unix)]
-                std::os::unix::fs::symlink(&target.to_path_buf(), &link);
-                #[cfg(windows)]
-                std::os::windows::fs::symlink_file(&target.to_path_buf(), &link);
-                Ok(*len)
-            }
-            FsCommand::HardLink { target, link, len } => {
-                let link = link.to_path_buf();
-                fs::remove_file(&link)?;
-                fs::hard_link(&target.to_path_buf(), &link)?;
-                Ok(*len)
-            }
+            FsCommand::Remove { path, .. } => Self::remove(path),
+            FsCommand::SoftLink { target, link } => Self::symlink(target, link),
+            FsCommand::HardLink { target, link } => Self::hardlink(target, link),
+        }
+    }
+
+    /// Returns how much disk space running this command would reclaim
+    pub fn space_to_reclaim(&self) -> FileLen {
+        match self {
+            FsCommand::Remove { len, .. } => *len,
+            FsCommand::SoftLink { .. } | FsCommand::HardLink { .. } => FileLen(0),
+        }
+    }
+
+    /// Returns how many files running this command would remove
+    pub fn files_to_remove(&self) -> u64 {
+        match self {
+            FsCommand::Remove { .. } => 1,
+            FsCommand::SoftLink { .. } | FsCommand::HardLink { .. } => 0,
         }
     }
 
@@ -132,7 +157,7 @@ impl AddAssign for DedupeResult {
 struct FileMetadata {
     path: Path,
     metadata: Metadata,
-    lock: FileLock,
+    _lock: FileLock,
 }
 
 impl FileMetadata {
@@ -140,7 +165,7 @@ impl FileMetadata {
         let lock = FileLock::new(&path).map_err(|e| {
             io::Error::new(e.kind(), format!("Failed to lock file {}: {}", path, e))
         })?;
-        let metadata = path.to_path_buf().metadata().map_err(|e| {
+        let metadata = path.to_path_buf().symlink_metadata().map_err(|e| {
             io::Error::new(
                 e.kind(),
                 format!("Failed to obtain metadata of file {}: {}", path, e),
@@ -149,7 +174,7 @@ impl FileMetadata {
         Ok(FileMetadata {
             path,
             metadata,
-            lock,
+            _lock: lock,
         })
     }
 }
@@ -280,22 +305,16 @@ fn may_drop(path: &Path, config: &DedupeConfig) -> bool {
 }
 
 struct PartitionedFileGroup {
-    file_hash: FileHash,
     file_len: FileLen,
     to_retain: Vec<FileMetadata>,
     to_drop: Vec<FileMetadata>,
 }
 
 impl PartitionedFileGroup {
-    /// Returns how much space would be reclaimed if this group of files was deduplicated.
-    fn space_to_reclaim(&self) -> FileLen {
-        self.file_len * self.to_drop.len() as u64
-    }
-
     /// Returns a list of commands that would remove redundant files in this group when executed.
     fn dedupe_script(&self, strategy: DedupeOp) -> Vec<FsCommand> {
         assert!(
-            self.to_retain.len() > 0 || self.to_drop.is_empty(),
+            !self.to_retain.is_empty() || self.to_drop.is_empty(),
             "No files would be left after deduplicating"
         );
         let mut commands = Vec::new();
@@ -311,12 +330,10 @@ impl PartitionedFileGroup {
                 DedupeOp::SoftLink => commands.push(FsCommand::SoftLink {
                     target: retained_path.clone(),
                     link: dropped_path.clone(),
-                    len: self.file_len,
                 }),
                 DedupeOp::HardLink => commands.push(FsCommand::HardLink {
                     target: retained_path.clone(),
                     link: dropped_path.clone(),
-                    len: self.file_len,
                 }),
             }
         }
@@ -324,7 +341,8 @@ impl PartitionedFileGroup {
     }
 }
 
-/// Partitions a group of files into files to retain and files that can be safely dropped (or linked).
+/// Partitions a group of files into files to retain and files that can be safely dropped
+/// (or linked).
 fn partition(
     group: FileGroup<Path>,
     config: &DedupeConfig,
@@ -363,6 +381,15 @@ fn partition(
     if metadata_err {
         return error("Metadata of some files could not be obtained");
     }
+
+    // We don't want to remove dirs or symlinks
+    files.retain(|m| {
+        let is_file = m.metadata.is_file();
+        if !is_file {
+            log.warn(format!("Skipping file {}: Not a regular file", m.path));
+        }
+        is_file
+    });
 
     // If file has a different length, then we really know it has been modified.
     // Therefore, it does not belong to the group and we can safely skip it.
@@ -422,70 +449,33 @@ fn partition(
 
     assert!(to_retain.len() >= n || to_drop.is_empty());
     Ok(PartitionedFileGroup {
-        file_hash,
         file_len,
         to_retain,
         to_drop,
     })
 }
 
-// pub struct DedupeScript<'a, I>
-// where
-//     I: Iterator<Item = FileGroup<Path>>,
-// {
-//     groups: I,
-//     op: DedupeOp,
-//     config: &'a DedupeConfig,
-//     log: &'a Log,
-//     buffer: Vec<FsCommand>
-// }
-//
-// impl<'a, I> DedupeScript<'a, I>
-// where
-//     I: Iterator<Item = FileGroup<Path>>,
-// {
-//     fn new<I2>(
-//         groups: I,
-//         op: DedupeOp,
-//         config: &'a DedupeConfig,
-//         log: &'a Log,
-//     ) -> DedupeScript<'a, I>
-//     where
-//         I2: IntoIterator<Item = FileGroup<Path>>,
-//     {
-//         DedupeScript {
-//             groups: groups.into_iter(),
-//             op,
-//             config,
-//             log,
-//             buffer: Vec::new()
-//         }
-//     }
-// }
-//
-// impl<'a, I> Iterator for DedupeScript<'a, I>
-// where
-//     I: Iterator<Item = FileGroup<Path>>,
-// {
-//     type Item = FsCommand;
-//
-//     fn next(&mut self) -> Option<Self::Item> {
-//
-//
-//         match self.groups.next() {
-//             Some(group) => {},
-//             None => None
-//         }
-//     }
-// }
-
-/// Generates a list of commands that will remove duplicates.
+/// Generates a list of commands that will remove the redundant files in the groups provided
+/// by the `groups` iterator.
+///
+/// Calling this is perfectly safe - the function does not perform any disk changes.
+///
+/// This function performs extensive checks if files can be removed.
+/// It rejects a group of files if:
+/// - metadata of any files in the group cannot be read,
+/// - any file in the group was modified after the `modified_before` configuration property
+///
+/// Additionally it will never emit commands to remove a file which:
+/// - has length that does not match the file length recorded in the group metadata
+/// - was matched by any of the `retain_path` or `retain_name` patterns
+/// - was not matched by all `drop_path` and `drop_name` patterns
+///
 /// # Parameters
-/// - `groups`: iterator over group of same files
+/// - `groups`: iterator over groups of identical files
 /// - `op`: what to do with duplicates
 /// - `config`: controls which files from each group to remove / link
 /// - `log`: logging target
-pub fn dedupe_script<'a, I>(
+pub fn dedupe<'a, I>(
     groups: I,
     op: DedupeOp,
     config: &'a DedupeConfig,
@@ -503,4 +493,40 @@ where
                 Vec::new()
             }
         })
+}
+
+/// Runs a script generated by [`dedupe`].
+///
+/// On command execution failure, a warning is logged and the execution of remaining commands
+/// continues.
+/// Returns the number of files processed and the amount of disk space reclaimed.
+pub fn run_script(script: impl IntoIterator<Item = FsCommand>, log: &Log) -> DedupeResult {
+    let mut result = DedupeResult::default();
+    for cmd in script {
+        match cmd.execute() {
+            Ok(()) => {
+                result += DedupeResult {
+                    processed_count: cmd.files_to_remove(),
+                    reclaimed_space: cmd.space_to_reclaim(),
+                }
+            }
+            Err(e) => log.warn(e),
+        }
+    }
+    result
+}
+
+/// Prints a script generated by [`dedupe`] to stdout.
+/// Returns the number of files processed and the amount of disk space that would be
+/// reclaimed if all commands of the script were executed with no error.
+pub fn log_script(script: impl IntoIterator<Item = FsCommand>) -> DedupeResult {
+    let mut result = DedupeResult::default();
+    for cmd in script {
+        println!("{}", cmd.to_shell_str());
+        result += DedupeResult {
+            processed_count: cmd.files_to_remove(),
+            reclaimed_space: cmd.space_to_reclaim(),
+        }
+    }
+    result
 }
