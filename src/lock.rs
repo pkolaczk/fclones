@@ -6,7 +6,7 @@ use std::io;
 /// Does nothing on Windows.
 pub struct FileLock {
     #[cfg(unix)]
-    lock: file_lock::FileLock,
+    _lock: file_lock::FileLock,
 }
 
 impl FileLock {
@@ -14,7 +14,7 @@ impl FileLock {
     pub fn new(path: &Path) -> io::Result<FileLock> {
         let path_str = path.to_string_lossy();
         let lock = file_lock::FileLock::lock(path_str.as_str(), false, true);
-        lock.map(|l| FileLock { lock: l })
+        lock.map(|l| FileLock { _lock: l })
     }
 
     #[cfg(windows)]

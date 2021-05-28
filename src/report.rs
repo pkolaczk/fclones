@@ -288,8 +288,10 @@ struct GroupHeader {
     file_hash: FileHash,
 }
 
-
-impl<R> TextReportIterator<R> where R: Read {
+impl<R> TextReportIterator<R>
+where
+    R: Read,
+{
     fn read_first_non_comment_line(&mut self) -> io::Result<Option<&str>> {
         loop {
             self.line_buf.clear();
@@ -499,8 +501,8 @@ impl<R: Read> TextReportReader<R> {
             command,
             stats: Some(FileStats {
                 group_count,
-                redundant_file_size,
                 redundant_file_count,
+                redundant_file_size,
             }),
         };
         Ok(TextReportReader {

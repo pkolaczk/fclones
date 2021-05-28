@@ -1,31 +1,18 @@
 use std::collections::HashMap;
 use std::ffi::{OsStr, OsString};
 use std::fs::File;
+use std::io;
 use std::process::exit;
 
-use console::style;
-use indoc::indoc;
+use fallible_iterator::FallibleIterator;
 use regex::Regex;
 use structopt::StructOpt;
 
-use fallible_iterator::FallibleIterator;
 use fclones::config::{Command, Config, DedupeCommand, FindConfig, Parallelism};
 use fclones::log::Log;
-use fclones::path::PATH_ESCAPE_CHAR;
 use fclones::report::TextReportReader;
-use fclones::{dedupe_script, group_files, write_report, DedupeOp, DedupeResult, Error};
-use std::io;
-
-fn paint_help(s: &str) -> String {
-    let escape_regex = "{escape}";
-    let code_regex = Regex::new(r"`([^`]+)`").unwrap();
-    let title_regex = Regex::new(r"(?m)^# *(.*?)$").unwrap();
-    let s = s.replace(escape_regex, PATH_ESCAPE_CHAR);
-    let s = code_regex.replace_all(s.as_ref(), style("$1").green().to_string().as_str());
-    title_regex
-        .replace_all(s.as_ref(), style("$1").yellow().to_string().as_str())
-        .to_string()
-}
+use fclones::{dedupe, log_script, run_script, DedupeOp};
+use fclones::{group_files, write_report, Error};
 
 /// Strips a red "error:" prefix and usage information added by clap.
 /// We don't want this, because we're using our own logging anyways.
@@ -140,35 +127,27 @@ pub fn run_dedupe(op: DedupeOp, command: DedupeCommand, log: &mut Log) -> Result
         .fuse()
         .flatten();
 
-    for cmd in dedupe_script(groups, op, &dedupe_config, log) {
-        log.println(cmd.to_shell_str());
-    }
+    let script = dedupe(groups, op, &dedupe_config, log);
+    if dedupe_config.dry_run {
+        let result = log_script(script);
+        log.info(format!(
+            "Would process {} files and reclaim {} space",
+            result.processed_count, result.reclaimed_space
+        ));
+    } else {
+        let result = run_script(script, log);
+        log.info(format!(
+            "Processed {} files and reclaimed {} space",
+            result.processed_count, result.reclaimed_space
+        ));
+    };
     result.map_err(|e| Error::new(format!("Failed to read file list: {}", e)))
 }
 
 fn main() {
     let mut log = Log::new();
-    // let _after_help = &paint_help(indoc!(
-    //     "
-    // # PATTERN SYNTAX:
-    //     Options `-n` `-p` and `-e` accept extended glob patterns.
-    //     The following wildcards can be used:
-    //     `?`         matches any character except the directory separator
-    //     `[a-z]`     matches one of the characters or character ranges given in the square brackets
-    //     `[!a-z]`    matches any character that is not given in the square brackets
-    //     `*`         matches any sequence of characters except the directory separator
-    //     `**`        matches any sequence of characters
-    //     `{a,b}`     matches exactly one pattern from the comma-separated patterns given
-    //               inside the curly brackets
-    //     `@(a|b)`    same as `{a,b}`
-    //     `?(a|b)`    matches at most one occurrence of the pattern inside the brackets
-    //     `+(a|b)`    matches at least occurrence of the patterns given inside the brackets
-    //     `*(a|b)`    matches any number of occurrences of the patterns given inside the brackets
-    //     `{escape}`         escapes wildcards, e.g. `{escape}?` would match `?` literally
-    // "
-    // ));
 
-    let clap = Config::clap(); // .after_help(after_help.as_str());
+    let clap = Config::clap();
     let matches = clap.get_matches_safe().unwrap_or_else(|e| {
         if e.message.contains("error:") {
             let message = extract_error_cause(&e.message);

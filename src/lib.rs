@@ -54,7 +54,7 @@ mod transform;
 mod util;
 mod walk;
 
-pub use dedupe::{dedupe_script, DedupeOp, DedupeResult};
+pub use dedupe::{dedupe, log_script, run_script, DedupeOp, DedupeResult};
 
 /// Error reported by top-level fclones functions
 #[derive(Debug)]
