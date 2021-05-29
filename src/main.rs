@@ -15,6 +15,7 @@ use fclones::report::TextReportReader;
 use fclones::{dedupe, log_script, run_script, DedupeOp};
 use fclones::{group_files, write_report, Error};
 use std::io::stdin;
+use std::time::Duration;
 
 /// Strips a red "error:" prefix and usage information added by clap.
 /// Removes ansi formatting.
@@ -49,7 +50,7 @@ fn configure_main_thread_pool(pool_sizes: &HashMap<OsString, Parallelism>) {
         .unwrap();
 }
 
-fn run_find(config: &GroupConfig, log: &mut Log) -> Result<(), Error> {
+fn run_group(config: &GroupConfig, log: &mut Log) -> Result<(), Error> {
     let mut access_error = false;
     let mut has_input_files: bool = false;
     for path in config.paths.iter() {
@@ -117,6 +118,13 @@ pub fn run_dedupe(op: DedupeOp, config: DedupeConfig, log: &mut Log) -> Result<(
         dedupe_config.modified_before = Some(reader.header.timestamp);
     }
     let mut result: Result<(), io::Error> = Ok(());
+    let group_count = reader.header.stats.map(|s| s.group_count as u64);
+    let progress = match group_count {
+        _ if dedupe_config.dry_run => log.hidden(),
+        Some(group_count) => log.progress_bar("Deduplicating", group_count),
+        None => log.spinner("Deduplicating")
+    };
+
     let groups = reader
         .groups
         .iterator()
@@ -127,12 +135,13 @@ pub fn run_dedupe(op: DedupeOp, config: DedupeConfig, log: &mut Log) -> Result<(
                 None
             }
         })
+        .inspect(|_| progress.tick())
         .fuse()
         .flatten();
 
     let script = dedupe(groups, op, &dedupe_config, log);
     if dedupe_config.dry_run {
-        let result = log_script(script);
+        let result = log_script(script, log);
         log.info(format!(
             "Would process {} files and reclaim {} space",
             result.processed_count, result.reclaimed_space
@@ -155,7 +164,7 @@ fn main() {
     }
 
     let result = match config.command {
-        Command::Group(config) => run_find(&config, &mut log),
+        Command::Group(config) => run_group(&config, &mut log),
         Command::Remove(cmd) => run_dedupe(DedupeOp::Remove, cmd, &mut log),
         Command::SoftLink(cmd) => run_dedupe(DedupeOp::SoftLink, cmd, &mut log),
         Command::HardLink(cmd) => run_dedupe(DedupeOp::HardLink, cmd, &mut log),
