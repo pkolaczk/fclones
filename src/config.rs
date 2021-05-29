@@ -74,14 +74,14 @@ pub struct Parallelism {
     pub sequential: usize,
 }
 
-// Configuration of the `find` subcommand
+// Configuration of the `group` subcommand
 #[derive(Debug, StructOpt, Default)]
 #[structopt(
     setting(AppSettings::ColoredHelp),
     setting(AppSettings::DeriveDisplayOrder),
     setting(AppSettings::DisableVersion)
 )]
-pub struct FindConfig {
+pub struct GroupConfig {
     /// Writes the report to a file instead of the standard output
     #[structopt(short = "o", long, value_name("path"))]
     pub output: Option<PathBuf>,
@@ -227,7 +227,7 @@ pub struct FindConfig {
     pub paths: Vec<PathBuf>,
 }
 
-impl FindConfig {
+impl GroupConfig {
     fn compile_pattern(&self, s: &str) -> Result<Pattern, PatternError> {
         let pattern_opts = if self.caseless {
             PatternOpts::case_insensitive()
@@ -394,7 +394,8 @@ impl FromStr for Priority {
     setting(AppSettings::ColoredHelp)
 )]
 pub struct DedupeConfig {
-    /// Don't perform any changes on the file-system; only log what would be done
+    /// Doesn't perform any changes on the file-system, but writes a log of file operations
+    /// to the standard output.
     #[structopt(long)]
     pub dry_run: bool,
 
@@ -406,15 +407,15 @@ pub struct DedupeConfig {
     /// The number of replicas to keep untouched.
     ///
     /// If not given, it is assumed to be the same as the
-    /// `--rf-over` value in the earlier `find` run.
+    /// `--rf-over` value in the earlier `fclones group` run.
     #[structopt(short("n"), long, value_name = "count")]
     pub rf_over: Option<usize>,
 
-    /// Don't remove or replace files with names that match these patterns.
+    /// Retains files with names matching any given patterns.
     #[structopt(long = "retain-name", value_name = "pattern")]
     pub retain_name_patterns: Vec<Pattern>,
 
-    /// Don't remove or replace paths matching these patterns.
+    /// Retains files with paths matching any given patterns.
     #[structopt(long = "retain-path", value_name = "pattern")]
     pub retain_path_patterns: Vec<Pattern>,
 
@@ -422,13 +423,13 @@ pub struct DedupeConfig {
     #[structopt(long, value_name="priority", possible_values=&Priority::variants())]
     pub retain_priority: Vec<Priority>,
 
-    /// File names matching these patterns get the highest priority to be dropped
-    /// (unless matched by any of the retain options).
+    /// Restricts the set of files that can be removed to files
+    /// with names matching all given patterns.
     #[structopt(long = "drop-name", value_name = "pattern")]
     pub drop_name_patterns: Vec<Pattern>,
 
-    /// File names matching these patterns get the highest priority to be dropped
-    /// (unless matched by any of the retain options).
+    /// Restricts the set of files that can be removed to files
+    /// with names matching all given patterns.
     #[structopt(long = "drop-path", value_name = "pattern")]
     pub drop_path_patterns: Vec<Pattern>,
 
@@ -438,25 +439,32 @@ pub struct DedupeConfig {
 }
 
 #[derive(Debug, StructOpt)]
-pub struct DedupeCommand {
-    #[structopt(flatten)]
-    pub config: DedupeConfig,
-
-    /// Path to the file containing the output of earlier `fclones find ...` execution
-    #[structopt(parse(from_os_str))]
-    pub file: PathBuf,
-}
-
-#[derive(Debug, StructOpt)]
 pub enum Command {
-    /// Finds duplicate, unique, under- or over-replicated files
-    Find(FindConfig),
-    /// Removes redundant files earlier found by `find`
-    Remove(DedupeCommand),
-    /// Replaces redundant files earlier found by `find` with soft links
-    SoftLink(DedupeCommand),
-    /// Replaces redundant files earlier found by `find` with hard links
-    HardLink(DedupeCommand),
+    /// Produces a list of groups of identical files.
+    ///
+    /// Scans the given directories recursively, computes hashes of files and groups
+    /// files with the same hash together.
+    /// Writes the list of groups of files to the standard output, unless the target file
+    /// is specified. This command is safe and does not modify the filesystem.
+    Group(GroupConfig),
+
+    /// Removes redundant files.
+    ///
+    /// The list of groups earlier produced by `fclones group` should be submitted
+    /// on the standard input. Only the default text format is supported.
+    Remove(DedupeConfig),
+
+    /// Replaces redundant files with soft links.
+    ///
+    /// The list of groups earlier produced by `fclones group` should be submitted
+    /// on the standard input. Only the default text format is supported.
+    SoftLink(DedupeConfig),
+
+    /// Replaces redundant files with hard links.
+    ///
+    /// The list of groups earlier produced by `fclones group` should be submitted
+    /// on the standard input. Only the default text format is supported.
+    HardLink(DedupeConfig),
 }
 
 /// Finds and cleans up redundant files
