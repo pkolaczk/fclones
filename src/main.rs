@@ -5,6 +5,7 @@ use std::io;
 use std::process::exit;
 
 use fallible_iterator::FallibleIterator;
+use itertools::Itertools;
 use regex::Regex;
 use structopt::StructOpt;
 
@@ -15,16 +16,19 @@ use fclones::{dedupe, log_script, run_script, DedupeOp};
 use fclones::{group_files, write_report, Error};
 
 /// Strips a red "error:" prefix and usage information added by clap.
-/// We don't want this, because we're using our own logging anyways.
+/// Removes ansi formatting.
+/// Joins all lines into a single line.
 fn extract_error_cause(message: &str) -> String {
-    let r = Regex::new("[^e]*error:[^ ]* ").unwrap();
-    let message = if r.is_match(message) {
-        r.replace(message, "").to_string()
-    } else {
-        message.to_owned()
-    };
+    let drop_ansi = Regex::new(r"\x1b\[[0-9;]*m").unwrap();
+    let drop_error = Regex::new("error:[^ ]* ").unwrap();
+    let message = drop_ansi.replace_all(message, "");
+    let message = drop_error.replace(&message, "");
     message
-    //message.chars().take_while(|&c| c != '\n').collect()
+        .split('\n')
+        .take_while(|l| !l.starts_with("USAGE:"))
+        .map(|l| l.trim())
+        .filter(|l| !l.is_empty())
+        .join(" ")
 }
 
 /// Configures global thread pool to use desired number of threads
@@ -145,19 +149,8 @@ pub fn run_dedupe(op: DedupeOp, command: DedupeCommand, log: &mut Log) -> Result
 }
 
 fn main() {
+    let config = Config::from_args();
     let mut log = Log::new();
-
-    let clap = Config::clap();
-    let matches = clap.get_matches_safe().unwrap_or_else(|e| {
-        if e.message.contains("error:") {
-            let message = extract_error_cause(&e.message);
-            log.err(message);
-        } else {
-            println!("{}", e.message)
-        }
-        exit(1);
-    });
-    let config: Config = Config::from_clap(&matches);
     if config.quiet {
         log.no_progress = true;
     }
@@ -174,5 +167,30 @@ fn main() {
             log.err(e);
         }
         exit(1);
+    }
+}
+
+#[cfg(test)]
+mod test {
+
+    #[test]
+    fn test_extract_error_cause_strips_error_prefix() {
+        assert_eq!(super::extract_error_cause("error: foo"), "foo");
+    }
+
+    #[test]
+    fn test_extract_error_cause_joins_lines() {
+        assert_eq!(
+            super::extract_error_cause("line1:\n    line2"),
+            "line1: line2"
+        );
+    }
+
+    #[test]
+    fn test_extract_error_cause_strips_usage() {
+        assert_eq!(
+            super::extract_error_cause("error message\n\nUSAGE:\n blah blah blah"),
+            "error message"
+        );
     }
 }
