@@ -422,7 +422,7 @@ impl<R: Read> TextReportReader<R> {
             static ref TIMESTAMP_RE: Regex = Regex::new(r"^# Timestamp: (.*)").unwrap();
             static ref COMMAND_RE: Regex = Regex::new(r"^# Command: (.*)").unwrap();
             static ref GROUP_COUNT_RE: Regex =
-                Regex::new(r"^# Found ([0-9+]) file groups").unwrap();
+                Regex::new(r"^# Found ([0-9]+) file groups").unwrap();
             static ref STATS_RE: Regex =
                 Regex::new(r"^# ([0-9]+) B \([^)]+\) in ([0-9]+) redundant files can be removed")
                     .unwrap();

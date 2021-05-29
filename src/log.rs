@@ -59,7 +59,7 @@ impl Log {
 
     /// Creates a no-op progressbar that doesn't display itself.
     pub fn hidden(&self) -> Arc<FastProgressBar> {
-        return Arc::new(FastProgressBar::new_hidden());
+        Arc::new(FastProgressBar::new_hidden())
     }
 
     /// Clears any previous progress bar or spinner and installs a new progress bar.

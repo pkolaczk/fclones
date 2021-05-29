@@ -855,7 +855,6 @@ fn group_by_contents(
 /// write_report(&config, &log, &groups).unwrap();
 /// ```
 pub fn group_files(config: &GroupConfig, log: &Log) -> Result<Vec<FileGroup<Path>>, Error> {
-    log.info("Started grouping");
     let spinner = log.spinner("Initializing");
     let ctx = AppCtx::new(config, log)?;
 
