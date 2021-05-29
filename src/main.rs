@@ -9,11 +9,12 @@ use itertools::Itertools;
 use regex::Regex;
 use structopt::StructOpt;
 
-use fclones::config::{Command, Config, DedupeCommand, FindConfig, Parallelism};
+use fclones::config::{Command, Config, GroupConfig, Parallelism, DedupeConfig};
 use fclones::log::Log;
 use fclones::report::TextReportReader;
 use fclones::{dedupe, log_script, run_script, DedupeOp};
 use fclones::{group_files, write_report, Error};
+use std::io::stdin;
 
 /// Strips a red "error:" prefix and usage information added by clap.
 /// Removes ansi formatting.
@@ -48,7 +49,7 @@ fn configure_main_thread_pool(pool_sizes: &HashMap<OsString, Parallelism>) {
         .unwrap();
 }
 
-fn run_find(config: &FindConfig, log: &mut Log) -> Result<(), Error> {
+fn run_find(config: &GroupConfig, log: &mut Log) -> Result<(), Error> {
     let mut access_error = false;
     let mut has_input_files: bool = false;
     for path in config.paths.iter() {
@@ -91,20 +92,18 @@ fn run_find(config: &FindConfig, log: &mut Log) -> Result<(), Error> {
         .map_err(|e| Error::new(format!("Failed to write report: {}", e)))
 }
 
-pub fn run_dedupe(op: DedupeOp, command: DedupeCommand, log: &mut Log) -> Result<(), Error> {
-    let path = command.file;
-    let file = File::open(&path).map_err(|e| format!("Cannot open {}: {}", path.display(), e))?;
-    let reader = TextReportReader::new(file)
-        .map_err(|e| format!("Error reading {}: {}", path.display(), e))?;
+pub fn run_dedupe(op: DedupeOp, config: DedupeConfig, log: &mut Log) -> Result<(), Error> {
+    let mut dedupe_config = config;
+    let reader = TextReportReader::new(stdin())
+        .map_err(|e| format!("Input error: {}", e))?;
 
     let find_config: Config = Config::from_iter_safe(&reader.header.command).map_err(|e| {
         let message: String = extract_error_cause(&e.message);
         format!("Unrecognized earlier fclones configuration: {}", message)
     })?;
 
-    let mut dedupe_config = command.config;
     let rf_over = match find_config.command {
-        Command::Find(c) => c.rf_over(),
+        Command::Group(c) => c.rf_over(),
         _ if dedupe_config.rf_over.is_some() => dedupe_config.rf_over.unwrap(),
         _ => {
             return Err(Error::from(
@@ -156,7 +155,7 @@ fn main() {
     }
 
     let result = match config.command {
-        Command::Find(config) => run_find(&config, &mut log),
+        Command::Group(config) => run_find(&config, &mut log),
         Command::Remove(cmd) => run_dedupe(DedupeOp::Remove, cmd, &mut log),
         Command::SoftLink(cmd) => run_dedupe(DedupeOp::SoftLink, cmd, &mut log),
         Command::HardLink(cmd) => run_dedupe(DedupeOp::HardLink, cmd, &mut log),
