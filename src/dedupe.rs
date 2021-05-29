@@ -484,7 +484,6 @@ pub fn dedupe<'a, I>(
 where
     I: IntoIterator<Item = FileGroup<Path>> + 'a,
 {
-    log.info("Started deduplicating");
     groups
         .into_iter()
         .flat_map(move |group| match partition(group, &config, log) {

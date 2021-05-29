@@ -15,7 +15,6 @@ use fclones::report::TextReportReader;
 use fclones::{dedupe, log_script, run_script, DedupeOp};
 use fclones::{group_files, write_report, Error};
 use std::io::stdin;
-use std::time::Duration;
 
 /// Strips a red "error:" prefix and usage information added by clap.
 /// Removes ansi formatting.
@@ -87,6 +86,7 @@ fn run_group(config: &GroupConfig, log: &mut Log) -> Result<(), Error> {
         }
     }
 
+    log.info("Started grouping");
     let results = group_files(&config, &log).map_err(|e| Error::new(e.message))?;
 
     write_report(&config, &log, &results)
@@ -117,6 +117,13 @@ pub fn run_dedupe(op: DedupeOp, config: DedupeConfig, log: &mut Log) -> Result<(
     if dedupe_config.modified_before.is_none() {
         dedupe_config.modified_before = Some(reader.header.timestamp);
     }
+
+    if dedupe_config.dry_run {
+        log.info("Started deduplicating (dry run)");
+    } else {
+        log.info("Started deduplicating");
+    }
+
     let mut result: Result<(), io::Error> = Ok(());
     let group_count = reader.header.stats.map(|s| s.group_count as u64);
     let progress = match group_count {
