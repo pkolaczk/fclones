@@ -408,12 +408,13 @@ pub struct DedupeConfig {
     #[structopt(long)]
     pub dry_run: bool,
 
-    /// Deduplicate only files that were modified before the given time.
+    /// Deduplicates only the files that were modified before the given time.
+    ///
     /// If any of the files in a group was modified later, the whole group is skipped.
     #[structopt(long, short("m"), value_name="timestamp", parse(try_from_str = parse_date_time))]
     pub modified_before: Option<DateTime<FixedOffset>>,
 
-    /// The number of replicas to keep untouched.
+    /// Keeps at least n replicas untouched.
     ///
     /// If not given, it is assumed to be the same as the
     /// `--rf-over` value in the earlier `fclones group` run.
@@ -463,7 +464,8 @@ pub enum Command {
     /// on the standard input. Only the default text format is supported.
     ///
     /// Unless `--soft` is specified, hard links are created for links within
-    /// the same file system, and soft links for links between different file systems.
+    /// the same file system. Soft links are always created to link files between
+    /// different file systems.
     Link {
         #[structopt(flatten)]
         config: DedupeConfig,
