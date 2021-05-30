@@ -12,6 +12,9 @@ use crate::log::Log;
 use crate::path::Path;
 use crate::util::fallible_sort_by_key;
 use crate::{Error, FileGroup};
+use rand::distributions::Alphanumeric;
+use rand::Rng;
+use std::io::ErrorKind;
 
 /// Defines what to do with redundant files
 #[derive(Copy, Clone)]
@@ -26,9 +29,20 @@ pub enum DedupeOp {
 
 /// Portable abstraction for commands used to remove duplicates
 pub enum FsCommand {
-    Remove { path: Path, len: FileLen },
-    SoftLink { target: Path, link: Path },
-    HardLink { target: Path, link: Path },
+    Remove {
+        path: Path,
+        len: FileLen,
+    },
+    SoftLink {
+        target: Path,
+        link: Path,
+        len: FileLen,
+    },
+    HardLink {
+        target: Path,
+        link: Path,
+        len: FileLen,
+    },
 }
 
 impl FsCommand {
@@ -52,7 +66,7 @@ impl FsCommand {
             io::Error::new(
                 e.kind(),
                 format!(
-                    "Failed to create symbolic link from {} -> {}: {}",
+                    "Failed to create symbolic link {} -> {}: {}",
                     link, target, e
                 ),
             )
@@ -63,78 +77,159 @@ impl FsCommand {
         fs::hard_link(&target.to_path_buf(), &link.to_path_buf()).map_err(|e| {
             io::Error::new(
                 e.kind(),
+                format!("Failed to create hard link {} -> {}: {}", link, target, e),
+            )
+        })
+    }
+
+    fn rename(old: &Path, new: &Path) -> io::Result<()> {
+        let new = new.to_path_buf();
+        if new.exists() {
+            return Err(io::Error::new(
+                ErrorKind::AlreadyExists,
                 format!(
-                    "Failed to create hard link from {} -> {}: {}",
-                    link, target, e
+                    "Cannot rename file from {} to {}: Target already exists",
+                    old,
+                    new.display()
+                ),
+            ));
+        }
+        fs::rename(&old.to_path_buf(), &new).map_err(|e| {
+            io::Error::new(
+                e.kind(),
+                format!(
+                    "Failed to rename file from {} to {}: {}",
+                    old,
+                    new.display(),
+                    e
                 ),
             )
         })
     }
 
+    /// Returns a random temporary file name in the same directory, guaranteed to not collide with
+    /// any other file in the same directory
+    fn temp_file(path: &Path) -> Path {
+        let mut name = path
+            .file_name()
+            .expect("must be a regular file with a name");
+        name.push(".");
+        name.push(
+            rand::thread_rng()
+                .sample_iter(&Alphanumeric)
+                .take(24)
+                .map(char::from)
+                .collect::<String>(),
+        );
+        match path.parent() {
+            Some(parent) => parent.join(Path::from(name)),
+            None => Path::from(name),
+        }
+    }
+
+    /// Safely moves the file to a different location and invokes the function.
+    /// If the function fails, moves the file back to the original location.
+    /// If the function succeeds, removes the file permanently.
+    fn safe_remove<R>(path: &Path, f: impl Fn(&Path) -> io::Result<R>, log: &Log) -> io::Result<R> {
+        let tmp = Self::temp_file(path);
+        Self::rename(&path, &tmp)?;
+        let result = match f(&path) {
+            Ok(result) => result,
+            Err(e) => {
+                // Try to undo the move if possible
+                if let Err(remove_err) = Self::rename(&tmp, &path) {
+                    log.warn(format!(
+                        "Failed to undo move from {} to {}: {}",
+                        &path, &tmp, remove_err
+                    ))
+                }
+                return Err(e);
+            }
+        };
+        // Cleanup the temp file.
+        if let Err(e) = Self::remove(&tmp) {
+            log.warn(format!("Failed to remove temporary {}: {}", &tmp, e))
+        }
+        Ok(result)
+    }
+
     /// Executes the command and returns the number of bytes reclaimed
-    pub fn execute(&self) -> io::Result<()> {
+    pub fn execute(&self, log: &Log) -> io::Result<()> {
         match self {
             FsCommand::Remove { path, .. } => Self::remove(path),
-            FsCommand::SoftLink { target, link } => Self::symlink(target, link),
-            FsCommand::HardLink { target, link } => Self::hardlink(target, link),
+            FsCommand::SoftLink { target, link, .. } => {
+                Self::safe_remove(&link, |link| Self::symlink(target, link), log)
+            }
+            FsCommand::HardLink { target, link, .. } => {
+                Self::safe_remove(&link, |link| Self::hardlink(target, link), log)
+            }
         }
     }
 
     /// Returns how much disk space running this command would reclaim
     pub fn space_to_reclaim(&self) -> FileLen {
         match self {
-            FsCommand::Remove { len, .. } => *len,
-            FsCommand::SoftLink { .. } | FsCommand::HardLink { .. } => FileLen(0),
-        }
-    }
-
-    /// Returns how many files running this command would remove
-    pub fn files_to_remove(&self) -> u64 {
-        match self {
-            FsCommand::Remove { .. } => 1,
-            FsCommand::SoftLink { .. } | FsCommand::HardLink { .. } => 0,
+            FsCommand::Remove { len, .. }
+            | FsCommand::SoftLink { len, .. }
+            | FsCommand::HardLink { len, .. } => *len,
         }
     }
 
     /// Formats the command as a string that can be pasted to a Unix shell (e.g. bash)
     #[cfg(unix)]
-    pub fn to_shell_str(&self) -> String {
+    pub fn to_shell_str(&self) -> Vec<String> {
+        let mut result = Vec::new();
         match self {
             FsCommand::Remove { path, .. } => {
                 let path = path.shell_quote();
-                format!("rm {}", path)
+                result.push(format!("rm {}", path));
             }
             FsCommand::SoftLink { target, link, .. } => {
+                let tmp = Self::temp_file(link);
                 let target = target.shell_quote();
                 let link = link.shell_quote();
-                format!("ln -s {} {}", target, link)
+                result.push(format!("mv {} {}", link, tmp));
+                result.push(format!("ln -s {} {}", target, link));
+                result.push(format!("rm {}", tmp));
             }
             FsCommand::HardLink { target, link, .. } => {
+                let tmp = Self::temp_file(link);
                 let target = target.shell_quote();
                 let link = link.shell_quote();
-                format!("ln {} {}", target, link)
+                result.push(format!("mv {} {}", link, tmp));
+                result.push(format!("ln {} {}", target, link));
+                result.push(format!("rm {}", tmp));
             }
         }
+        result
     }
 
     #[cfg(windows)]
-    pub fn to_shell_str(&self) -> String {
+    pub fn to_shell_str(&self) -> Vec<String> {
+        let mut result = Vec::new();
         match self {
             FsCommand::Remove { path, .. } => {
                 let path = path.shell_quote();
-                format!("del {}", path)
+                result.push(format!("del {}", path));
             }
             FsCommand::SoftLink { target, link, .. } => {
+                let tmp = Self::temp_file(link);
                 let target = target.shell_quote();
                 let link = link.shell_quote();
-                format!("mklink {} {}", target, link)
+                result.push(format!("move {} {}", link, tmp));
+                result.push(format!("mklink {} {}", target, link));
+                result.push(format!("del {}", tmp));
             }
             FsCommand::HardLink { target, link, .. } => {
+                let tmp = Self::temp_file(link);
                 let target = target.shell_quote();
                 let link = link.shell_quote();
-                format!("mklink /H {} {}", target, link)
+                result.push(format!("move {} {}", link, tmp));
+                result.push(format!("mklink /H {} {}", target, link));
+                result.push(format!("del {}", tmp));
             }
         }
+        result
     }
 }
 
@@ -266,13 +361,14 @@ fn sort_by_priority(files: &mut Vec<FileMetadata>, priority: &Priority) -> Vec<E
 
 /// Returns true if given path matches any of the `retain` patterns
 fn should_retain(path: &Path, config: &DedupeConfig) -> bool {
-    let matches_any_name = config
-        .retain_name_patterns
-        .iter()
-        .any(|p| match path.file_name() {
-            Some(name) => p.matches(name.to_string_lossy().as_ref()),
-            None => false,
-        });
+    let matches_any_name =
+        config
+            .retain_name_patterns
+            .iter()
+            .any(|p| match path.file_name_cstr() {
+                Some(name) => p.matches(name.to_string_lossy().as_ref()),
+                None => false,
+            });
     let matches_any_path = || {
         config
             .retain_path_patterns
@@ -286,13 +382,14 @@ fn should_retain(path: &Path, config: &DedupeConfig) -> bool {
 /// Returns true if given path matches all of the `drop` patterns.
 /// If there are no `drop` patterns, returns true.
 fn may_drop(path: &Path, config: &DedupeConfig) -> bool {
-    let matches_all_names = config
-        .retain_name_patterns
-        .iter()
-        .all(|p| match path.file_name() {
-            Some(name) => p.matches(name.to_string_lossy().as_ref()),
-            None => false,
-        });
+    let matches_all_names =
+        config
+            .retain_name_patterns
+            .iter()
+            .all(|p| match path.file_name_cstr() {
+                Some(name) => p.matches(name.to_string_lossy().as_ref()),
+                None => false,
+            });
 
     let matches_all_paths = || {
         config
@@ -321,19 +418,20 @@ impl PartitionedFileGroup {
         for f in self.to_drop.iter() {
             let retained_path = &self.to_retain[0].path;
             let dropped_path = &f.path;
-            commands.push(FsCommand::Remove {
-                path: dropped_path.clone(),
-                len: self.file_len,
-            });
             match strategy {
-                DedupeOp::Remove => {}
+                DedupeOp::Remove => commands.push(FsCommand::Remove {
+                    path: dropped_path.clone(),
+                    len: self.file_len,
+                }),
                 DedupeOp::SoftLink => commands.push(FsCommand::SoftLink {
                     target: retained_path.clone(),
                     link: dropped_path.clone(),
+                    len: self.file_len,
                 }),
                 DedupeOp::HardLink => commands.push(FsCommand::HardLink {
                     target: retained_path.clone(),
                     link: dropped_path.clone(),
+                    len: self.file_len,
                 }),
             }
         }
@@ -503,10 +601,10 @@ where
 pub fn run_script(script: impl IntoIterator<Item = FsCommand>, log: &Log) -> DedupeResult {
     let mut result = DedupeResult::default();
     for cmd in script {
-        match cmd.execute() {
+        match cmd.execute(log) {
             Ok(()) => {
                 result += DedupeResult {
-                    processed_count: cmd.files_to_remove(),
+                    processed_count: 1,
                     reclaimed_space: cmd.space_to_reclaim(),
                 }
             }
@@ -522,11 +620,31 @@ pub fn run_script(script: impl IntoIterator<Item = FsCommand>, log: &Log) -> Ded
 pub fn log_script(script: impl IntoIterator<Item = FsCommand>, log: &Log) -> DedupeResult {
     let mut result = DedupeResult::default();
     for cmd in script {
-        log.println(cmd.to_shell_str());
+        for line in cmd.to_shell_str() {
+            log.println(line);
+        }
         result += DedupeResult {
-            processed_count: cmd.files_to_remove(),
+            processed_count: 1,
             reclaimed_space: cmd.space_to_reclaim(),
         }
     }
     result
+}
+
+#[cfg(test)]
+mod test {
+
+    use super::*;
+
+    #[test]
+    fn test_temp_file_name_generation() {
+        let path = Path::from("/foo/bar");
+        let temp = FsCommand::temp_file(&path);
+        assert_ne!(path, temp);
+        assert_ne!(
+            path.file_name().unwrap().len(),
+            temp.file_name().unwrap().len()
+        );
+        assert_eq!(path.parent(), temp.parent());
+    }
 }

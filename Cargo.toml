@@ -35,6 +35,7 @@ lazy_static = "1.4.0"
 maplit = "1.0.2"
 metrohash = "1.0.6"
 nom = { version = "5.1.2", features = ["regexp"] }
+rand = "0.8.3"
 rayon = "1.4.0"
 regex = "1.4.5"
 serde = { version = "1", features = ["derive"] }
@@ -62,7 +63,6 @@ winapi = "0.3.8"
 winapi-util = "0.1.5"
 
 [dev-dependencies]
-rand = "0.8.3"
 tempfile = "3.2.0"
 
 [profile.release]

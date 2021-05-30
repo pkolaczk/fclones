@@ -86,8 +86,19 @@ impl Path {
 
     /// Returns the name of the last component of this path or None
     /// if the path is directory (e.g. root dir or parent dir).
+    pub fn file_name(&self) -> Option<OsString> {
+        match self.component.as_bytes() {
+            b"/" => None,
+            b".." => None,
+            b"." => None,
+            _ => Some(c_to_os_str(self.component.as_c_str())),
+        }
+    }
+
+    /// Returns the name of the last component of this path or None
+    /// if the path is directory (e.g. root dir or parent dir).
     /// Doesn't allocate anything on the heap.
-    pub fn file_name(&self) -> Option<&CStr> {
+    pub fn file_name_cstr(&self) -> Option<&CStr> {
         match self.component.as_bytes() {
             b"/" => None,
             b".." => None,
@@ -245,7 +256,7 @@ impl Path {
     #[cfg(windows)]
     pub fn shell_quote(&self) -> String {
         let s = self.to_string();
-        const SPECIAL_CHARS: [char; 13] = [
+        const SPECIAL_CHARS: [char; 14] = [
             ' ', '"', '(', ')', '^', '%', '$', '~', '=', '+', '*', '?', '|', '/',
         ];
         let needs_quote = s.chars().into_iter().any(|c| SPECIAL_CHARS.contains(&c));
@@ -377,24 +388,24 @@ mod test {
     #[test]
     fn file_name() {
         assert_eq!(
-            Path::from("foo").file_name(),
+            Path::from("foo").file_name_cstr(),
             Some(CString::new("foo").unwrap().as_c_str())
         );
         assert_eq!(
-            Path::from("foo/bar").file_name(),
+            Path::from("foo/bar").file_name_cstr(),
             Some(CString::new("bar").unwrap().as_c_str())
         );
         assert_eq!(
-            Path::from("/foo").file_name(),
+            Path::from("/foo").file_name_cstr(),
             Some(CString::new("foo").unwrap().as_c_str())
         );
         assert_eq!(
-            Path::from("/foo/bar").file_name(),
+            Path::from("/foo/bar").file_name_cstr(),
             Some(CString::new("bar").unwrap().as_c_str())
         );
-        assert_eq!(Path::from("/").file_name(), None);
-        assert_eq!(Path::from(".").file_name(), None);
-        assert_eq!(Path::from("..").file_name(), None);
+        assert_eq!(Path::from("/").file_name_cstr(), None);
+        assert_eq!(Path::from(".").file_name_cstr(), None);
+        assert_eq!(Path::from("..").file_name_cstr(), None);
     }
 
     #[test]
