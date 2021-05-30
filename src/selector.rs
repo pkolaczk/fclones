@@ -53,7 +53,7 @@ impl PathSelector {
     pub fn matches_full_path(&self, path: &Path) -> bool {
         self.with_absolute_path(path, |path| {
             let name = path
-                .file_name()
+                .file_name_cstr()
                 .map(|s| s.to_string_lossy().to_string())
                 .unwrap_or_default();
             let name = name.as_ref();

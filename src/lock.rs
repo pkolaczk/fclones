@@ -18,7 +18,7 @@ impl FileLock {
     }
 
     #[cfg(windows)]
-    pub fn new(path: &Path) -> io::Result<FileLock> {
-        Ok(FileLock)
+    pub fn new(_path: &Path) -> io::Result<FileLock> {
+        Ok(FileLock {})
     }
 }

@@ -154,7 +154,7 @@ impl<'a> Walk<'a> {
 
         // Skip hidden files
         if self.skip_hidden {
-            if let Some(name) = entry.path.file_name() {
+            if let Some(name) = entry.path.file_name_cstr() {
                 if name.to_string_lossy().starts_with('.') {
                     return;
                 }

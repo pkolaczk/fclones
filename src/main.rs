@@ -9,7 +9,7 @@ use itertools::Itertools;
 use regex::Regex;
 use structopt::StructOpt;
 
-use fclones::config::{Command, Config, GroupConfig, Parallelism, DedupeConfig};
+use fclones::config::{Command, Config, DedupeConfig, GroupConfig, Parallelism};
 use fclones::log::Log;
 use fclones::report::TextReportReader;
 use fclones::{dedupe, log_script, run_script, DedupeOp};
@@ -95,8 +95,7 @@ fn run_group(config: &GroupConfig, log: &mut Log) -> Result<(), Error> {
 
 pub fn run_dedupe(op: DedupeOp, config: DedupeConfig, log: &mut Log) -> Result<(), Error> {
     let mut dedupe_config = config;
-    let reader = TextReportReader::new(stdin())
-        .map_err(|e| format!("Input error: {}", e))?;
+    let reader = TextReportReader::new(stdin()).map_err(|e| format!("Input error: {}", e))?;
 
     let find_config: Config = Config::from_iter_safe(&reader.header.command).map_err(|e| {
         let message: String = extract_error_cause(&e.message);
@@ -129,7 +128,7 @@ pub fn run_dedupe(op: DedupeOp, config: DedupeConfig, log: &mut Log) -> Result<(
     let progress = match group_count {
         _ if dedupe_config.dry_run => log.hidden(),
         Some(group_count) => log.progress_bar("Deduplicating", group_count),
-        None => log.spinner("Deduplicating")
+        None => log.spinner("Deduplicating"),
     };
 
     let groups = reader
