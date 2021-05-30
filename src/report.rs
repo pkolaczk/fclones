@@ -32,6 +32,8 @@ pub struct FileStats {
     pub redundant_file_size: FileLen,
 }
 
+const TIMESTAMP_FMT: &str = "%Y-%m-%d %H:%M:%S.%3f %z";
+
 /// Data in the header of the whole report.
 #[derive(Debug, Eq, PartialEq, Serialize)]
 pub struct ReportHeader {
@@ -102,7 +104,10 @@ impl<W: Write> ReportWriter<W> {
     {
         let command = shell_words::join(header.command.iter());
         self.write_header_line(&format!("Report by fclones {}", header.version))?;
-        self.write_header_line(&format!("Timestamp: {}", header.timestamp.to_rfc2822()))?;
+        self.write_header_line(&format!(
+            "Timestamp: {}",
+            header.timestamp.format(TIMESTAMP_FMT)
+        ))?;
         self.write_header_line(&format!("Command: {}", command))?;
         if let Some(stats) = &header.stats {
             self.write_header_line(&format!("Found {} file groups", stats.group_count))?;
@@ -441,7 +446,7 @@ impl<R: Read> TextReportReader<R> {
             "Malformed header: Missing timestamp",
         )?
         .swap_remove(0);
-        let timestamp = DateTime::parse_from_rfc2822(&timestamp).map_err(|e| {
+        let timestamp = DateTime::parse_from_str(&timestamp, TIMESTAMP_FMT).map_err(|e| {
             Error::new(
                 ErrorKind::InvalidData,
                 format!("Malformed header: Failed to parse timestamp: {}", e),

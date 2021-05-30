@@ -3,13 +3,13 @@
 use std::collections::HashMap;
 use std::ffi::OsString;
 use std::io;
-use std::io::{BufRead, BufReader, stdin};
+use std::io::{stdin, BufRead, BufReader};
 use std::path::PathBuf;
 use std::str::FromStr;
 
 use chrono::{DateTime, FixedOffset, Local};
-use clap::AppSettings;
 use clap::arg_enum;
+use clap::AppSettings;
 use structopt::StructOpt;
 
 use crate::files::FileLen;

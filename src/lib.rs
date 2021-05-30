@@ -26,7 +26,7 @@ use crate::selector::PathSelector;
 use crate::semaphore::Semaphore;
 use crate::transform::Transform;
 use crate::walk::Walk;
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Local};
 use console::Term;
 use core::fmt;
 use std::collections::HashMap;
@@ -898,8 +898,9 @@ pub fn group_files(config: &GroupConfig, log: &Log) -> Result<Vec<FileGroup<Path
 /// # Errors
 /// Returns [`io::Error`] on I/O write error or if the output file cannot be created.
 pub fn write_report(config: &GroupConfig, log: &Log, groups: &[FileGroup<Path>]) -> io::Result<()> {
+    let now = Local::now();
     let header = ReportHeader {
-        timestamp: DateTime::from(Utc::now()),
+        timestamp: DateTime::from_utc(now.naive_utc(), *now.offset()),
         version: env!("CARGO_PKG_VERSION").to_owned(),
         command: args().collect(),
         stats: Some(FileStats {
