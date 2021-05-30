@@ -14,7 +14,7 @@ use fclones::log::Log;
 use fclones::report::TextReportReader;
 use fclones::{dedupe, log_script, run_script, DedupeOp};
 use fclones::{group_files, write_report, Error};
-use std::io::stdin;
+use std::io::{stdin, Write};
 
 /// Strips a red "error:" prefix and usage information added by clap.
 /// Removes ansi formatting.
@@ -93,6 +93,20 @@ fn run_group(config: &GroupConfig, log: &mut Log) -> Result<(), Error> {
         .map_err(|e| Error::new(format!("Failed to write report: {}", e)))
 }
 
+/// Depending on the `output` configuration field, returns either a reference to the standard
+/// output or a file opened for writing.
+/// Reports error if the output file cannot be created.
+fn get_output_writer(config: &DedupeConfig) -> Result<Box<dyn Write>, Error> {
+    match &config.output {
+        Some(path) => {
+            let f = File::create(path)
+                .map_err(|e| format!("Failed to create output file {}: {}", path.display(), e))?;
+            Ok(Box::new(f))
+        }
+        None => Ok(Box::new(io::stdout())),
+    }
+}
+
 pub fn run_dedupe(op: DedupeOp, config: DedupeConfig, log: &mut Log) -> Result<(), Error> {
     let mut dedupe_config = config;
     let reader = TextReportReader::new(stdin()).map_err(|e| format!("Input error: {}", e))?;
@@ -126,7 +140,7 @@ pub fn run_dedupe(op: DedupeOp, config: DedupeConfig, log: &mut Log) -> Result<(
     let mut result: Result<(), io::Error> = Ok(());
     let group_count = reader.header.stats.map(|s| s.group_count as u64);
     let progress = match group_count {
-        _ if dedupe_config.dry_run => log.hidden(),
+        _ if dedupe_config.dry_run && dedupe_config.output.is_none() => log.hidden(),
         Some(group_count) => log.progress_bar("Deduplicating", group_count),
         None => log.spinner("Deduplicating"),
     };
@@ -147,7 +161,8 @@ pub fn run_dedupe(op: DedupeOp, config: DedupeConfig, log: &mut Log) -> Result<(
 
     let script = dedupe(groups, op, &dedupe_config, log);
     if dedupe_config.dry_run {
-        let result = log_script(script, log);
+        let out: Box<dyn Write> = get_output_writer(&dedupe_config)?;
+        let result = log_script(script, out).map_err(|e| format!("Output error: {}", e))?;
         log.info(format!(
             "Would process {} files and reclaim {} space",
             result.processed_count, result.reclaimed_space

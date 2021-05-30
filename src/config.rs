@@ -3,12 +3,13 @@
 use std::collections::HashMap;
 use std::ffi::OsString;
 use std::io;
-use std::io::{stdin, BufRead, BufReader};
+use std::io::{BufRead, BufReader, stdin};
 use std::path::PathBuf;
 use std::str::FromStr;
 
-use clap::arg_enum;
+use chrono::{DateTime, FixedOffset, Local};
 use clap::AppSettings;
+use clap::arg_enum;
 use structopt::StructOpt;
 
 use crate::files::FileLen;
@@ -16,7 +17,6 @@ use crate::path::Path;
 use crate::pattern::{Pattern, PatternError, PatternOpts};
 use crate::selector::PathSelector;
 use crate::transform::Transform;
-use chrono::{DateTime, FixedOffset, Local};
 
 arg_enum! {
     #[derive(Clone, Debug, StructOpt)]
@@ -71,10 +71,10 @@ fn parse_thread_count_option(s: &str) -> Result<(OsString, Parallelism), String>
 fn is_positive_int(v: String) -> Result<(), String> {
     if let Ok(f) = v.parse::<u64>() {
         if f > 0 {
-            return Ok(())
+            return Ok(());
         }
     }
-    return Err(format!("Not a positive integer: {}", &*v))
+    return Err(format!("Not a positive integer: {}", &*v));
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -408,17 +408,21 @@ pub struct DedupeConfig {
     #[structopt(long)]
     pub dry_run: bool,
 
+    /// Writes the `dry_run` report to a file instead of the standard output.
+    #[structopt(short = "o", long, value_name = "path")]
+    pub output: Option<PathBuf>,
+
     /// Deduplicates only the files that were modified before the given time.
     ///
     /// If any of the files in a group was modified later, the whole group is skipped.
-    #[structopt(long, short("m"), value_name="timestamp", parse(try_from_str = parse_date_time))]
+    #[structopt(long, short = "m", value_name = "timestamp", parse(try_from_str = parse_date_time))]
     pub modified_before: Option<DateTime<FixedOffset>>,
 
     /// Keeps at least n replicas untouched.
     ///
     /// If not given, it is assumed to be the same as the
     /// `--rf-over` value in the earlier `fclones group` run.
-    #[structopt(short("n"), long, value_name = "count", validator(is_positive_int))]
+    #[structopt(short = "n", long, value_name = "count", validator(is_positive_int))]
     pub rf_over: Option<usize>,
 
     /// Retains files with names matching any given patterns.
@@ -430,7 +434,7 @@ pub struct DedupeConfig {
     pub retain_path_patterns: Vec<Pattern>,
 
     /// Sets the priority for files to be retained.
-    #[structopt(long, value_name="priority", possible_values=&Priority::variants())]
+    #[structopt(long, value_name = "priority", possible_values = &Priority::variants())]
     pub retain_priority: Vec<Priority>,
 
     /// Restricts the set of files that can be removed to files
@@ -444,7 +448,7 @@ pub struct DedupeConfig {
     pub drop_path_patterns: Vec<Pattern>,
 
     /// Sets the priority for files to be removed or replaced by links.
-    #[structopt(long, value_name="priority", possible_values=&Priority::variants())]
+    #[structopt(long, value_name = "priority", possible_values = &Priority::variants())]
     pub drop_priority: Vec<Priority>,
 }
 
