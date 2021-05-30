@@ -1,20 +1,20 @@
-use std::{fs, io};
 use std::cmp::{max, min, Reverse};
 use std::io::{BufWriter, ErrorKind, Write};
 use std::ops::AddAssign;
 use std::sync::Arc;
+use std::{fs, io};
 
 use chrono::{DateTime, FixedOffset, Local};
 use rand::distributions::Alphanumeric;
 use rand::Rng;
 
-use crate::{Error, FileGroup};
 use crate::config::{DedupeConfig, Priority};
 use crate::files::FileLen;
 use crate::lock::FileLock;
 use crate::log::Log;
 use crate::path::Path;
 use crate::util::fallible_sort_by_key;
+use crate::{Error, FileGroup};
 
 /// Defines what to do with redundant files
 #[derive(Copy, Clone)]
