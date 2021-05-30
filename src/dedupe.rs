@@ -1,4 +1,4 @@
-use std::cmp::{min, Reverse};
+use std::cmp::{max, min, Reverse};
 use std::ops::AddAssign;
 use std::{fs, io};
 
@@ -520,7 +520,7 @@ fn partition(
 
     // If the set to retain is smaller than the number of files we must keep (rf), then
     // move some higher priority files from `to_drop` and append them to `to_retain`.
-    let n = config.rf_over.unwrap_or(1);
+    let n = max(1, config.rf_over.unwrap_or(1));
     let missing_count = min(to_drop.len(), n.saturating_sub(to_retain.len()));
     to_retain.extend(to_drop.drain(0..missing_count));
 

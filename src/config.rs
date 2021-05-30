@@ -68,6 +68,15 @@ fn parse_thread_count_option(s: &str) -> Result<(OsString, Parallelism), String>
     Ok((key, Parallelism { random, sequential }))
 }
 
+fn is_positive_int(v: String) -> Result<(), String> {
+    if let Ok(f) = v.parse::<u64>() {
+        if f > 0 {
+            return Ok(())
+        }
+    }
+    return Err(format!("Not a positive integer: {}", &*v))
+}
+
 #[derive(Clone, Copy, Debug)]
 pub struct Parallelism {
     pub random: usize,
@@ -93,7 +102,7 @@ pub struct GroupConfig {
 
     /// Reads the list of input paths from the standard input instead of the arguments.
     /// This flag is mostly useful together with Unix `find` utility.
-    #[structopt(short = "I", long)]
+    #[structopt(long)]
     pub stdin: bool,
 
     /// Limits recursion depth.
@@ -155,7 +164,7 @@ pub struct GroupConfig {
     /// Searches for over-replicated files with replication factor above the specified value.
     /// Specifying neither `--rf-over` nor `--rf-under` is equivalent to `--rf-over 1` which would
     /// report duplicate files.
-    #[structopt(long, conflicts_with("rf-under"), value_name("count"))]
+    #[structopt(short("n"), long, conflicts_with("rf-under"), value_name("count"))]
     pub rf_over: Option<usize>,
 
     /// Searches for under-replicated files with replication factor below the specified value.
@@ -164,27 +173,27 @@ pub struct GroupConfig {
     pub rf_under: Option<usize>,
 
     /// Instead of searching for duplicates, searches for unique files.
-    #[structopt(short="U", long, conflicts_with_all(&["rf-over", "rf-under"]))]
+    #[structopt(long, conflicts_with_all(&["rf-over", "rf-under"]))]
     pub unique: bool,
 
     /// Minimum file size in bytes. Units like KB, KiB, MB, MiB, GB, GiB are supported. Inclusive.
-    #[structopt(short = "s", long, default_value = "1", value_name("bytes"))]
+    #[structopt(short = "s", long("min"), default_value = "1", value_name("bytes"))]
     pub min_size: FileLen,
 
     /// Maximum file size in bytes. Units like KB, KiB, MB, MiB, GB, GiB are supported. Inclusive.
-    #[structopt(long, value_name("bytes"))]
+    #[structopt(long("max"), value_name("bytes"))]
     pub max_size: Option<FileLen>,
 
     /// Includes only file names matched fully by any of the given patterns.
-    #[structopt(short = "n", long = "name", value_name("pattern"))]
+    #[structopt(long = "name", value_name("pattern"))]
     pub name_patterns: Vec<String>,
 
     /// Includes only paths matched fully by any of the given patterns.
-    #[structopt(short = "p", long = "path", value_name("pattern"))]
+    #[structopt(long = "path", value_name("pattern"))]
     pub path_patterns: Vec<String>,
 
     /// Excludes paths matched fully by any of the given patterns.
-    #[structopt(short = "e", long = "exclude", value_name("pattern"))]
+    #[structopt(long = "exclude", value_name("pattern"))]
     pub exclude_patterns: Vec<String>,
 
     /// Makes pattern matching case-insensitive
@@ -408,7 +417,7 @@ pub struct DedupeConfig {
     ///
     /// If not given, it is assumed to be the same as the
     /// `--rf-over` value in the earlier `fclones group` run.
-    #[structopt(short("n"), long, value_name = "count")]
+    #[structopt(short("n"), long, value_name = "count", validator(is_positive_int))]
     pub rf_over: Option<usize>,
 
     /// Retains files with names matching any given patterns.
@@ -480,7 +489,7 @@ pub enum Command {
 )]
 pub struct Config {
     /// Suppresses progress reporting
-    #[structopt(short = "Q", long)]
+    #[structopt(short("-q"), long)]
     pub quiet: bool,
 
     /// Finds files
