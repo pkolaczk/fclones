@@ -307,12 +307,26 @@ impl FileId {
 
     #[cfg(windows)]
     pub fn new(file: &Path) -> io::Result<FileId> {
+        Self::from_file(&File::open(file.to_path_buf())?).map_err(|e| {
+            io::Error::new(
+                ErrorKind::Other,
+                format!(
+                    "Failed to read file identifier of {}: {}",
+                    file.display(),
+                    io::Error::last_os_error()
+                ),
+            )
+        })
+    }
+
+    #[cfg(windows)]
+    pub fn from_file(file: &File) -> io::Result<FileId> {
         use std::os::windows::io::*;
         use winapi::ctypes::c_void;
         use winapi::um::fileapi::FILE_ID_INFO;
         use winapi::um::minwinbase::FileIdInfo;
         use winapi::um::winbase::GetFileInformationByHandleEx;
-        let handle = File::open(file.to_path_buf())?.into_raw_handle();
+        let handle = file.as_raw_handle();
         unsafe {
             let mut file_id: FILE_ID_INFO = std::mem::zeroed();
             let file_id_ptr = (&mut file_id) as *mut _ as *mut c_void;
@@ -321,8 +335,7 @@ impl FileId {
                 0 => Err(io::Error::new(
                     ErrorKind::Other,
                     format!(
-                        "Failed to read file identifier of {}: {}",
-                        file.display(),
+                        "Failed to read file identifier: {}",
                         io::Error::last_os_error()
                     ),
                 )),
