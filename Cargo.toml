@@ -54,9 +54,8 @@ block-utils = "0.10.1"
 fiemap = "0.1.1"
 
 [target.'cfg(unix)'.dependencies]
-nix = "0.17.0"
-libc = "0.2.69"
-file-lock = "1.1.20"
+nix = "0.20"
+libc = "0.2.95"
 
 [target.'cfg(windows)'.dependencies]
 winapi = "0.3.8"
