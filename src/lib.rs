@@ -1,5 +1,5 @@
 use std::cell::RefCell;
-use std::cmp::Reverse;
+use std::cmp::{Reverse, max};
 use std::env::{args, current_dir};
 use std::ffi::{OsStr, OsString};
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -899,14 +899,15 @@ pub fn group_files(config: &GroupConfig, log: &Log) -> Result<Vec<FileGroup<Path
 /// Returns [`io::Error`] on I/O write error or if the output file cannot be created.
 pub fn write_report(config: &GroupConfig, log: &Log, groups: &[FileGroup<Path>]) -> io::Result<()> {
     let now = Local::now();
+    let rf_over = max(1, config.rf_over());
     let header = ReportHeader {
         timestamp: DateTime::from_utc(now.naive_utc(), *now.offset()),
         version: env!("CARGO_PKG_VERSION").to_owned(),
         command: args().collect(),
         stats: Some(FileStats {
             group_count: groups.len(),
-            redundant_file_count: groups.selected_count(config.rf_over(), usize::MAX),
-            redundant_file_size: groups.selected_size(config.rf_over(), usize::MAX),
+            redundant_file_count: groups.selected_count(rf_over, usize::MAX),
+            redundant_file_size: groups.selected_size(rf_over, usize::MAX),
         }),
     };
 
