@@ -448,23 +448,27 @@ pub enum Command {
     /// is specified. This command is safe and does not modify the filesystem.
     Group(GroupConfig),
 
+    /// Replaces redundant files with links.
+    ///
+    /// The list of groups earlier produced by `fclones group` should be submitted
+    /// on the standard input. Only the default text format is supported.
+    ///
+    /// Unless `--soft` is specified, hard links are created for links within
+    /// the same file system, and soft links for links between different file systems.
+    Link {
+        #[structopt(flatten)]
+        config: DedupeConfig,
+
+        /// Creates soft links.
+        #[structopt(short, long)]
+        soft: bool,
+    },
+
     /// Removes redundant files.
     ///
     /// The list of groups earlier produced by `fclones group` should be submitted
     /// on the standard input. Only the default text format is supported.
     Remove(DedupeConfig),
-
-    /// Replaces redundant files with soft links.
-    ///
-    /// The list of groups earlier produced by `fclones group` should be submitted
-    /// on the standard input. Only the default text format is supported.
-    SoftLink(DedupeConfig),
-
-    /// Replaces redundant files with hard links.
-    ///
-    /// The list of groups earlier produced by `fclones group` should be submitted
-    /// on the standard input. Only the default text format is supported.
-    HardLink(DedupeConfig),
 }
 
 /// Finds and cleans up redundant files

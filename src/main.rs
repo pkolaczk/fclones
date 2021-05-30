@@ -171,9 +171,12 @@ fn main() {
 
     let result = match config.command {
         Command::Group(config) => run_group(&config, &mut log),
-        Command::Remove(cmd) => run_dedupe(DedupeOp::Remove, cmd, &mut log),
-        Command::SoftLink(cmd) => run_dedupe(DedupeOp::SoftLink, cmd, &mut log),
-        Command::HardLink(cmd) => run_dedupe(DedupeOp::HardLink, cmd, &mut log),
+        Command::Remove(config) => run_dedupe(DedupeOp::Remove, config, &mut log),
+        Command::Link { config, soft: true } => run_dedupe(DedupeOp::SoftLink, config, &mut log),
+        Command::Link {
+            config,
+            soft: false,
+        } => run_dedupe(DedupeOp::HardLink, config, &mut log),
     };
 
     if let Err(e) = result {
