@@ -1,5 +1,4 @@
 use std::cmp::{min, Reverse};
-use std::fs::Metadata;
 use std::ops::AddAssign;
 use std::{fs, io};
 
@@ -15,6 +14,7 @@ use crate::{Error, FileGroup};
 use rand::distributions::Alphanumeric;
 use rand::Rng;
 use std::io::ErrorKind;
+use std::sync::Arc;
 
 /// Defines what to do with redundant files
 #[derive(Copy, Clone)]
@@ -30,17 +30,17 @@ pub enum DedupeOp {
 /// Portable abstraction for commands used to remove duplicates
 pub enum FsCommand {
     Remove {
-        path: Path,
+        file: FileLock,
         len: FileLen,
     },
     SoftLink {
-        target: Path,
-        link: Path,
+        target: Arc<FileLock>,
+        link: FileLock,
         len: FileLen,
     },
     HardLink {
-        target: Path,
-        link: Path,
+        target: Arc<FileLock>,
+        link: FileLock,
         len: FileLen,
     },
 }
@@ -156,12 +156,12 @@ impl FsCommand {
     /// Executes the command and returns the number of bytes reclaimed
     pub fn execute(&self, log: &Log) -> io::Result<()> {
         match self {
-            FsCommand::Remove { path, .. } => Self::remove(path),
+            FsCommand::Remove { file, .. } => Self::remove(&file.path),
             FsCommand::SoftLink { target, link, .. } => {
-                Self::safe_remove(&link, |link| Self::symlink(target, link), log)
+                Self::safe_remove(&link.path, |link| Self::symlink(&target.path, link), log)
             }
             FsCommand::HardLink { target, link, .. } => {
-                Self::safe_remove(&link, |link| Self::hardlink(target, link), log)
+                Self::safe_remove(&link.path, |link| Self::hardlink(&target.path, link), log)
             }
         }
     }
@@ -180,22 +180,22 @@ impl FsCommand {
     pub fn to_shell_str(&self) -> Vec<String> {
         let mut result = Vec::new();
         match self {
-            FsCommand::Remove { path, .. } => {
-                let path = path.shell_quote();
+            FsCommand::Remove { file, .. } => {
+                let path = file.path.shell_quote();
                 result.push(format!("rm {}", path));
             }
             FsCommand::SoftLink { target, link, .. } => {
-                let tmp = Self::temp_file(link);
-                let target = target.shell_quote();
-                let link = link.shell_quote();
+                let tmp = Self::temp_file(&link.path);
+                let target = target.path.shell_quote();
+                let link = link.path.shell_quote();
                 result.push(format!("mv {} {}", link, tmp));
                 result.push(format!("ln -s {} {}", target, link));
                 result.push(format!("rm {}", tmp));
             }
             FsCommand::HardLink { target, link, .. } => {
-                let tmp = Self::temp_file(link);
-                let target = target.shell_quote();
-                let link = link.shell_quote();
+                let tmp = Self::temp_file(&link.path);
+                let target = target.path.shell_quote();
+                let link = link.path.shell_quote();
                 result.push(format!("mv {} {}", link, tmp));
                 result.push(format!("ln {} {}", target, link));
                 result.push(format!("rm {}", tmp));
@@ -208,22 +208,22 @@ impl FsCommand {
     pub fn to_shell_str(&self) -> Vec<String> {
         let mut result = Vec::new();
         match self {
-            FsCommand::Remove { path, .. } => {
-                let path = path.shell_quote();
+            FsCommand::Remove { file: path, .. } => {
+                let path = file.path.shell_quote();
                 result.push(format!("del {}", path));
             }
             FsCommand::SoftLink { target, link, .. } => {
-                let tmp = Self::temp_file(link);
-                let target = target.shell_quote();
-                let link = link.shell_quote();
+                let tmp = Self::temp_file(&link.path);
+                let target = target.path.shell_quote();
+                let link = link.path.shell_quote();
                 result.push(format!("move {} {}", link, tmp));
                 result.push(format!("mklink {} {}", target, link));
                 result.push(format!("del {}", tmp));
             }
             FsCommand::HardLink { target, link, .. } => {
-                let tmp = Self::temp_file(link);
-                let target = target.shell_quote();
-                let link = link.shell_quote();
+                let tmp = Self::temp_file(&link.path);
+                let target = target.path.shell_quote();
+                let link = link.path.shell_quote();
                 result.push(format!("move {} {}", link, tmp));
                 result.push(format!("mklink /H {} {}", target, link));
                 result.push(format!("del {}", tmp));
@@ -247,39 +247,12 @@ impl AddAssign for DedupeResult {
     }
 }
 
-/// The purpose of this structure is to keep the file locked as long as we wish
-/// to rely on its metadata. File is locked before reading the metadata.
-struct FileMetadata {
-    path: Path,
-    metadata: Metadata,
-    _lock: FileLock,
-}
-
-impl FileMetadata {
-    fn new(path: Path) -> io::Result<FileMetadata> {
-        let lock = FileLock::new(&path).map_err(|e| {
-            io::Error::new(e.kind(), format!("Failed to lock file {}: {}", path, e))
-        })?;
-        let metadata = path.to_path_buf().symlink_metadata().map_err(|e| {
-            io::Error::new(
-                e.kind(),
-                format!("Failed to obtain metadata of file {}: {}", path, e),
-            )
-        })?;
-        Ok(FileMetadata {
-            path,
-            metadata,
-            _lock: lock,
-        })
-    }
-}
-
 /// Returns true if any of the files has been modified after given timestamp
 /// Also returns true if file timestamp could
-fn was_modified(files: &[FileMetadata], after: DateTime<FixedOffset>, log: &Log) -> bool {
+fn was_modified(files: &[FileLock], after: DateTime<FixedOffset>, log: &Log) -> bool {
     let mut result = false;
     let after: DateTime<Local> = after.into();
-    for FileMetadata {
+    for FileLock {
         path: p,
         metadata: m,
         ..
@@ -312,7 +285,7 @@ fn was_modified(files: &[FileMetadata], after: DateTime<FixedOffset>, log: &Log)
 /// recently accessed, etc) are sorted last.
 /// In cases when metadata of a file cannot be accessed, an error message is pushed
 /// in the result vector and such file is placed at the beginning of the list.
-fn sort_by_priority(files: &mut Vec<FileMetadata>, priority: &Priority) -> Vec<Error> {
+fn sort_by_priority(files: &mut Vec<FileLock>, priority: &Priority) -> Vec<Error> {
     let errors = match priority {
         Priority::Newest => fallible_sort_by_key(files, |m| {
             m.metadata
@@ -403,34 +376,33 @@ fn may_drop(path: &Path, config: &DedupeConfig) -> bool {
 
 struct PartitionedFileGroup {
     file_len: FileLen,
-    to_retain: Vec<FileMetadata>,
-    to_drop: Vec<FileMetadata>,
+    to_retain: Vec<FileLock>,
+    to_drop: Vec<FileLock>,
 }
 
 impl PartitionedFileGroup {
     /// Returns a list of commands that would remove redundant files in this group when executed.
-    fn dedupe_script(&self, strategy: DedupeOp) -> Vec<FsCommand> {
+    fn dedupe_script(mut self, strategy: DedupeOp) -> Vec<FsCommand> {
         assert!(
             !self.to_retain.is_empty() || self.to_drop.is_empty(),
             "No files would be left after deduplicating"
         );
         let mut commands = Vec::new();
-        for f in self.to_drop.iter() {
-            let retained_path = &self.to_retain[0].path;
-            let dropped_path = &f.path;
+        let retained_file = Arc::new(self.to_retain.swap_remove(0));
+        for dropped_file in self.to_drop {
             match strategy {
                 DedupeOp::Remove => commands.push(FsCommand::Remove {
-                    path: dropped_path.clone(),
+                    file: dropped_file,
                     len: self.file_len,
                 }),
                 DedupeOp::SoftLink => commands.push(FsCommand::SoftLink {
-                    target: retained_path.clone(),
-                    link: dropped_path.clone(),
+                    target: retained_file.clone(),
+                    link: dropped_file,
                     len: self.file_len,
                 }),
                 DedupeOp::HardLink => commands.push(FsCommand::HardLink {
-                    target: retained_path.clone(),
-                    link: dropped_path.clone(),
+                    target: retained_file.clone(),
+                    link: dropped_file,
                     len: self.file_len,
                 }),
             }
@@ -461,7 +433,7 @@ fn partition(
         .files
         .into_iter()
         .map(|p| {
-            FileMetadata::new(p)
+            FileLock::new(p)
                 .map_err(|e| {
                     log.warn(e);
                     metadata_err = true;
