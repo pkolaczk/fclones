@@ -5,10 +5,13 @@ use std::{fs, io};
 
 use crate::path::Path;
 
-/// Semi-portable file locking.
-/// Provides safe access to file metadata.
+/// Provides locked file metadata access.
+///
+/// Locks the file before fetching the file metadata.
 /// On Unix, advisory lock through fnctl is used.
 /// On Windows, file is open in read-write mode.
+///
+/// For symbolic links, returns the symbolic link metadata.
 pub struct FileLock {
     pub path: Path,
     pub metadata: Metadata,
@@ -78,7 +81,7 @@ impl FileLock {
             ));
         };
 
-        let metadata = file.metadata().map_err(|e| {
+        let metadata = fs::symlink_metadata(&path_buf).map_err(|e| {
             io::Error::new(
                 e.kind(),
                 format!("Failed to read metadata of {}: {}", path, e),
@@ -90,6 +93,18 @@ impl FileLock {
             metadata,
             file,
         })
+    }
+
+    #[cfg(unix)]
+    pub fn device_id(&self) -> Option<u64> {
+        use std::os::unix::fs::MetadataExt;
+        Some(self.metadata.dev())
+    }
+
+    #[cfg(windows)]
+    pub fn device_id(&self) -> Option<u64> {
+        use crate::files::FileId;
+        FileId::from_file(&self.file).ok().map(|f| f.device)
     }
 }
 

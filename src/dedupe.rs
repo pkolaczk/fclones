@@ -19,11 +19,11 @@ use std::sync::Arc;
 /// Defines what to do with redundant files
 #[derive(Copy, Clone)]
 pub enum DedupeOp {
-    /// Remove redundant files
+    /// Removes redundant files.
     Remove,
-    /// Replace redundant files with soft-links (ln -s on Unix)
+    /// Replaces redundant files with soft-links (ln -s on Unix).
     SoftLink,
-    /// Replace redundant files with hard-links (ln on Unix)
+    /// Replaces redundant files with hard-links (ln on Unix).
     HardLink,
 }
 
@@ -208,7 +208,7 @@ impl FsCommand {
     pub fn to_shell_str(&self) -> Vec<String> {
         let mut result = Vec::new();
         match self {
-            FsCommand::Remove { file: path, .. } => {
+            FsCommand::Remove { file, .. } => {
                 let path = file.path.shell_quote();
                 result.push(format!("del {}", path));
             }
@@ -390,12 +390,15 @@ impl PartitionedFileGroup {
         let mut commands = Vec::new();
         let retained_file = Arc::new(self.to_retain.swap_remove(0));
         for dropped_file in self.to_drop {
+            let devices_differ = retained_file.device_id() != dropped_file.device_id();
             match strategy {
-                DedupeOp::Remove => commands.push(FsCommand::Remove {
-                    file: dropped_file,
+                DedupeOp::SoftLink => commands.push(FsCommand::SoftLink {
+                    target: retained_file.clone(),
+                    link: dropped_file,
                     len: self.file_len,
                 }),
-                DedupeOp::SoftLink => commands.push(FsCommand::SoftLink {
+                // hard links are not supported between files on different file systems
+                DedupeOp::HardLink if devices_differ => commands.push(FsCommand::SoftLink {
                     target: retained_file.clone(),
                     link: dropped_file,
                     len: self.file_len,
@@ -403,6 +406,10 @@ impl PartitionedFileGroup {
                 DedupeOp::HardLink => commands.push(FsCommand::HardLink {
                     target: retained_file.clone(),
                     link: dropped_file,
+                    len: self.file_len,
+                }),
+                DedupeOp::Remove => commands.push(FsCommand::Remove {
+                    file: dropped_file,
                     len: self.file_len,
                 }),
             }
