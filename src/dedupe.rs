@@ -1,12 +1,17 @@
 use std::cmp::{max, min, Reverse};
+use std::fmt::{Display, Formatter};
+use std::fs::Metadata;
 use std::io::{BufWriter, ErrorKind, Write};
-use std::ops::AddAssign;
-use std::sync::Arc;
-use std::{fs, io};
+use std::ops::{Add, AddAssign};
+use std::sync::{Arc, Mutex};
+use std::{fmt, fs, io};
 
 use chrono::{DateTime, FixedOffset, Local};
+use crossbeam_utils::atomic::AtomicCell;
 use rand::distributions::Alphanumeric;
 use rand::Rng;
+use rayon::iter::IntoParallelIterator;
+use rayon::iter::ParallelIterator;
 
 use crate::config::{DedupeConfig, Priority};
 use crate::files::FileLen;
@@ -27,26 +32,61 @@ pub enum DedupeOp {
     HardLink,
 }
 
+/// Convenience struct for holding a path to a file and its metadata together
+pub struct FileMetadata {
+    pub path: Path,
+    pub metadata: Metadata,
+}
+
+impl FileMetadata {
+    pub fn new(path: Path) -> io::Result<FileMetadata> {
+        let path_buf = path.to_path_buf();
+        let metadata = fs::symlink_metadata(&path_buf).map_err(|e| {
+            io::Error::new(
+                e.kind(),
+                format!("Failed to read metadata of {}: {}", path, e),
+            )
+        })?;
+        Ok(FileMetadata { path, metadata })
+    }
+
+    #[cfg(unix)]
+    pub fn device_id(&self) -> Option<u64> {
+        use std::os::unix::fs::MetadataExt;
+        Some(self.metadata.dev())
+    }
+
+    #[cfg(windows)]
+    pub fn device_id(&self) -> Option<u64> {
+        use crate::files::FileId;
+        FileId::from_file(&self.file).ok().map(|f| f.device)
+    }
+}
+
+impl Display for FileMetadata {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        f.pad(format!("{}", self.path).as_str())
+    }
+}
+
 /// Portable abstraction for commands used to remove duplicates
 pub enum FsCommand {
     Remove {
-        file: FileLock,
-        len: FileLen,
+        file: FileMetadata,
     },
     SoftLink {
-        target: Arc<FileLock>,
-        link: FileLock,
-        len: FileLen,
+        target: Arc<FileMetadata>,
+        link: FileMetadata,
     },
     HardLink {
-        target: Arc<FileLock>,
-        link: FileLock,
-        len: FileLen,
+        target: Arc<FileMetadata>,
+        link: FileMetadata,
     },
 }
 
 impl FsCommand {
     fn remove(path: &Path) -> io::Result<()> {
+        let _ = FileLock::new(&path)?;
         fs::remove_file(path.to_path_buf())
             .map_err(|e| io::Error::new(e.kind(), format!("Failed to remove file {}: {}", path, e)))
     }
@@ -131,6 +171,7 @@ impl FsCommand {
     /// If the function fails, moves the file back to the original location.
     /// If the function succeeds, removes the file permanently.
     fn safe_remove<R>(path: &Path, f: impl Fn(&Path) -> io::Result<R>, log: &Log) -> io::Result<R> {
+        let _ = FileLock::new(&path)?; // don't remove a locked file
         let tmp = Self::temp_file(path);
         Self::rename(&path, &tmp)?;
         let result = match f(&path) {
@@ -154,14 +195,19 @@ impl FsCommand {
     }
 
     /// Executes the command and returns the number of bytes reclaimed
-    pub fn execute(&self, log: &Log) -> io::Result<()> {
+    pub fn execute(&self, log: &Log) -> io::Result<FileLen> {
         match self {
-            FsCommand::Remove { file, .. } => Self::remove(&file.path),
-            FsCommand::SoftLink { target, link, .. } => {
-                Self::safe_remove(&link.path, |link| Self::symlink(&target.path, link), log)
+            FsCommand::Remove { file } => {
+                Self::remove(&file.path)?;
+                Ok(FileLen(file.metadata.len()))
             }
-            FsCommand::HardLink { target, link, .. } => {
-                Self::safe_remove(&link.path, |link| Self::hardlink(&target.path, link), log)
+            FsCommand::SoftLink { target, link } => {
+                Self::safe_remove(&link.path, |link| Self::symlink(&target.path, link), log)?;
+                Ok(FileLen(link.metadata.len()))
+            }
+            FsCommand::HardLink { target, link } => {
+                Self::safe_remove(&link.path, |link| Self::hardlink(&target.path, link), log)?;
+                Ok(FileLen(link.metadata.len()))
             }
         }
     }
@@ -169,9 +215,9 @@ impl FsCommand {
     /// Returns how much disk space running this command would reclaim
     pub fn space_to_reclaim(&self) -> FileLen {
         match self {
-            FsCommand::Remove { len, .. }
-            | FsCommand::SoftLink { len, .. }
-            | FsCommand::HardLink { len, .. } => *len,
+            FsCommand::Remove { file, .. }
+            | FsCommand::SoftLink { link: file, .. }
+            | FsCommand::HardLink { link: file, .. } => FileLen(file.metadata.len()),
         }
     }
 
@@ -240,6 +286,17 @@ pub struct DedupeResult {
     pub reclaimed_space: FileLen,
 }
 
+impl Add<DedupeResult> for DedupeResult {
+    type Output = DedupeResult;
+
+    fn add(self, rhs: Self) -> Self::Output {
+        DedupeResult {
+            processed_count: self.processed_count + rhs.processed_count,
+            reclaimed_space: self.reclaimed_space + rhs.reclaimed_space,
+        }
+    }
+}
+
 impl AddAssign for DedupeResult {
     fn add_assign(&mut self, rhs: Self) {
         self.processed_count += rhs.processed_count;
@@ -249,10 +306,10 @@ impl AddAssign for DedupeResult {
 
 /// Returns true if any of the files has been modified after given timestamp
 /// Also returns true if file timestamp could
-fn was_modified(files: &[FileLock], after: DateTime<FixedOffset>, log: &Log) -> bool {
+fn was_modified(files: &[FileMetadata], after: DateTime<FixedOffset>, log: &Log) -> bool {
     let mut result = false;
     let after: DateTime<Local> = after.into();
-    for FileLock {
+    for FileMetadata {
         path: p,
         metadata: m,
         ..
@@ -285,7 +342,7 @@ fn was_modified(files: &[FileLock], after: DateTime<FixedOffset>, log: &Log) -> 
 /// recently accessed, etc) are sorted last.
 /// In cases when metadata of a file cannot be accessed, an error message is pushed
 /// in the result vector and such file is placed at the beginning of the list.
-fn sort_by_priority(files: &mut Vec<FileLock>, priority: &Priority) -> Vec<Error> {
+fn sort_by_priority(files: &mut Vec<FileMetadata>, priority: &Priority) -> Vec<Error> {
     let errors = match priority {
         Priority::Newest => fallible_sort_by_key(files, |m| {
             m.metadata
@@ -375,16 +432,18 @@ fn may_drop(path: &Path, config: &DedupeConfig) -> bool {
 }
 
 struct PartitionedFileGroup {
-    file_len: FileLen,
-    to_retain: Vec<FileLock>,
-    to_drop: Vec<FileLock>,
+    to_retain: Vec<FileMetadata>,
+    to_drop: Vec<FileMetadata>,
 }
 
 impl PartitionedFileGroup {
     /// Returns a list of commands that would remove redundant files in this group when executed.
     fn dedupe_script(mut self, strategy: DedupeOp) -> Vec<FsCommand> {
+        if self.to_drop.is_empty() {
+            return vec![];
+        }
         assert!(
-            !self.to_retain.is_empty() || self.to_drop.is_empty(),
+            !self.to_retain.is_empty(),
             "No files would be left after deduplicating"
         );
         let mut commands = Vec::new();
@@ -395,23 +454,17 @@ impl PartitionedFileGroup {
                 DedupeOp::SoftLink => commands.push(FsCommand::SoftLink {
                     target: retained_file.clone(),
                     link: dropped_file,
-                    len: self.file_len,
                 }),
                 // hard links are not supported between files on different file systems
                 DedupeOp::HardLink if devices_differ => commands.push(FsCommand::SoftLink {
                     target: retained_file.clone(),
                     link: dropped_file,
-                    len: self.file_len,
                 }),
                 DedupeOp::HardLink => commands.push(FsCommand::HardLink {
                     target: retained_file.clone(),
                     link: dropped_file,
-                    len: self.file_len,
                 }),
-                DedupeOp::Remove => commands.push(FsCommand::Remove {
-                    file: dropped_file,
-                    len: self.file_len,
-                }),
+                DedupeOp::Remove => commands.push(FsCommand::Remove { file: dropped_file }),
             }
         }
         commands
@@ -440,7 +493,7 @@ fn partition(
         .files
         .into_iter()
         .map(|p| {
-            FileLock::new(p)
+            FileMetadata::new(p)
                 .map_err(|e| {
                     log.warn(e);
                     metadata_err = true;
@@ -525,11 +578,7 @@ fn partition(
     to_retain.extend(to_drop.drain(0..missing_count));
 
     assert!(to_retain.len() >= n || to_drop.is_empty());
-    Ok(PartitionedFileGroup {
-        file_len,
-        to_retain,
-        to_drop,
-    })
+    Ok(PartitionedFileGroup { to_retain, to_drop })
 }
 
 /// Generates a list of commands that will remove the redundant files in the groups provided
@@ -557,12 +606,12 @@ pub fn dedupe<'a, I>(
     op: DedupeOp,
     config: &'a DedupeConfig,
     log: &'a Log,
-) -> impl Iterator<Item = FsCommand> + 'a
+) -> impl ParallelIterator<Item = FsCommand> + 'a
 where
-    I: IntoIterator<Item = FileGroup<Path>> + 'a,
+    I: IntoParallelIterator<Item = FileGroup<Path>> + 'a,
 {
     groups
-        .into_iter()
+        .into_par_iter()
         .flat_map(move |group| match partition(group, &config, log) {
             Ok(group) => group.dedupe_script(op),
             Err(e) => {
@@ -577,41 +626,54 @@ where
 /// On command execution failure, a warning is logged and the execution of remaining commands
 /// continues.
 /// Returns the number of files processed and the amount of disk space reclaimed.
-pub fn run_script(script: impl IntoIterator<Item = FsCommand>, log: &Log) -> DedupeResult {
-    let mut result = DedupeResult::default();
-    for cmd in script {
-        match cmd.execute(log) {
-            Ok(()) => {
-                result += DedupeResult {
-                    processed_count: 1,
-                    reclaimed_space: cmd.space_to_reclaim(),
-                }
+pub fn run_script(script: impl IntoParallelIterator<Item = FsCommand>, log: &Log) -> DedupeResult {
+    script
+        .into_par_iter()
+        .map(|cmd| cmd.execute(log))
+        .inspect(|res| {
+            if let Err(e) = res {
+                log.warn(e);
             }
-            Err(e) => log.warn(e),
-        }
-    }
-    result
+        })
+        .filter_map(|res| res.ok())
+        .map(|len| DedupeResult {
+            processed_count: 1,
+            reclaimed_space: len,
+        })
+        .reduce(DedupeResult::default, |a, b| a + b)
 }
 
 /// Prints a script generated by [`dedupe`] to stdout.
 /// Returns the number of files processed and the amount of disk space that would be
 /// reclaimed if all commands of the script were executed with no error.
 pub fn log_script(
-    script: impl IntoIterator<Item = FsCommand>,
-    out: impl Write,
+    script: impl IntoParallelIterator<Item = FsCommand>,
+    out: impl Write + Send,
 ) -> io::Result<DedupeResult> {
-    let mut writer = BufWriter::new(out);
-    let mut result = DedupeResult::default();
-    for cmd in script {
-        for line in cmd.to_shell_str() {
-            writeln!(writer, "{}", line)?;
-        }
-        result += DedupeResult {
-            processed_count: 1,
-            reclaimed_space: cmd.space_to_reclaim(),
-        }
+    let writer = Mutex::new(BufWriter::new(out));
+    let err = AtomicCell::new(None);
+    let result = script
+        .into_par_iter()
+        .map(|cmd| {
+            let mut w = writer.lock().unwrap();
+            for line in cmd.to_shell_str() {
+                if let Err(e) = writeln!(w, "{}", line) {
+                    err.store(Some(e));
+                    return None;
+                }
+            }
+            Some(DedupeResult {
+                processed_count: 1,
+                reclaimed_space: cmd.space_to_reclaim(),
+            })
+        })
+        .while_some()
+        .reduce(DedupeResult::default, |a, b| a + b);
+
+    match err.take() {
+        None => Ok(result),
+        Some(e) => Err(e),
     }
-    Ok(result)
 }
 
 #[cfg(test)]
