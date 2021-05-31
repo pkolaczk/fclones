@@ -423,31 +423,28 @@ pub struct DedupeConfig {
     #[structopt(short = "n", long, value_name = "count", validator(is_positive_int))]
     pub rf_over: Option<usize>,
 
-    /// Retains files with names matching any given patterns.
-    #[structopt(long = "retain-name", value_name = "pattern")]
-    pub retain_name_patterns: Vec<Pattern>,
+    /// Restricts the set of files that can be removed or replaced by links to files
+    /// with the name matching any given patterns.
+    #[structopt(long = "name", value_name = "pattern")]
+    pub name_patterns: Vec<Pattern>,
 
-    /// Retains files with paths matching any given patterns.
-    #[structopt(long = "retain-path", value_name = "pattern")]
-    pub retain_path_patterns: Vec<Pattern>,
-
-    /// Sets the priority for files to be retained.
-    #[structopt(long, value_name = "priority", possible_values = &Priority::variants())]
-    pub retain_priority: Vec<Priority>,
-
-    /// Restricts the set of files that can be removed to files
-    /// with names matching all given patterns.
-    #[structopt(long = "drop-name", value_name = "pattern")]
-    pub drop_name_patterns: Vec<Pattern>,
-
-    /// Restricts the set of files that can be removed to files
-    /// with names matching all given patterns.
-    #[structopt(long = "drop-path", value_name = "pattern")]
-    pub drop_path_patterns: Vec<Pattern>,
+    /// Restricts the set of files that can be removed or replaced by links to files
+    /// with the path matching any given patterns.
+    #[structopt(long = "path", value_name = "pattern")]
+    pub path_patterns: Vec<Pattern>,
 
     /// Sets the priority for files to be removed or replaced by links.
     #[structopt(long, value_name = "priority", possible_values = &Priority::variants())]
-    pub drop_priority: Vec<Priority>,
+    pub priority: Vec<Priority>,
+
+    /// Keeps files with names matching any given patterns untouched.
+    #[structopt(long = "keep-name", value_name = "pattern")]
+    pub keep_name_patterns: Vec<Pattern>,
+
+    /// Keeps files with paths matching any given patterns untouched.
+    #[structopt(long = "keep-path", value_name = "pattern")]
+    pub keep_path_patterns: Vec<Pattern>,
+
 }
 
 #[derive(Debug, StructOpt)]

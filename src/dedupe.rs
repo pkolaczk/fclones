@@ -389,19 +389,18 @@ fn sort_by_priority(files: &mut Vec<FileMetadata>, priority: &Priority) -> Vec<E
     errors.into_iter().map(Error::from).collect()
 }
 
-/// Returns true if given path matches any of the `retain` patterns
-fn should_retain(path: &Path, config: &DedupeConfig) -> bool {
-    let matches_any_name =
-        config
-            .retain_name_patterns
-            .iter()
-            .any(|p| match path.file_name_cstr() {
-                Some(name) => p.matches(name.to_string_lossy().as_ref()),
-                None => false,
-            });
+/// Returns true if given path matches any of the `keep` patterns
+fn should_keep(path: &Path, config: &DedupeConfig) -> bool {
+    let matches_any_name = config
+        .keep_name_patterns
+        .iter()
+        .any(|p| match path.file_name_cstr() {
+            Some(name) => p.matches(name.to_string_lossy().as_ref()),
+            None => false,
+        });
     let matches_any_path = || {
         config
-            .retain_path_patterns
+            .keep_path_patterns
             .iter()
             .any(|p| p.matches_path(&path.to_path_buf()))
     };
@@ -412,27 +411,29 @@ fn should_retain(path: &Path, config: &DedupeConfig) -> bool {
 /// Returns true if given path matches all of the `drop` patterns.
 /// If there are no `drop` patterns, returns true.
 fn may_drop(path: &Path, config: &DedupeConfig) -> bool {
-    let matches_all_names =
+    let matches_any_name = || {
         config
-            .retain_name_patterns
+            .name_patterns
             .iter()
-            .all(|p| match path.file_name_cstr() {
+            .any(|p| match path.file_name_cstr() {
                 Some(name) => p.matches(name.to_string_lossy().as_ref()),
                 None => false,
-            });
-
-    let matches_all_paths = || {
+            })
+    };
+    let matches_any_path = || {
         config
-            .retain_path_patterns
+            .path_patterns
             .iter()
-            .all(|p| p.matches_path(&path.to_path_buf()))
+            .any(|p| p.matches_path(&path.to_path_buf()))
     };
 
-    matches_all_names || matches_all_paths()
+    (config.name_patterns.is_empty() && config.path_patterns.is_empty())
+        || matches_any_name()
+        || matches_any_path()
 }
 
 struct PartitionedFileGroup {
-    to_retain: Vec<FileMetadata>,
+    to_keep: Vec<FileMetadata>,
     to_drop: Vec<FileMetadata>,
 }
 
@@ -443,11 +444,11 @@ impl PartitionedFileGroup {
             return vec![];
         }
         assert!(
-            !self.to_retain.is_empty(),
+            !self.to_keep.is_empty(),
             "No files would be left after deduplicating"
         );
         let mut commands = Vec::new();
-        let retained_file = Arc::new(self.to_retain.swap_remove(0));
+        let retained_file = Arc::new(self.to_keep.swap_remove(0));
         for dropped_file in self.to_drop {
             let devices_differ = retained_file.device_id() != dropped_file.device_id();
             match strategy {
@@ -471,7 +472,7 @@ impl PartitionedFileGroup {
     }
 }
 
-/// Partitions a group of files into files to retain and files that can be safely dropped
+/// Partitions a group of files into files to keep and files that can be safely dropped
 /// (or linked).
 fn partition(
     group: FileGroup<Path>,
@@ -549,14 +550,9 @@ fn partition(
     // the priorities given at the end of the argument list, therefore we're applying
     // them in reversed order.
     let mut sort_errors = Vec::new();
-    for priority in config.drop_priority.iter().rev() {
+    for priority in config.priority.iter().rev() {
         sort_errors.extend(sort_by_priority(&mut files, priority));
     }
-    files.reverse(); // after this, files with the highest priority to drop are at the beginning
-    for priority in config.retain_priority.iter().rev() {
-        sort_errors.extend(sort_by_priority(&mut files, priority));
-    }
-    files.reverse(); // after this, files with the highers priority to are at the end
 
     if !sort_errors.is_empty() {
         for e in sort_errors {
@@ -569,7 +565,7 @@ fn partition(
     // that we can remove or replace with links:
     let (mut to_retain, mut to_drop): (Vec<_>, Vec<_>) = files
         .into_iter()
-        .partition(|m| should_retain(&m.path, config) || !may_drop(&m.path, config));
+        .partition(|m| should_keep(&m.path, config) || !may_drop(&m.path, config));
 
     // If the set to retain is smaller than the number of files we must keep (rf), then
     // move some higher priority files from `to_drop` and append them to `to_retain`.
@@ -578,7 +574,10 @@ fn partition(
     to_retain.extend(to_drop.drain(0..missing_count));
 
     assert!(to_retain.len() >= n || to_drop.is_empty());
-    Ok(PartitionedFileGroup { to_retain, to_drop })
+    Ok(PartitionedFileGroup {
+        to_keep: to_retain,
+        to_drop,
+    })
 }
 
 /// Generates a list of commands that will remove the redundant files in the groups provided
