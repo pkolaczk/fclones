@@ -8,7 +8,6 @@ use std::path::PathBuf;
 use std::str::FromStr;
 
 use chrono::{DateTime, FixedOffset, Local};
-use clap::arg_enum;
 use clap::AppSettings;
 use structopt::StructOpt;
 
@@ -18,16 +17,37 @@ use crate::pattern::{Pattern, PatternError, PatternOpts};
 use crate::selector::PathSelector;
 use crate::transform::Transform;
 
-arg_enum! {
-    #[derive(Clone, Debug, StructOpt)]
-    pub enum OutputFormat {
-        Text, Fdupes, Csv, Json
+#[derive(Debug, Clone, Copy)]
+pub enum OutputFormat {
+    Default,
+    Fdupes,
+    Csv,
+    Json,
+}
+
+impl OutputFormat {
+    pub fn variants() -> Vec<&'static str> {
+        vec!["default", "fdupes", "csv", "json"]
+    }
+}
+
+impl FromStr for OutputFormat {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_lowercase().as_str() {
+            "default" => Ok(OutputFormat::Default),
+            "fdupes" => Ok(OutputFormat::Fdupes),
+            "csv" => Ok(OutputFormat::Csv),
+            "json" => Ok(OutputFormat::Json),
+            s => Err(format!("Unrecognized output format: {}", s)),
+        }
     }
 }
 
 impl Default for OutputFormat {
     fn default() -> OutputFormat {
-        OutputFormat::Text
+        OutputFormat::Default
     }
 }
 
@@ -444,7 +464,6 @@ pub struct DedupeConfig {
     /// Keeps files with paths matching any given patterns untouched.
     #[structopt(long = "keep-path", value_name = "pattern")]
     pub keep_path_patterns: Vec<Pattern>,
-
 }
 
 #[derive(Debug, StructOpt)]
