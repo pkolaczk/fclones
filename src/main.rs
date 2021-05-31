@@ -2,10 +2,12 @@ use std::collections::HashMap;
 use std::ffi::{OsStr, OsString};
 use std::fs::File;
 use std::io;
+use std::io::{stdin, Write};
 use std::process::exit;
 
 use fallible_iterator::FallibleIterator;
 use itertools::Itertools;
+use rayon::iter::ParallelBridge;
 use regex::Regex;
 use structopt::StructOpt;
 
@@ -14,7 +16,6 @@ use fclones::log::Log;
 use fclones::report::TextReportReader;
 use fclones::{dedupe, log_script, run_script, DedupeOp};
 use fclones::{group_files, write_report, Error};
-use std::io::{stdin, Write};
 
 /// Strips a red "error:" prefix and usage information added by clap.
 /// Removes ansi formatting.
@@ -96,7 +97,7 @@ fn run_group(config: &GroupConfig, log: &mut Log) -> Result<(), Error> {
 /// Depending on the `output` configuration field, returns either a reference to the standard
 /// output or a file opened for writing.
 /// Reports error if the output file cannot be created.
-fn get_output_writer(config: &DedupeConfig) -> Result<Box<dyn Write>, Error> {
+fn get_output_writer(config: &DedupeConfig) -> Result<Box<dyn Write + Send>, Error> {
     match &config.output {
         Some(path) => {
             let f = File::create(path)
@@ -157,11 +158,12 @@ pub fn run_dedupe(op: DedupeOp, config: DedupeConfig, log: &mut Log) -> Result<(
         })
         .inspect(|_| progress.tick())
         .fuse()
-        .flatten();
+        .flatten()
+        .par_bridge();
 
     let script = dedupe(groups, op, &dedupe_config, log);
     if dedupe_config.dry_run {
-        let out: Box<dyn Write> = get_output_writer(&dedupe_config)?;
+        let out = get_output_writer(&dedupe_config)?;
         let result = log_script(script, out).map_err(|e| format!("Output error: {}", e))?;
         log.info(format!(
             "Would process {} files and reclaim {} space",

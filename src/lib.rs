@@ -1,17 +1,27 @@
+use core::fmt;
 use std::cell::RefCell;
-use std::cmp::{Reverse, max};
+use std::cmp::{max, Reverse};
+use std::collections::HashMap;
 use std::env::{args, current_dir};
 use std::ffi::{OsStr, OsString};
+use std::fmt::{Display, Formatter};
+use std::fs::File;
+use std::io;
+use std::io::BufWriter;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::Arc;
 
+use chrono::{DateTime, Local};
+use console::Term;
 use crossbeam_utils::thread;
 use itertools::Itertools;
 use rayon::prelude::*;
 use serde::*;
 use sysinfo::DiskType;
 use thread_local::ThreadLocal;
+
+pub use dedupe::{dedupe, log_script, run_script, DedupeOp, DedupeResult};
 
 use crate::config::*;
 use crate::device::{DiskDevice, DiskDevices};
@@ -20,20 +30,11 @@ use crate::files::*;
 use crate::group::*;
 use crate::log::Log;
 use crate::path::Path;
-
 use crate::report::{FileStats, ReportHeader, ReportWriter};
 use crate::selector::PathSelector;
 use crate::semaphore::Semaphore;
 use crate::transform::Transform;
 use crate::walk::Walk;
-use chrono::{DateTime, Local};
-use console::Term;
-use core::fmt;
-use std::collections::HashMap;
-use std::fmt::{Display, Formatter};
-use std::fs::File;
-use std::io;
-use std::io::BufWriter;
 
 pub mod config;
 pub mod files;
@@ -53,8 +54,6 @@ mod semaphore;
 mod transform;
 mod util;
 mod walk;
-
-pub use dedupe::{dedupe, log_script, run_script, DedupeOp, DedupeResult};
 
 /// Error reported by top-level fclones functions
 #[derive(Debug)]

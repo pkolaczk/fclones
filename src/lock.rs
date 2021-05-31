@@ -1,20 +1,15 @@
-use core::fmt;
-use std::fmt::{Display, Formatter};
-use std::fs::{File, Metadata};
+use std::fs::File;
 use std::{fs, io};
 
 use crate::path::Path;
 
-/// Provides locked file metadata access.
+/// Portable file locking.
 ///
-/// Locks the file before fetching the file metadata.
 /// On Unix, advisory lock through fnctl is used.
 /// On Windows, file is open in read-write mode.
 ///
-/// For symbolic links, returns the symbolic link metadata.
+/// The file must exist before locking.
 pub struct FileLock {
-    pub path: Path,
-    pub metadata: Metadata,
     pub file: File,
 }
 
@@ -62,7 +57,7 @@ impl FileLock {
 
     /// Locks a file and obtains its metadata.
     /// On error, the error message will contain the path.
-    pub fn new(path: Path) -> io::Result<FileLock> {
+    pub fn new(path: &Path) -> io::Result<FileLock> {
         let path_buf = path.to_path_buf();
         let file = fs::OpenOptions::new()
             .read(true)
@@ -81,36 +76,7 @@ impl FileLock {
             ));
         };
 
-        let metadata = fs::symlink_metadata(&path_buf).map_err(|e| {
-            io::Error::new(
-                e.kind(),
-                format!("Failed to read metadata of {}: {}", path, e),
-            )
-        })?;
-
-        Ok(FileLock {
-            path,
-            metadata,
-            file,
-        })
-    }
-
-    #[cfg(unix)]
-    pub fn device_id(&self) -> Option<u64> {
-        use std::os::unix::fs::MetadataExt;
-        Some(self.metadata.dev())
-    }
-
-    #[cfg(windows)]
-    pub fn device_id(&self) -> Option<u64> {
-        use crate::files::FileId;
-        FileId::from_file(&self.file).ok().map(|f| f.device)
-    }
-}
-
-impl Display for FileLock {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        f.pad(format!("{}", self.path).as_str())
+        Ok(FileLock { file })
     }
 }
 
