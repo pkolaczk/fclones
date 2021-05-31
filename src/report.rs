@@ -32,7 +32,7 @@ pub struct FileStats {
     pub redundant_file_size: FileLen,
 }
 
-const TIMESTAMP_FMT: &str = "%Y-%m-%d %H:%M:%S.%3f %z";
+const TIMESTAMP_FMT: &str = "%Y-%m-%d %H:%M:%S.%3f %Z";
 
 /// Data in the header of the whole report.
 #[derive(Debug, Eq, PartialEq, Serialize)]
@@ -138,12 +138,14 @@ impl<W: Write> ReportWriter<W> {
     /// Writes the report in `fdupes` compatible format.
     /// This is very similar to the TEXT format, but there are no headers
     /// for each group, and groups are separated with empty lines.
-    pub fn write_as_fdupes<'a, I, P>(&mut self, _header: &ReportHeader, groups: I) -> io::Result<()>
+    pub fn write_as_fdupes<I, G, P>(&mut self, _header: &ReportHeader, groups: I) -> io::Result<()>
     where
-        I: IntoIterator<Item = &'a FileGroup<P>>,
-        P: Display + 'a,
+        I: IntoIterator<Item = G>,
+        G: Borrow<FileGroup<P>>,
+        P: Display,
     {
         for g in groups {
+            let g = g.borrow();
             for f in g.files.iter() {
                 writeln!(self.out, "{}", f)?;
             }
@@ -270,8 +272,8 @@ impl<W: Write> ReportWriter<W> {
         P: Display + Serialize,
     {
         match format {
-            OutputFormat::Text => self.write_as_text(header, groups),
-            OutputFormat::Fdupes => self.write_as_json(header, groups),
+            OutputFormat::Default => self.write_as_text(header, groups),
+            OutputFormat::Fdupes => self.write_as_fdupes(header, groups),
             OutputFormat::Csv => self.write_as_csv(header, groups),
             OutputFormat::Json => self.write_as_json(header, groups),
         }
