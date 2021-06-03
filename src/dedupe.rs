@@ -19,7 +19,7 @@ use crate::lock::FileLock;
 use crate::log::Log;
 use crate::path::Path;
 use crate::util::fallible_sort_by_key;
-use crate::{Error, FileGroup};
+use crate::{Error, FileGroup, TIMESTAMP_FMT};
 
 /// Defines what to do with redundant files
 #[derive(Copy, Clone)]
@@ -321,7 +321,9 @@ fn was_modified(files: &[FileMetadata], after: DateTime<FixedOffset>, log: &Log)
                 if file_timestamp > after {
                     log.warn(format!(
                         "File {} was updated after {} (at {})",
-                        p, after, file_timestamp
+                        p,
+                        after.format(TIMESTAMP_FMT),
+                        file_timestamp.format(TIMESTAMP_FMT)
                     ));
                     result = true;
                 }

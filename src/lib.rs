@@ -55,6 +55,8 @@ mod transform;
 mod util;
 mod walk;
 
+const TIMESTAMP_FMT: &str = "%Y-%m-%d %H:%M:%S.%3f %z";
+
 /// Error reported by top-level fclones functions
 #[derive(Debug)]
 pub struct Error {
@@ -1127,7 +1129,7 @@ mod test {
 
     #[test]
     fn identical_small_files() {
-        with_dir("target/test/main/identical_small_files", |root| {
+        with_dir("main/identical_small_files", |root| {
             let file1 = root.join("file1");
             let file2 = root.join("file2");
             write_test_file(&file1, b"aaa", b"", b"");
@@ -1145,7 +1147,7 @@ mod test {
 
     #[test]
     fn identical_large_files() {
-        with_dir("target/test/main/identical_large_files", |root| {
+        with_dir("main/identical_large_files", |root| {
             let file1 = root.join("file1");
             let file2 = root.join("file2");
             write_test_file(&file1, &[0; MAX_PREFIX_LEN], &[1; 4096], &[2; 4096]);
@@ -1163,7 +1165,7 @@ mod test {
 
     #[test]
     fn files_differing_by_size() {
-        with_dir("target/test/main/files_differing_by_size", |root| {
+        with_dir("main/files_differing_by_size", |root| {
             let file1 = root.join("file1");
             let file2 = root.join("file2");
             write_test_file(&file1, b"aaaa", b"", b"");
@@ -1189,7 +1191,7 @@ mod test {
 
     #[test]
     fn files_differing_by_prefix() {
-        with_dir("target/test/main/files_differing_by_prefix", |root| {
+        with_dir("main/files_differing_by_prefix", |root| {
             let file1 = root.join("file1");
             let file2 = root.join("file2");
             write_test_file(&file1, b"aaa", b"", b"");
@@ -1209,7 +1211,7 @@ mod test {
 
     #[test]
     fn files_differing_by_suffix() {
-        with_dir("target/test/main/files_differing_by_suffix", |root| {
+        with_dir("main/files_differing_by_suffix", |root| {
             let file1 = root.join("file1");
             let file2 = root.join("file2");
             let prefix = [0; MAX_PREFIX_LEN];
@@ -1231,7 +1233,7 @@ mod test {
 
     #[test]
     fn files_differing_by_middle() {
-        with_dir("target/test/main/files_differing_by_middle", |root| {
+        with_dir("main/files_differing_by_middle", |root| {
             let file1 = root.join("file1");
             let file2 = root.join("file2");
             let prefix = [0; MAX_PREFIX_LEN];
@@ -1253,7 +1255,7 @@ mod test {
 
     #[test]
     fn hard_links() {
-        with_dir("target/test/main/hard_links", |root| {
+        with_dir("main/hard_links", |root| {
             let file1 = root.join("file1");
             let file2 = root.join("file2");
             write_test_file(&file1, b"aaa", b"", b"");
@@ -1272,7 +1274,7 @@ mod test {
 
     #[test]
     fn duplicate_input_files() {
-        with_dir("target/test/main/duplicate_input_files", |root| {
+        with_dir("main/duplicate_input_files", |root| {
             let file1 = root.join("file1");
             write_test_file(&file1, b"foo", b"", b"");
             let log = test_log();
@@ -1292,32 +1294,29 @@ mod test {
     fn duplicate_input_files_non_canonical() {
         use std::os::unix::fs::symlink;
 
-        with_dir(
-            "target/test/main/duplicate_input_files_non_canonical",
-            |root| {
-                let dir = root.join("dir");
-                symlink(&root, &dir).unwrap();
+        with_dir("main/duplicate_input_files_non_canonical", |root| {
+            let dir = root.join("dir");
+            symlink(&root, &dir).unwrap();
 
-                let file1 = root.join("file1");
-                let file2 = root.join("dir/file1");
-                write_test_file(&file1, b"foo", b"", b"");
+            let file1 = root.join("file1");
+            let file2 = root.join("dir/file1");
+            write_test_file(&file1, b"foo", b"", b"");
 
-                let log = test_log();
-                let mut config = GroupConfig::default();
-                config.paths = vec![file1.clone(), file2.clone()];
-                config.unique = true;
-                config.hard_links = true;
+            let log = test_log();
+            let mut config = GroupConfig::default();
+            config.paths = vec![file1.clone(), file2.clone()];
+            config.unique = true;
+            config.hard_links = true;
 
-                let results = group_files(&config, &log).unwrap();
-                assert_eq!(results.len(), 1);
-                assert_eq!(results[0].files.len(), 1);
-            },
-        );
+            let results = group_files(&config, &log).unwrap();
+            assert_eq!(results.len(), 1);
+            assert_eq!(results[0].files.len(), 1);
+        });
     }
 
     #[test]
     fn report() {
-        with_dir("target/test/main/report", |root| {
+        with_dir("main/report", |root| {
             let file = root.join("file1");
             write_test_file(&file, b"foo", b"", b"");
 

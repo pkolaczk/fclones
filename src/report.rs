@@ -12,7 +12,7 @@ use crate::config::OutputFormat;
 use crate::files::{FileHash, FileLen};
 
 use crate::util::IteratorWrapper;
-use crate::FileGroup;
+use crate::{FileGroup, TIMESTAMP_FMT};
 use chrono::{DateTime, FixedOffset};
 use fallible_iterator::FallibleIterator;
 
@@ -31,8 +31,6 @@ pub struct FileStats {
     pub redundant_file_count: usize,
     pub redundant_file_size: FileLen,
 }
-
-const TIMESTAMP_FMT: &str = "%Y-%m-%d %H:%M:%S.%3f %Z";
 
 /// Data in the header of the whole report.
 #[derive(Debug, Eq, PartialEq, Serialize)]
@@ -448,6 +446,8 @@ impl<R: Read> TextReportReader<R> {
             "Malformed header: Missing timestamp",
         )?
         .swap_remove(0);
+
+        println!("{}", timestamp);
         let timestamp = DateTime::parse_from_str(&timestamp, TIMESTAMP_FMT).map_err(|e| {
             Error::new(
                 ErrorKind::InvalidData,
