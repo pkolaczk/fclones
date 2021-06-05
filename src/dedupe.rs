@@ -62,7 +62,7 @@ impl FileMetadata {
     #[cfg(windows)]
     pub fn device_id(&self) -> Option<u64> {
         use crate::files::FileId;
-        FileId::from_file(&self.file).ok().map(|f| f.device)
+        FileId::new(&self.path).ok().map(|f| f.device)
     }
 }
 
@@ -96,7 +96,7 @@ impl FsCommand {
 
     #[cfg(unix)]
     fn symlink_internal(target: &std::path::Path, link: &std::path::Path) -> io::Result<()> {
-        std::os::unix::fs::symlink(target, &link)
+        std::os::unix::fs::symlink(target, link)
     }
 
     #[cfg(windows)]
