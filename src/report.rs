@@ -446,8 +446,6 @@ impl<R: Read> TextReportReader<R> {
             "Malformed header: Missing timestamp",
         )?
         .swap_remove(0);
-
-        println!("{}", timestamp);
         let timestamp = DateTime::parse_from_str(&timestamp, TIMESTAMP_FMT).map_err(|e| {
             Error::new(
                 ErrorKind::InvalidData,
