@@ -1,29 +1,46 @@
-# FClones — Efficient Duplicate File Finder
+# FClones — Efficient Duplicate File Finder and Remover
 [![CircleCI](https://circleci.com/gh/pkolaczk/fclones.svg?style=shield)](https://circleci.com/gh/pkolaczk/fclones)
 [![crates.io](https://img.shields.io/crates/v/fclones.svg)](https://crates.io/crates/fclones)
 [![Documentation](https://docs.rs/fclones/badge.svg)](https://docs.rs/fclones)
 
-Sometimes you accidentally copied your files in too many places - `fclones` will find them even if the duplicates
-got different names. It can also be used to find unique or under-replicated files, e.g. to check if your 
-backups contain the required files. 
+Sometimes you accidentally copied your files in too many places - `fclones group` will scan the file-system 
+and quickly identify groups of identical files. Depending on the settings, 
+it can be used to find redundant (duplicate), unique or under-replicated files, e.g., to 
+check if your backups contain the required number of copies. It also offers a rich set of filtering 
+options letting you analyze only a small subset of the directory tree.
 
-`fclones` has been implemented in Rust with a strong focus on performance on modern hardware.
-It easily outperforms many other popular duplicate finders by a wide margin (see [Benchmarks](#benchmarks)).
+The redundant files found by `fclones group` can be then removed by executing `fclones remove` or 
+replaced by soft of hard links with `fclones link`. 
+For maximum safety, there is also a `--dry-run` option that prints out all the file-system changes 
+to be performed without actually running them. 
+
+FClones has been implemented in Rust with a strong focus on high performance on modern hardware. 
+It employs several techniques not present in many other
+programs (which often claim to be "fast" duplicate finders). FClones adapts to the type of the hard drive, 
+orders file operations by physical data placement on HDDs, scans directory tree in parallel and uses prefix compression
+of paths to reduce memory consumption when working with millions of files.
+As a result, FClones easily outperforms many other popular duplicate finders by a wide margin on either SSD or HDD storage 
+(see [Benchmarks](#benchmarks)).
 
 ## Features
-* Finding duplicate files
-* Finding unique files
-* Finding files with more than N replicas
-* Finding files with fewer than N replicas
-* Advanced file selection for reducing the amount of data to process  
+* Identifying groups of identical files
+  - finding duplicate files
+  - finding files with more than N replicas
+  - finding unique files
+  - finding files with fewer than N replicas
+* Advanced file selection for reducing the amount of data to process
   - scanning multiple directory roots
   - can work with a list of files piped directly from standard input
   - recursive/non-recursive file selection
   - recursion depth limit
-  - filtering names and paths by extended UNIX globs 
+  - filtering names and paths by extended UNIX globs
   - filtering names and paths by regular expressions
   - filtering by min/max file size
-  - proper handling of symlinks and hardlinks  
+  - proper handling of symlinks and hardlinks
+* Removing redundant files
+  - removing or replacing files with soft or hard links
+  - selecting files for removal by path or name patterns  
+  - prioritizing files to remove by creation, modification, last access time or nesting level
 * High performance
   - parallel processing capability in all I/O and CPU heavy stages
   - automatic tuning of parallelism and access strategy based on device type (SSD vs HDD)
@@ -40,25 +57,65 @@ It easily outperforms many other popular duplicate finders by a wide margin (see
   - machine-readable formats: `CSV`, `JSON`     
 
 ### Limitations
-Contrary to `fdupes` and some other popular duplicate removers,`fclones` currently 
-does not remove duplicate files automatically. It only generates a report with a list of files, 
-and you decide what to do with them. For your convenience, 
-reports are available in a few different popular formats.
-See [#27](https://github.com/pkolaczk/fclones/issues/27). 
+Some optimisations are not available on platforms other than Linux:
+  - ordering of file accesses by physical placement
+  - page-cache drop-behind
+
+## Demo
+Let's first create some files:
+
+    $ mkdir test
+    $ cd test
+    $ echo foo >foo1.txt
+    $ echo foo >foo2.txt
+    $ echo foo >foo3.txt
+    $ echo bar >bar1.txt
+    $ echo bar >bar2.txt
+
+Now let's identify the duplicates:
+
+    $ fclones group . >dupes.txt
+    [2021-06-05 18:21:33.358] fclones:  info: Started grouping
+    [2021-06-05 18:21:33.738] fclones:  info: Scanned 7 file entries
+    [2021-06-05 18:21:33.738] fclones:  info: Found 5 (20 B) files matching selection criteria
+    [2021-06-05 18:21:33.738] fclones:  info: Found 4 (16 B) candidates after grouping by size
+    [2021-06-05 18:21:33.738] fclones:  info: Found 4 (16 B) candidates after grouping by paths and file identifiers
+    [2021-06-05 18:21:33.739] fclones:  info: Found 3 (12 B) candidates after grouping by prefix
+    [2021-06-05 18:21:33.740] fclones:  info: Found 3 (12 B) candidates after grouping by suffix
+    [2021-06-05 18:21:33.741] fclones:  info: Found 3 (12 B) redundant files
+
+    $ cat dupes.txt
+    # Report by fclones 0.12.0
+    # Timestamp: 2021-06-05 18:21:33.741 +0200
+    # Command: fclones group .
+    # Found 2 file groups
+    # 12 B (12 B) in 3 redundant files can be removed
+    7d6ebf613bf94dfd976d169ff6ae02c3, 4 B (4 B) * 2:
+        /tmp/test/bar1.txt
+        /tmp/test/bar2.txt
+    6109f093b3fd5eb1060989c990d1226f, 4 B (4 B) * 3:
+        /tmp/test/foo1.txt
+        /tmp/test/foo2.txt
+        /tmp/test/foo3.txt
+
+Finally we can replace the duplicates by soft links:
+
+    $ fclones link --soft <dupes.txt 
+    [2021-06-05 18:25:42.488] fclones:  info: Started deduplicating
+    [2021-06-05 18:25:42.493] fclones:  info: Processed 3 files and reclaimed 12 B space
+
+    $ ls -l
+    total 12
+    -rw-rw-r-- 1 pkolaczk pkolaczk   4 cze  5 18:19 bar1.txt
+    lrwxrwxrwx 1 pkolaczk pkolaczk  18 cze  5 18:25 bar2.txt -> /tmp/test/bar1.txt
+    -rw-rw-r-- 1 pkolaczk pkolaczk 382 cze  5 18:21 dupes.txt
+    -rw-rw-r-- 1 pkolaczk pkolaczk   4 cze  5 18:19 foo1.txt
+    lrwxrwxrwx 1 pkolaczk pkolaczk  18 cze  5 18:25 foo2.txt -> /tmp/test/foo1.txt
+    lrwxrwxrwx 1 pkolaczk pkolaczk  18 cze  5 18:25 foo3.txt -> /tmp/test/foo1.txt
 
 ## Installation
-
-### Supported Platforms
-The code has been thoroughly tested on Ubuntu Linux 20.04. 
- 
-OS            |    Architecture       |    Status                       | Limitations    
---------------|-----------------------|---------------------------------|------------
-Linux         |  AMD64                | fully supported                 | 
-Mac OS X      |  AMD64                | works                           | no page-cache optimisation
-Windows 10    |  AMD64                | works                           | no page-cache optimisation
-Wine 5.0      |  AMD64                | mostly works                    | no page-cache optimisation, broken progress bar
-
-Other systems and architectures may work. 
+The code has been thoroughly tested on Ubuntu Linux 20.10.
+Other systems like Windows or Mac OS X and other architectures may work. 
 Help test and/or port to other platforms is welcome.
 Please report successes as well as failures.      
 
@@ -76,83 +133,166 @@ are attached directly to [Releases](https://github.com/pkolaczk/fclones/releases
 The build will write the binary to `.cargo/bin/fclones`. 
 
 ## Usage
+
+FClones offers separate commands for finding and removing files. This way, you can inspect
+the list of found files before applying any modifications to the file system. 
+
+  - `group` - identifies groups of identical files and prints them to the standard output
+  - `remove` - removes redundant files earlier identified by `group`
+  - `link` - replaces redundant files with links (default: hard links)
+
+### Finding Files
+
 Find duplicate, unique, under-replicated or over-replicated files in the current directory, 
 including subdirectories:
 
-    fclones .
-    fclones . --unique 
-    fclones . --rf-under 3
-    fclones . --rf-over 3
+    fclones group .
+    fclones group . --unique 
+    fclones group . --rf-under 3
+    fclones group . --rf-over 3
 
 You can search in multiple directories:
 
-    fclones dir1 dir2 dir3
+    fclones group dir1 dir2 dir3
 
-Limiting recursion depth:
+Limit the recursion depth:
     
-    fclones . --depth 1   # scan only files in the current dir, skip subdirs
-    fclones * --depth 0   # similar as above in shells that expand `*` 
+    fclones group . --depth 1   # scan only files in the current dir, skip subdirs
+    fclones group * --depth 0   # similar as above in shells that expand `*` 
 
 Caution: Versions up to 0.10 did not descend into directories by default.
 In those old versions, add `-R` flag to enable recursive directory walking.
+ 
+Finding duplicate files of size at least 100 MB: 
 
-### Filtering
-Find duplicate files of size at least 100 MB: 
-
-    fclones . -s 100M
+    fclones group . -s 100M
 
 Filter by file name or path pattern:
 
-    fclones . --names '*.jpg' '*.png' 
+    fclones group . --name '*.jpg' '*.png' 
                 
 Run `fclones` on files selected by `find` (note: this is likely slower than built-in filtering):
 
-    find . -name '*.c' | fclones --stdin --depth 0
+    find . -name '*.c' | fclones group --stdin --depth 0
 
 Follow symbolic links, but don't escape out of the home folder:
 
-    fclones . -L --paths '/home/**'
+    fclones group . -L --path '/home/**'
     
 Exclude a part of the directory tree from the scan:
 
-    fclones / --exclude '/dev/**' '/proc/**'    
+    fclones group / --exclude '/dev/**' '/proc/**'    
+
+### Removing Files
+To remove files or replace them by links, you need to send the default report produced by
+`fclones group` to the standard input of `fclones remove` or `fclones link` command.
+
+Assuming the list of duplicates has been saved in file `dupes.txt`, the following commands would remove
+the redundant files: 
+
+    fclones link <dupes.txt         # replace with hard links
+    fclones link -s <dupes.txt      # replace with soft links
+    fclones remove <dupes.txt       # remove totally
+
+If you prefer to do everything at once without storing the list of groups in a file, you can pipe:
+
+    fclones group . | fclones link
+
+To select the number of files to preserve, use the `-n`/`--rf-over` option.
+By default, it is set to the value used when running `group` (which is 1 if it wasn't set explicitly). 
+To leave 2 replicas in each group, run: 
+
+    fclones remove -n 2 <dupes.txt
+
+By default, FClones follows the order of files specified in the input file. It keeps the files given at the beginning
+of each list, and removes / replaces the files given at the end of each list. It is possible to change that 
+order by `--priority` option, for example:
+
+    fclones remove --priority newest <dupes.txt        # remove the newest replicas
+    fclones remove --priority oldest <dupes.txt        # remove the oldest replicas
+
+For more priority options, see `fclones remove --help`.
+
+It is also possible to restrict removing files to only files with names or paths matching a pattern:
+
+    fclones remove --name '*.jpg' <dupes.txt       # remove only jpg files
+    fclones remove --path '/trash/**' <dupes.txt   # remove only files in the /trash folder
+
+If it is easier to specify a pattern for files which you do *not* want to remove, then use one of `keep` options:
+
+    fclones remove --keep-name '*.mov' <dupes.txt           # never remove mov files
+    fclones remove --keep-path '/important/**' <dupes.txt   # never remove files in the /important folder
+
+To make sure you're not going to remove wrong files accidentally, use `--dry-run` option.
+This option prints all the commands that would be executed, but it doesn't actually execute them:
+
+    fclones link --soft <dupes.txt --dry-run 2>/dev/null
+
+    mv /tmp/test/bar2.txt /tmp/test/bar2.txt.jkXswbsDxhqItPeOfCXsWN4d
+    ln -s /tmp/test/bar1.txt /tmp/test/bar2.txt
+    rm /tmp/test/bar2.txt.jkXswbsDxhqItPeOfCXsWN4d
+    mv /tmp/test/foo2.txt /tmp/test/foo2.txt.ze1hvhNjfre618TkRGUxJNzx
+    ln -s /tmp/test/foo1.txt /tmp/test/foo2.txt
+    rm /tmp/test/foo2.txt.ze1hvhNjfre618TkRGUxJNzx
+    mv /tmp/test/foo3.txt /tmp/test/foo3.txt.ttLAWO6YckczL1LXEsHfcEau
+    ln -s /tmp/test/foo1.txt /tmp/test/foo3.txt
+    rm /tmp/test/foo3.txt.ttLAWO6YckczL1LXEsHfcEau
+
     
-### Preprocessing files
+### Preprocessing Files
 Use `--transform` option to safely transform files by an external command.
 By default, the transformation happens on a copy of file data, to avoid accidental data loss.
+Note that this option may significantly slow down processing of a huge number of files, 
+because it invokes the external program for each file.
 
-Strip exif before matching duplicate jpg images:
+The following command will strip exif before matching duplicate jpg images:
 
-    fclones . --names '*.jpg' --caseless --transform 'exiv2 -d a $IN' --in-place     
+    fclones group . --name '*.jpg' --caseless --transform 'exiv2 -d a $IN' --in-place     
     
 ### Other    
     
 List more options:
     
-    fclones -h      # short help
-    fclones --help  # detailed help
+    fclones [command] -h      # short help
+    fclones [command] --help  # detailed help
 
-### Notes on quoting and path globbing
+### Path Globbing
+FClones understands a subset of Bash Extended Globbing.
+The following wildcards can be used:
+- `?`         matches any character except the directory separator
+- `[a-z]`     matches one of the characters or character ranges given in the square brackets
+- `[!a-z]`    matches any character that is not given in the square brackets
+- `*`         matches any sequence of characters except the directory separator
+- `**`        matches any sequence of characters including the directory separator
+- `{a,b}`     matches exactly one pattern from the comma-separated patterns given inside the curly brackets
+- `@(a|b)`    same as `{a,b}`
+- `?(a|b)`    matches at most one occurrence of the pattern inside the brackets
+- `+(a|b)`    matches at least occurrence of the patterns given inside the brackets
+- `*(a|b)`    matches any number of occurrences of the patterns given inside the brackets
+- `{escape}`  escapes wildcards, e.g. `{escape}?` would match `?` literally
+
+#### Caution
+
 * On Unix-like systems, when using globs, one must be very careful to avoid accidental expansion of globs by the shell.
   In many cases having globs expanded by the shell instead of by `fclones` is not what you want. In such cases, you
   need to quote the globs:
     
-      fclones . --names '*.jpg'       
+      fclones group . --name '*.jpg'       
        
 * On Windows, the default shell doesn't remove quotes before passing the arguments to the program, 
   therefore you need to pass globs unquoted:
   
-      fclones . --names *.jpg
+      fclones group . --name *.jpg
       
 * On Windows, the default shell doesn't support path globbing, therefore wildcard characters such as * and ? used 
   in paths will be passed literally, and they are likely to create invalid paths. For example, the following 
   command that searches for duplicate files in the current directory in Bash, will likely fail in the default
   Windows shell:
   
-      fclones *
+      fclones group *
       
   If you need path globbing, and your shell does not support it,
-  use the builtin path globbing provided by `--names` or `--paths`.     
+  use the builtin path globbing provided by `--name` or `--path`.     
                           
 ## The Algorithm
 Files are processed in several stages. Each stage except the last one is parallel, but 
@@ -214,23 +354,23 @@ The following options can be passed to `--threads`. The more specific options ov
 - `<r>,<s>` - same as `default:<r>,<s>`  
 - `<n>` - same as `default:<n>,<n>`
 
-## Examples
+### Examples
 To limit the parallelism level for the main thread pool to 1:
 
-    fclones <paths> --threads main:1  
+    fclones group <paths> --threads main:1  
   
 To limit the parallelism level for all I/O access for all SSD devices:
 
-    fclones <paths> --threads ssd:1 
+    fclones group <paths> --threads ssd:1 
 
 To set the parallelism level to the number of cores for random I/O accesss and to 
 2 for sequential I/O access for `/dev/sda` block device:
 
-    fclones <paths> --threads dev:/dev/sda:0,2 
+    fclones group <paths> --threads dev:/dev/sda:0,2 
     
 Multiple `--threads` options can be given, separated by spaces:
 
-    fclones <paths> --threads main:16 ssd:4 hdd:1,1     
+    fclones group <paths> --threads main:16 ssd:4 hdd:1,1     
     
     
 ## Benchmarks
