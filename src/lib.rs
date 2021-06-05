@@ -151,7 +151,7 @@ impl<'a> AppCtx<'a> {
 }
 
 /// A group of files that have something in common, e.g. same size or same hash
-#[derive(Serialize, Debug, PartialEq, Eq)]
+#[derive(Serialize, Debug, PartialEq, Eq, Clone)]
 pub struct FileGroup<F> {
     /// Length of each file
     pub file_len: FileLen,

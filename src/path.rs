@@ -26,7 +26,7 @@ pub const PATH_ESCAPE_CHAR: &str = "^";
 /// would keep the parent path text duplicated in memory, wasting a lot of memory.
 /// This structure here shares the common parent between many paths by reference-counted
 /// references.
-#[derive(Clone, Debug, Hash, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Hash, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Path {
     parent: Option<Arc<Path>>,
     component: CString,
@@ -334,6 +334,12 @@ impl Serialize for Path {
         S: Serializer,
     {
         serializer.collect_str(self)
+    }
+}
+
+impl fmt::Debug for Path {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.to_path_buf().display())
     }
 }
 

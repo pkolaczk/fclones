@@ -26,10 +26,15 @@ where
     errors
 }
 
+/// Utility functions intended for testing.
+/// Beware they typically panic instead of returning `Err`.
 #[cfg(test)]
 pub mod test {
-    use std::fs::{create_dir_all, remove_dir_all};
+    use std::fs::{create_dir_all, remove_dir_all, File};
+    use std::io::{BufReader, Read, Write};
     use std::path::PathBuf;
+    use std::time::SystemTime;
+    use std::{fs, thread};
 
     /// Runs test code that needs access to temporary file storage.
     /// Makes sure the test root directory exists and is empty.
@@ -43,5 +48,51 @@ pub mod test {
         create_dir_all(&test_root).unwrap();
         (test_code)(&test_root.canonicalize().unwrap());
         remove_dir_all(&test_root).unwrap();
+    }
+
+    /// Creates a new empty file.
+    /// If the file existed before, it will be first removed so that the creation time
+    /// is updated.
+    pub fn create_file(path: &std::path::Path) {
+        let _ = fs::remove_file(path);
+        File::create(path).unwrap();
+    }
+
+    /// Creates a new empty file with creation time after (not equal) the given time.
+    ///
+    /// This function is used to create multiple files differing by creation time.
+    /// It adapts to the operating system timer resolution.
+    ///
+    /// Returns the creation time of the newly created file.
+    /// Panics if `time` is in future or if file could not be created.
+    pub fn create_file_newer_than(f: &PathBuf, time: SystemTime) -> SystemTime {
+        assert!(SystemTime::now() >= time);
+        let mut delay = std::time::Duration::from_millis(1);
+        loop {
+            thread::sleep(delay);
+            create_file(&f);
+            let ctime = fs::metadata(&f).unwrap().modified().unwrap();
+            if ctime != time {
+                return ctime;
+            }
+            delay *= 2;
+        }
+    }
+
+    /// Writes contents to a new file. Overwrites file if it exists.
+    /// Panics on errors.
+    pub fn write_file(path: &std::path::Path, content: &str) {
+        let mut f = File::create(path).unwrap();
+        write!(&mut f, "{}", content).unwrap();
+    }
+
+    /// Reads contents of a file to a string.
+    /// Panics on errors.
+    pub fn read_file(path: &std::path::Path) -> String {
+        let f = File::open(&path).unwrap();
+        let mut r = BufReader::new(f);
+        let mut result = String::new();
+        r.read_to_string(&mut result).unwrap();
+        result
     }
 }
