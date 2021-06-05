@@ -33,6 +33,7 @@ pub enum DedupeOp {
 }
 
 /// Convenience struct for holding a path to a file and its metadata together
+#[derive(Debug)]
 pub struct FileMetadata {
     pub path: Path,
     pub metadata: Metadata,
@@ -679,6 +680,17 @@ pub fn log_script(
 
 #[cfg(test)]
 mod test {
+    use std::collections::HashSet;
+    use std::io::Read;
+    use std::path::PathBuf;
+    use std::{thread, time};
+
+    use chrono::Duration;
+
+    use crate::files::FileHash;
+    use crate::pattern::Pattern;
+    use crate::util::test::{create_file, create_file_newer_than, read_file, with_dir, write_file};
+
     use super::*;
 
     #[test]
@@ -691,5 +703,242 @@ mod test {
             temp.file_name().unwrap().len()
         );
         assert_eq!(path.parent(), temp.parent());
+    }
+
+    #[test]
+    fn test_remove_command_removes_file() {
+        with_dir("dedupe/remove_cmd", |root| {
+            let log = Log::new();
+            let file_path = root.join("file");
+            create_file(&file_path);
+            let file = FileMetadata::new(Path::from(&file_path)).unwrap();
+            let cmd = FsCommand::Remove { file };
+            cmd.execute(&log).unwrap();
+            assert!(!file_path.exists())
+        })
+    }
+
+    #[test]
+    fn test_soft_link_command_replaces_file_with_a_link() {
+        with_dir("dedupe/soft_link_cmd", |root| {
+            let log = Log::new();
+            let file_path_1 = root.join("file_1");
+            let file_path_2 = root.join("file_2");
+            write_file(&file_path_1, "foo");
+            write_file(&file_path_2, "");
+
+            let file_1 = FileMetadata::new(Path::from(&file_path_1)).unwrap();
+            let file_2 = FileMetadata::new(Path::from(&file_path_2)).unwrap();
+            let cmd = FsCommand::SoftLink {
+                target: Arc::new(file_1),
+                link: file_2,
+            };
+            cmd.execute(&log).unwrap();
+
+            assert!(file_path_1.exists());
+            assert!(file_path_2.exists());
+            assert!(fs::symlink_metadata(&file_path_2)
+                .unwrap()
+                .file_type()
+                .is_symlink());
+            assert_eq!(read_file(&file_path_2), "foo");
+        })
+    }
+
+    #[test]
+    fn test_hard_link_command_replaces_file_with_a_link() {
+        with_dir("dedupe/hard_link_cmd", |root| {
+            let log = Log::new();
+            let file_path_1 = root.join("file_1");
+            let file_path_2 = root.join("file_2");
+
+            write_file(&file_path_1, "foo");
+            write_file(&file_path_2, "");
+
+            let file_1 = FileMetadata::new(Path::from(&file_path_1)).unwrap();
+            let file_2 = FileMetadata::new(Path::from(&file_path_2)).unwrap();
+            let cmd = FsCommand::HardLink {
+                target: Arc::new(file_1),
+                link: file_2,
+            };
+            cmd.execute(&log).unwrap();
+
+            assert!(file_path_1.exists());
+            assert!(file_path_2.exists());
+            assert_eq!(read_file(&file_path_2), "foo");
+        })
+    }
+
+    /// Creates 3 empty files with different creation time and returns a FileGroup describing them
+    fn make_group(root: &PathBuf) -> FileGroup<Path> {
+        let file_1 = root.join("file_1");
+        let file_2 = root.join("file_2");
+        let file_3 = root.join("file_3");
+        create_file(&file_1);
+        let ctime_1 = fs::metadata(&file_1).unwrap().modified().unwrap();
+        let ctime_2 = create_file_newer_than(&file_2, ctime_1);
+        create_file_newer_than(&file_3, ctime_2);
+
+        let group = FileGroup {
+            file_len: FileLen(0),
+            file_hash: FileHash(0),
+            files: vec![
+                Path::from(&file_1),
+                Path::from(&file_2),
+                Path::from(&file_3),
+            ],
+        };
+        group
+    }
+
+    #[test]
+    fn test_partition_selects_files_for_removal() {
+        with_dir("dedupe/partition/basic", |root| {
+            let group = make_group(root);
+            let config = DedupeConfig::default();
+            let partitioned = partition(group, &config, &Log::new()).unwrap();
+            assert_eq!(partitioned.to_keep.len(), 1);
+            assert_eq!(partitioned.to_drop.len(), 2);
+        })
+    }
+
+    #[test]
+    fn test_partition_bails_out_if_file_modified_too_late() {
+        with_dir("dedupe/partition/modification", |root| {
+            let group = make_group(root);
+            let mut config = DedupeConfig::default();
+            config.modified_before = Some(DateTime::from(Local::now() - Duration::days(1)));
+            let partitioned = partition(group, &config, &Log::new());
+            assert!(partitioned.is_err());
+        })
+    }
+
+    #[test]
+    fn test_partition_skips_file_with_different_len() {
+        with_dir("dedupe/partition/file_len", |root| {
+            let group = make_group(root);
+            let path = group.files[0].clone();
+            write_file(&path.to_path_buf(), "foo");
+
+            let mut config = DedupeConfig::default();
+            config.priority = vec![Priority::MostRecentlyModified];
+            let partitioned = partition(group, &config, &Log::new()).unwrap();
+            assert!(partitioned
+                .to_drop
+                .iter()
+                .find(|m| m.path == path)
+                .is_none());
+            assert!(partitioned
+                .to_keep
+                .iter()
+                .find(|m| m.path == path)
+                .is_none());
+        })
+    }
+
+    fn path_set(v: &Vec<FileMetadata>) -> HashSet<&Path> {
+        v.iter().map(|f| &f.path).collect()
+    }
+
+    #[test]
+    fn test_partition_respects_creation_time_priority() {
+        with_dir("dedupe/partition/ctime_priority", |root| {
+            let group = make_group(root);
+
+            let mut config = DedupeConfig::default();
+            config.priority = vec![Priority::Newest];
+            let partitioned_1 = partition(group.clone(), &config, &Log::new()).unwrap();
+            config.priority = vec![Priority::Oldest];
+            let partitioned_2 = partition(group.clone(), &config, &Log::new()).unwrap();
+
+            assert_ne!(
+                path_set(&partitioned_1.to_keep),
+                path_set(&partitioned_2.to_keep)
+            );
+            assert_ne!(
+                path_set(&partitioned_1.to_drop),
+                path_set(&partitioned_2.to_drop)
+            );
+        });
+    }
+
+    #[test]
+    fn test_partition_respects_modification_time_priority() {
+        with_dir("dedupe/partition/mtime_priority", |root| {
+            let group = make_group(root);
+
+            thread::sleep(time::Duration::from_millis(10));
+            let path = group.files[0].clone();
+            write_file(&path.to_path_buf(), "foo");
+
+            let mut config = DedupeConfig::default();
+            config.priority = vec![Priority::MostRecentlyModified];
+            let partitioned_1 = partition(group.clone(), &config, &Log::new()).unwrap();
+            config.priority = vec![Priority::LeastRecentlyModified];
+            let partitioned_2 = partition(group.clone(), &config, &Log::new()).unwrap();
+
+            assert_ne!(
+                path_set(&partitioned_1.to_keep),
+                path_set(&partitioned_2.to_keep)
+            );
+            assert_ne!(
+                path_set(&partitioned_1.to_drop),
+                path_set(&partitioned_2.to_drop)
+            );
+        });
+    }
+
+    #[test]
+    fn test_partition_respects_keep_patterns() {
+        with_dir("dedupe/partition/keep", |root| {
+            let group = make_group(root);
+            let mut config = DedupeConfig::default();
+            config.priority = vec![Priority::Oldest];
+            config.keep_name_patterns = vec![Pattern::glob("*_1").unwrap()];
+            let p = partition(group.clone(), &config, &Log::new()).unwrap();
+            assert_eq!(p.to_keep.len(), 1);
+            assert_eq!(&p.to_keep[0].path, &group.files[0]);
+
+            config.keep_name_patterns = vec![];
+            config.keep_path_patterns = vec![Pattern::glob("**/file_1").unwrap()];
+            let p = partition(group.clone(), &config, &Log::new()).unwrap();
+            assert_eq!(p.to_keep.len(), 1);
+            assert_eq!(&p.to_keep[0].path, &group.files[0]);
+        })
+    }
+
+    #[test]
+    fn test_partition_respects_drop_patterns() {
+        with_dir("dedupe/partition/drop", |root| {
+            let group = make_group(root);
+            let mut config = DedupeConfig::default();
+            config.priority = vec![Priority::Oldest];
+            config.name_patterns = vec![Pattern::glob("*_3").unwrap()];
+            let p = partition(group.clone(), &config, &Log::new()).unwrap();
+            assert_eq!(p.to_drop.len(), 1);
+            assert_eq!(&p.to_drop[0].path, &group.files[2]);
+
+            config.name_patterns = vec![];
+            config.path_patterns = vec![Pattern::glob("**/file_3").unwrap()];
+            let p = partition(group.clone(), &config, &Log::new()).unwrap();
+            assert_eq!(p.to_drop.len(), 1);
+            assert_eq!(&p.to_drop[0].path, &group.files[2]);
+        })
+    }
+
+    #[test]
+    fn test_run_dedupe_script() {
+        with_dir("dedupe/partition/dedupe_script", |root| {
+            let group = make_group(root);
+            let mut config = DedupeConfig::default();
+            config.priority = vec![Priority::Oldest]; // remove oldest
+            let log = Log::new();
+            let script = dedupe(vec![group], DedupeOp::Remove, &config, &log);
+            let dedupe_result = run_script(script, &log);
+            assert_eq!(dedupe_result.processed_count, 2);
+            assert!(!root.join("file_1").exists());
+            assert!(!root.join("file_2").exists());
+            assert!(root.join("file_3").exists());
+        });
     }
 }

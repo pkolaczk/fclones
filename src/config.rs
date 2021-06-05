@@ -414,7 +414,7 @@ impl FromStr for Priority {
 }
 
 /// Configures which files should be removed
-#[derive(Debug, StructOpt)]
+#[derive(Debug, Default, StructOpt)]
 #[structopt(
     setting(AppSettings::DeriveDisplayOrder),
     setting(AppSettings::DisableVersion),
