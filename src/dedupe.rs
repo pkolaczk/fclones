@@ -688,7 +688,6 @@ pub fn log_script(
 #[cfg(test)]
 mod test {
     use std::collections::HashSet;
-    use std::io::Read;
     use std::path::PathBuf;
     use std::{thread, time};
 
