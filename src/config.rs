@@ -117,7 +117,7 @@ pub struct GroupConfig {
 
     /// Sets output file format
     #[structopt(short = "f", long, possible_values = &OutputFormat::variants(),
-    case_insensitive = true, default_value="Text")]
+    case_insensitive = true, default_value="default")]
     pub format: OutputFormat,
 
     /// Reads the list of input paths from the standard input instead of the arguments.
