@@ -14,13 +14,13 @@ use crate::path::Path;
 
 impl Parallelism {
     pub fn default_for(disk_type: DiskType) -> Parallelism {
+        let cpu_count = num_cpus::get();
         match disk_type {
-            // SSDs typically benefit from a lot of parallelism, so
-            // set both pools to the number of cores. Some users will probably
-            // want to increase it even more.
+            // SSDs typically benefit from a lot of parallelism.
+            // Some users will probably want to increase it even more.
             DiskType::SSD => Parallelism {
-                random: 0,
-                sequential: 0,
+                random: 4 * cpu_count,
+                sequential: 4 * cpu_count,
             },
             // Rotational drives can't serve multiple requests at once.
             // After introducing access ordering in fclones 0.9.0 it turns out
@@ -39,7 +39,7 @@ impl Parallelism {
             // For sequential reads of big files we obviously stay single threaded,
             // as multithreading can hurt really a lot in case the underlying device is rotational.
             _ => Parallelism {
-                random: 0,
+                random: 4 * cpu_count,
                 sequential: 1,
             },
         }
