@@ -374,27 +374,29 @@ Multiple `--threads` options can be given, separated by spaces:
     
     
 ## Benchmarks
-Different duplicate finders were given a task to find duplicates in a large set of files.
-Each program was executed twice. 
-Before the first run, the system page cache was evicted with `echo 3 > /proc/sys/vm/drop_caches` and the second
-run was executed immediately after the first run finished. 
+Different duplicate finders were given a task to find duplicates in a large set of files. 
+Before each run, the system page cache was evicted with `echo 3 > /proc/sys/vm/drop_caches`.
 
 ### SSD Benchmark
 - Model: Dell Precision 5520
 - CPU: Intel(R) Xeon(R) CPU E3-1505M v6 @ 3.00GHz
 - RAM: 32 GB
 - Storage: local NVMe SSD 512 GB 
-- System: Ubuntu Linux 20.04, kernel 5.4.0-33-generic
-- Task: 1,583,334 paths, 317 GB of data       
+- System: Ubuntu Linux 20.10, kernel 5.8.0-53-generic
+- Task: 1,460,720 paths, 316 GB of data       
 
-Program                                                |  Version  | Language | Threads | Cold Cache Time | Hot Cache Time | Peak Memory
--------------------------------------------------------|-----------|----------|--------:|----------------:|---------------:|-------------:
-fclones                                                |  0.1.0    | Rust     | 32      | **0:31.01**     | 0:11.94        |  203 MB
-fclones                                                |  0.1.0    | Rust     | 8       |   0:56.70       | **0:11.57**    |  **150 MB**
-[jdupes](https://github.com/jbruchon/jdupes)           |  1.14     | C        | 1       |   5:19.08       | 3:26.42        |  386 MB
-[rdfind](https://github.com/pauldreik/rdfind)          |  1.4.1    | C++      | 1       |   5:26.80       | 3:29.34        |  534 MB
-[fdupes](https://github.com/adrianlopezroche/fdupes)   |  1.6.1    | C        | 1       |   7:48.82       | 6:25.02        |  393 MB
-[fdupes-java](https://github.com/cbismuth/fdupes-java) |  1.3.1    | Java     | 8       |   far too long  |                |  4.2 GB    
+Program                                                |  Version  | Language  | Time              | Peak Memory          
+-------------------------------------------------------|-----------|-----------|------------------:|--------------
+fclones                                                |  0.12.1   | Rust      |  0:34.59          | 266 MB
+[yadf](https://github.com/jRimbault/yadf)              |  0.15.2   | Rust      |  0:59.32          | 329 MB
+[czkawka](https://qarmin.github.io/czkawka/)           |  3.1.0    | Rust      |  2:09.00          | 1.4 GB
+[rmlint](https://github.com/sahib/rmlint)              |  2.9.0    | C, Python |  2:28.43          | 942 MB
+[jdupes](https://github.com/jbruchon/jdupes)           |  1.18.2   | C         |  5:01.91          | 332 MB
+[dupe-krill](https://github.com/kornelski/dupe-krill)  |  1.4.5    | Rust      |  5:09.52          | 706 MB
+[fdupes](https://github.com/adrianlopezroche/fdupes)   |  2.1.1    | C         |  5:46.19          | 342 MB
+[rdfind](https://github.com/pauldreik/rdfind)          |  1.4.1    | C++       |  5:53.07          | 496 MB
+[dupeguru](https://dupeguru.voltaicideas.net/)         |  4.1.1    | Python    |  7:49.89          | 1.4 GB
+[fdupes-java](https://github.com/cbismuth/fdupes-java) |  1.3.1    | Java      |  &gt; 20 minutes  | 4.2 GB    
 
 
 `fdupes-java` did not finish the test. I interrupted it after 20 minutes while
@@ -420,7 +422,7 @@ In this benchmark, the page cache was dropped before each run.
             
 Program                                                |  Version  | Language | Threads |  Time           |  Peak Memory
 -------------------------------------------------------|-----------|----------|--------:|----------------:|-------------:
-fclones                                                |  0.9.1    | Rust     | 1       | **0:19.45**     |  18.1 MB
+fclones                                                |  0.9.1    | Rust     | 1       |   0:19.45       |  18.1 MB
 [rdfind](https://github.com/pauldreik/rdfind)          |  1.3.5    | C++      | 1       |   0:33.70       |  18.5 MB
 [yadf](https://github.com/jRimbault/yadf)              |  0.14.1   | Rust     |         |   1:11.69       |  22.9 MB
 [jdupes](https://github.com/jbruchon/jdupes)           |  1.9      | C        | 1       |   1:18.47       |  15.7 MB
