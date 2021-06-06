@@ -356,7 +356,7 @@ checksum = "4443176a9f2c162692bd3d352d745ef9413eec5782a80d8fd6f8a1ac692a07f7"
 
 [[package]]
 name = "fclones"
-version = "0.12.0"
+version = "0.12.1"
 dependencies = [
  "atomic-counter",
  "block-utils",
@@ -372,6 +372,7 @@ dependencies = [
  "dunce",
  "fallible-iterator",
  "fiemap",
+ "filetime",
  "indicatif",
  "indoc",
  "itertools",
@@ -382,6 +383,7 @@ dependencies = [
  "metrohash",
  "nix",
  "nom",
+ "num_cpus",
  "rand",
  "rayon",
  "regex",
@@ -405,6 +407,18 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "084632422a59165633e28f8436545a6694b3d659405ceb3be0a441d4bfbf25d1"
 dependencies = [
  "bitflags",
+]
+
+[[package]]
+name = "filetime"
+version = "0.2.14"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1d34cfa13a63ae058bfa601fe9e313bbdb3746427c1459185464ce0fcf62e1e8"
+dependencies = [
+ "cfg-if 1.0.0",
+ "libc",
+ "redox_syscall",
+ "winapi",
 ]
 
 [[package]]
