@@ -1,6 +1,6 @@
 [package]
 name = "fclones"
-version = "0.12.1"
+version = "0.12.2"
 description = "Finds duplicate, unique, under- or over-replicated files"
 authors = ["Piotr Kołaczkowski <pkolaczk@gmail.com>"]
 repository = "https://github.com/pkolaczk/fclones"
