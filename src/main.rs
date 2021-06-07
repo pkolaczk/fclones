@@ -156,9 +156,9 @@ pub fn run_dedupe(op: DedupeOp, config: DedupeConfig, log: &mut Log) -> Result<(
                 None
             }
         })
+        .take_while(|g| g.is_some())
+        .map(|g| g.unwrap())
         .inspect(|_| progress.tick())
-        .fuse()
-        .flatten()
         .par_bridge();
 
     let script = dedupe(groups, op, &dedupe_config, log);

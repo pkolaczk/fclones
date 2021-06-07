@@ -283,6 +283,7 @@ impl<W: Write> ReportWriter<W> {
 pub struct TextReportIterator<R: Read> {
     stream: BufReader<R>,
     line_buf: String,
+    stopped_on_error: bool,
 }
 
 /// Helper struct to encapsulate the data in the header before each group of identical files
@@ -297,19 +298,27 @@ impl<R> TextReportIterator<R>
 where
     R: Read,
 {
+    fn new(input: BufReader<R>) -> TextReportIterator<R> {
+        TextReportIterator {
+            stream: input,
+            line_buf: String::new(),
+            stopped_on_error: false,
+        }
+    }
+
     fn read_first_non_comment_line(&mut self) -> io::Result<Option<&str>> {
         loop {
             self.line_buf.clear();
             self.stream.read_line(&mut self.line_buf)?;
-            let line = &self.line_buf;
-            if line.trim().is_empty() {
+            let line = self.line_buf.trim();
+            if line.is_empty() {
                 return Ok(None);
             }
             if !line.starts_with('#') {
                 break;
             }
         }
-        Ok(Some(&self.line_buf))
+        Ok(Some(self.line_buf.trim()))
     }
 
     fn read_group_header(&mut self) -> io::Result<Option<GroupHeader>> {
@@ -320,10 +329,10 @@ where
 
         lazy_static! {
             static ref GROUP_HEADER_RE: Regex =
-                Regex::new(r"^([a-f0-9]{32}), ([0-9]+) B [^*]* \* ([0-9]+):\n$").unwrap();
+                Regex::new(r"^([a-f0-9]{32}), ([0-9]+) B [^*]* \* ([0-9]+):").unwrap();
         }
 
-        let captures = GROUP_HEADER_RE.captures(header_str).ok_or_else(|| {
+        let captures = GROUP_HEADER_RE.captures(&header_str).ok_or_else(|| {
             Error::new(
                 ErrorKind::InvalidData,
                 format!("Malformed group header: {}", header_str),
@@ -368,17 +377,24 @@ impl<R: Read> FallibleIterator for TextReportIterator<R> {
     type Error = std::io::Error;
 
     fn next(&mut self) -> Result<Option<Self::Item>, Self::Error> {
-        Ok(match self.read_group_header()? {
-            Some(header) => {
+        if self.stopped_on_error {
+            return Ok(None);
+        }
+        match self.read_group_header() {
+            Ok(Some(header)) => {
                 let paths = self.read_paths(header.count)?;
-                Some(FileGroup {
+                Ok(Some(FileGroup {
                     file_len: header.file_len,
                     file_hash: header.file_hash,
                     files: paths,
-                })
+                }))
             }
-            None => None,
-        })
+            Ok(None) => Ok(None),
+            Err(e) => {
+                self.stopped_on_error = true;
+                Err(e)
+            }
+        }
     }
 }
 
@@ -512,10 +528,7 @@ impl<R: Read> TextReportReader<R> {
         };
         Ok(TextReportReader {
             header,
-            groups: TextReportIterator {
-                stream,
-                line_buf: String::new(),
-            },
+            groups: TextReportIterator::new(stream),
         })
     }
 }
@@ -588,5 +601,52 @@ mod test {
 
         let groups2: Vec<_> = reader.groups.collect().unwrap();
         assert_eq!(groups, groups2);
+    }
+
+    #[test]
+    fn test_text_report_iterator_stops_on_error() {
+        let mut output = NamedTempFile::new().unwrap();
+        let input = output.reopen().unwrap();
+        writeln!(output, "7d6ebf613bf94dfd976d169ff6ae02c3, 4 B (4 B) * 2:").unwrap();
+        writeln!(output, "    /file1").unwrap();
+        writeln!(output, "    /file2").unwrap();
+        writeln!(output, "malformed group header:").unwrap();
+        writeln!(output, "    /file1").unwrap();
+        writeln!(output, "    /file2").unwrap();
+        drop(output);
+
+        let mut group_iterator = TextReportIterator::new(BufReader::new(input));
+        assert!(group_iterator.next().is_ok());
+        assert!(group_iterator.next().is_err());
+        assert!(group_iterator.next().unwrap().is_none());
+    }
+
+    #[test]
+    fn test_text_report_iterator_handles_windows_endlines() {
+        let mut output = NamedTempFile::new().unwrap();
+        let input = output.reopen().unwrap();
+        write!(
+            output,
+            "7d6ebf613bf94dfd976d169ff6ae02c3, 4 B (4 B) * 2:\r\n"
+        )
+        .unwrap();
+        write!(output, "    /file1\r\n").unwrap();
+        write!(output, "    /file2\r\n").unwrap();
+        write!(
+            output,
+            "7d6edf123096e5f4b7fcd002351faccc, 4 B (4 B) * 2:\r\n"
+        )
+        .unwrap();
+        write!(output, "    /file3\r\n").unwrap();
+        write!(output, "    /file4\r\n").unwrap();
+        drop(output);
+
+        let mut group_iterator = TextReportIterator::new(BufReader::new(input));
+        let g = group_iterator.next().unwrap().unwrap();
+        assert!(g.files.contains(&Path::from("/file1")));
+        assert!(g.files.contains(&Path::from("/file2")));
+        let g = group_iterator.next().unwrap().unwrap();
+        assert!(g.files.contains(&Path::from("/file3")));
+        assert!(g.files.contains(&Path::from("/file4")));
     }
 }
