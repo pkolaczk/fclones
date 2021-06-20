@@ -1,9 +1,9 @@
 use std::collections::HashMap;
 use std::ffi::{OsStr, OsString};
 use std::fs::File;
-use std::io;
 use std::io::{stdin, Write};
 use std::process::exit;
+use std::{fs, io};
 
 use fallible_iterator::FallibleIterator;
 use itertools::Itertools;
@@ -50,28 +50,40 @@ fn configure_main_thread_pool(pool_sizes: &HashMap<OsString, Parallelism>) {
         .unwrap();
 }
 
-fn run_group(config: &GroupConfig, log: &mut Log) -> Result<(), Error> {
-    let mut access_error = false;
-    let mut has_input_files: bool = false;
-    for path in config.paths.iter() {
-        match std::fs::metadata(path) {
-            Ok(metadata) if metadata.is_dir() && config.depth == Some(0) => log.warn(format!(
-                "Skipping directory {} because recursive scan is disabled.",
-                path.display()
-            )),
-            Err(e) => {
-                log.err(format!("Can't access {}: {}", path.display(), e));
-                access_error = true;
+fn run_group(mut config: GroupConfig, log: &mut Log) -> Result<(), Error> {
+    if !config.stdin {
+        // If files aren't streamed on stdin, we can inspect all of them now
+        // and exit early on any access error. If depth is set to 0 (recursive scan disabled)
+        // we also want to filter out directories and terminate with an error if there are
+        // no files in the input.
+        // Unfortunately we can't fail fast here when the list of files
+        // is streamed from the standard input, because we'd have to collect all paths into a vector
+        // list first, but we don't want to do this because there may be many.
+        // In that case, we just let the lower layers handle eventual
+        // problems and report as warnings.
+        let mut access_error = false;
+        let depth = config.depth;
+        config.paths.retain(|p| match fs::metadata(&p) {
+            Ok(m) if m.is_dir() && depth == Some(0) => {
+                log.warn(format!(
+                    "Skipping directory {} because recursive scan is disabled.",
+                    p.display()
+                ));
+                false
             }
-            Ok(_) => has_input_files = true,
+            Err(e) => {
+                log.err(format!("Can't access {}: {}", p.display(), e));
+                access_error = true;
+                false
+            }
+            Ok(_) => true,
+        });
+        if access_error {
+            return Err(Error::from("Some input paths could not be accessed."));
         }
-    }
-
-    if access_error {
-        return Err(Error::from(""));
-    }
-    if !has_input_files {
-        return Err(Error::from("No input files"));
+        if config.paths.is_empty() {
+            return Err(Error::from("No input files."));
+        }
     }
 
     configure_main_thread_pool(&config.thread_pool_sizes());
@@ -187,7 +199,7 @@ fn main() {
     }
 
     let result = match config.command {
-        Command::Group(config) => run_group(&config, &mut log),
+        Command::Group(config) => run_group(config, &mut log),
         Command::Remove(config) => run_dedupe(DedupeOp::Remove, config, &mut log),
         Command::Link { config, soft: true } => run_dedupe(DedupeOp::SoftLink, config, &mut log),
         Command::Link {

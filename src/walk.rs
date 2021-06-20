@@ -1,7 +1,7 @@
 use std::env::current_dir;
 use std::fs::{read_link, symlink_metadata, DirEntry, FileType, ReadDir};
-use std::io;
 use std::sync::Arc;
+use std::{fs, io};
 
 use dashmap::DashSet;
 use rayon::Scope;
@@ -113,7 +113,13 @@ impl<'a> Walk<'a> {
         rayon::scope(|scope| {
             for p in roots.into_iter() {
                 let p = self.absolute(p);
-                scope.spawn(|scope| self.visit_path(p, scope, 0, &state))
+                match fs::metadata(&p.to_path_buf()) {
+                    Ok(metadata) if metadata.is_dir() && self.depth == 0 => self.log_warn(format!(
+                        "Skipping directory {} because recursive scan is disabled.",
+                        p
+                    )),
+                    _ => scope.spawn(|scope| self.visit_path(p, scope, 0, &state)),
+                }
             }
         });
     }
