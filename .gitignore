@@ -3,3 +3,4 @@
 **/*.rs.bk
 .idea
 .rpm
+*.iml
