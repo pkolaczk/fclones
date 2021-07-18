@@ -278,10 +278,24 @@ impl<W: Write> ReportWriter<W> {
     }
 }
 
+/// Iterator over groups of files, read form the report
+pub type GroupIterator = dyn FallibleIterator<Item = FileGroup<Path>, Error = io::Error> + Send;
+
+/// Reads a report from a stream.
+pub trait ReportReader {
+    /// Reads the header. Must be called exactly once before reading the groups.
+    /// Reports an io::Error with ErrorKind::InvalidData
+    /// if the report header is malformed.
+    fn read_header(&mut self) -> io::Result<ReportHeader>;
+
+    /// Opens an iterator over groups.
+    fn read_groups(self: Box<Self>) -> io::Result<Box<GroupIterator>>;
+}
+
 /// Iterates the contents of the report.
 /// Each emitted item is a group of duplicate files.
-pub struct TextReportIterator<R: Read> {
-    stream: BufReader<R>,
+pub struct TextReportIterator<R: BufRead> {
+    stream: R,
     line_buf: String,
     stopped_on_error: bool,
 }
@@ -296,9 +310,9 @@ struct GroupHeader {
 
 impl<R> TextReportIterator<R>
 where
-    R: Read,
+    R: BufRead,
 {
-    fn new(input: BufReader<R>) -> TextReportIterator<R> {
+    fn new(input: R) -> TextReportIterator<R> {
         TextReportIterator {
             stream: input,
             line_buf: String::new(),
@@ -372,7 +386,7 @@ where
     }
 }
 
-impl<R: Read> FallibleIterator for TextReportIterator<R> {
+impl<R: BufRead + 'static> FallibleIterator for TextReportIterator<R> {
     type Item = FileGroup<Path>;
     type Error = std::io::Error;
 
@@ -403,24 +417,24 @@ impl<R: Read> FallibleIterator for TextReportIterator<R> {
 /// Currently supports only the default text report format.
 /// Does not load the whole report into memory.
 /// Allows iterating over groups of files.
-pub struct TextReportReader<R: Read> {
-    pub header: ReportHeader,
-    pub groups: TextReportIterator<R>,
+pub struct TextReportReader<R: BufRead> {
+    pub stream: R,
 }
 
-impl<R: Read> TextReportReader<R> {
-    fn read_line(stream: &mut impl BufRead) -> io::Result<String> {
+impl<R: BufRead> TextReportReader<R> {
+    /// Creates a new reader for reading from the given stream
+    pub fn new(stream: R) -> TextReportReader<R> {
+        TextReportReader { stream }
+    }
+
+    fn read_line(&mut self) -> io::Result<String> {
         let mut line_buf = String::new();
-        stream.read_line(&mut line_buf)?;
+        self.stream.read_line(&mut line_buf)?;
         Ok(line_buf)
     }
 
-    fn read_extract(
-        stream: &mut impl BufRead,
-        regex: &Regex,
-        msg: &str,
-    ) -> io::Result<Vec<String>> {
-        let line = Self::read_line(stream)?;
+    fn read_extract(&mut self, regex: &Regex, msg: &str) -> io::Result<Vec<String>> {
+        let line = self.read_line()?;
         Ok(regex
             .captures(line.trim())
             .ok_or_else(|| Error::new(ErrorKind::InvalidData, msg.to_owned()))?
@@ -429,14 +443,10 @@ impl<R: Read> TextReportReader<R> {
             .map(|c| c.unwrap().as_str().to_owned())
             .collect())
     }
+}
 
-    /// Creates a new reader for reading from the given stream and
-    /// decodes the report header.
-    /// Reports an io::Error with ErrorKind::InvalidData
-    /// if the report header is malformed.
-    pub fn new(input_stream: R) -> io::Result<TextReportReader<R>> {
-        let mut stream = BufReader::new(input_stream);
-
+impl<R: BufRead + Send + 'static> ReportReader for TextReportReader<R> {
+    fn read_header(&mut self) -> io::Result<ReportHeader> {
         lazy_static! {
             static ref VERSION_RE: Regex =
                 Regex::new(r"^# Report by fclones ([0-9]+\.[0-9]+\.[0-9]+)").unwrap();
@@ -449,54 +459,42 @@ impl<R: Read> TextReportReader<R> {
                     .unwrap();
         }
 
-        let version = Self::read_extract(
-            &mut stream,
-            &VERSION_RE,
-            "Not a default fclones report. \
+        let version = self
+            .read_extract(
+                &VERSION_RE,
+                "Not a default fclones report. \
             Formats other than the default one are not supported yet.",
-        )?
-        .swap_remove(0);
-        let timestamp = Self::read_extract(
-            &mut stream,
-            &TIMESTAMP_RE,
-            "Malformed header: Missing timestamp",
-        )?
-        .swap_remove(0);
+            )?
+            .swap_remove(0);
+        let timestamp = self
+            .read_extract(&TIMESTAMP_RE, "Malformed header: Missing timestamp")?
+            .swap_remove(0);
         let timestamp = DateTime::parse_from_str(&timestamp, TIMESTAMP_FMT).map_err(|e| {
             Error::new(
                 ErrorKind::InvalidData,
                 format!("Malformed header: Failed to parse timestamp: {}", e),
             )
         })?;
-        let command = Self::read_extract(
-            &mut stream,
-            &COMMAND_RE,
-            "Malformed header: Missing command",
-        )?
-        .swap_remove(0);
+        let command = self
+            .read_extract(&COMMAND_RE, "Malformed header: Missing command")?
+            .swap_remove(0);
         let command = shell_words::split(&command).map_err(|e| {
             Error::new(
                 ErrorKind::InvalidData,
                 format!("Malformed header: Failed to parse command arguments: {}", e),
             )
         })?;
-        let group_count = Self::read_extract(
-            &mut stream,
-            &GROUP_COUNT_RE,
-            "Malformed header: Missing group count",
-        )?
-        .swap_remove(0);
+        let group_count = self
+            .read_extract(&GROUP_COUNT_RE, "Malformed header: Missing group count")?
+            .swap_remove(0);
         let group_count: usize = group_count.parse().map_err(|e| {
             Error::new(
                 ErrorKind::InvalidData,
                 format!("Malformed header: Failed to parse group count: {}", e),
             )
         })?;
-        let stats_line = Self::read_extract(
-            &mut stream,
-            &STATS_RE,
-            "Malformed header: Missing file statistics line",
-        )?;
+        let stats_line =
+            self.read_extract(&STATS_RE, "Malformed header: Missing file statistics line")?;
         let redundant_file_size = FileLen(stats_line[0].parse().map_err(|e| {
             Error::new(
                 ErrorKind::InvalidData,
@@ -516,7 +514,7 @@ impl<R: Read> TextReportReader<R> {
             )
         })?;
 
-        let header = ReportHeader {
+        Ok(ReportHeader {
             version,
             timestamp,
             command,
@@ -525,12 +523,21 @@ impl<R: Read> TextReportReader<R> {
                 redundant_file_count,
                 redundant_file_size,
             }),
-        };
-        Ok(TextReportReader {
-            header,
-            groups: TextReportIterator::new(stream),
         })
     }
+
+    fn read_groups(
+        self: Box<Self>,
+    ) -> io::Result<Box<dyn FallibleIterator<Item = FileGroup<Path>, Error = Error> + Send>> {
+        Ok(Box::new(TextReportIterator::new(self.stream)))
+    }
+}
+
+/// Returns a `ReportReader` that can read and decode the report from the given stream.
+/// Automatically detects the type of the report.
+pub fn open_report(r: impl Read + Send + 'static) -> io::Result<Box<dyn ReportReader>> {
+    let buf_reader = BufReader::with_capacity(16 * 1024, r);
+    Ok(Box::new(TextReportReader::new(buf_reader)))
 }
 
 #[cfg(test)]
@@ -557,23 +564,21 @@ mod test {
 
     #[test]
     fn test_text_report_reader_reads_header() {
-        let header = dummy_report_header();
+        let header1 = dummy_report_header();
         let groups: Vec<FileGroup<Path>> = vec![];
 
         let output = NamedTempFile::new().unwrap();
         let input = output.reopen().unwrap();
 
         let mut writer = ReportWriter::new(output, false);
-        writer.write_as_text(&header, groups.into_iter()).unwrap();
+        writer.write_as_text(&header1, groups.into_iter()).unwrap();
 
-        let reader = TextReportReader::new(input).unwrap();
-        assert_eq!(reader.header.version, header.version);
-        assert_eq!(reader.header.command, header.command);
-        assert_eq!(
-            reader.header.timestamp.timestamp(),
-            header.timestamp.timestamp()
-        );
-        assert_eq!(reader.header.stats, header.stats);
+        let mut reader = TextReportReader::new(BufReader::new(input));
+        let header2 = reader.read_header().unwrap();
+        assert_eq!(header2.version, header1.version);
+        assert_eq!(header2.command, header1.command);
+        assert_eq!(header2.timestamp.timestamp(), header1.timestamp.timestamp());
+        assert_eq!(header2.stats, header1.stats);
     }
 
     #[test]
@@ -597,9 +602,10 @@ mod test {
 
         let mut writer = ReportWriter::new(output, false);
         writer.write_as_text(&header, groups.iter()).unwrap();
-        let reader = TextReportReader::new(input).unwrap();
+        let mut reader = Box::new(TextReportReader::new(BufReader::new(input)));
+        reader.read_header().unwrap();
 
-        let groups2: Vec<_> = reader.groups.collect().unwrap();
+        let groups2: Vec<_> = reader.read_groups().unwrap().collect().unwrap();
         assert_eq!(groups, groups2);
     }
 
