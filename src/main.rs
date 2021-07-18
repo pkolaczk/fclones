@@ -13,7 +13,7 @@ use structopt::StructOpt;
 
 use fclones::config::{Command, Config, DedupeConfig, GroupConfig, Parallelism};
 use fclones::log::Log;
-use fclones::report::TextReportReader;
+use fclones::report::open_report;
 use fclones::{dedupe, log_script, run_script, DedupeOp};
 use fclones::{group_files, write_report, Error};
 
@@ -121,10 +121,11 @@ fn get_output_writer(config: &DedupeConfig) -> Result<Box<dyn Write + Send>, Err
 }
 
 pub fn run_dedupe(op: DedupeOp, config: DedupeConfig, log: &mut Log) -> Result<(), Error> {
+    let input_error = |e: io::Error| format!("Input error: {}", e);
     let mut dedupe_config = config;
-    let reader = TextReportReader::new(stdin()).map_err(|e| format!("Input error: {}", e))?;
-
-    let find_config: Config = Config::from_iter_safe(&reader.header.command).map_err(|e| {
+    let mut reader = open_report(stdin()).map_err(input_error)?;
+    let header = reader.read_header().map_err(input_error)?;
+    let find_config: Config = Config::from_iter_safe(&header.command).map_err(|e| {
         let message: String = extract_error_cause(&e.message);
         format!("Unrecognized earlier fclones configuration: {}", message)
     })?;
@@ -141,7 +142,7 @@ pub fn run_dedupe(op: DedupeOp, config: DedupeConfig, log: &mut Log) -> Result<(
 
     dedupe_config.rf_over = Some(rf_over);
     if dedupe_config.modified_before.is_none() {
-        dedupe_config.modified_before = Some(reader.header.timestamp);
+        dedupe_config.modified_before = Some(header.timestamp);
     }
 
     if dedupe_config.dry_run {
@@ -151,15 +152,17 @@ pub fn run_dedupe(op: DedupeOp, config: DedupeConfig, log: &mut Log) -> Result<(
     }
 
     let mut result: Result<(), io::Error> = Ok(());
-    let group_count = reader.header.stats.map(|s| s.group_count as u64);
+    let group_count = header.stats.map(|s| s.group_count as u64);
     let progress = match group_count {
         _ if dedupe_config.dry_run && dedupe_config.output.is_none() => log.hidden(),
         Some(group_count) => log.progress_bar("Deduplicating", group_count),
         None => log.spinner("Deduplicating"),
     };
 
-    let groups = reader
-        .groups
+    let groups = reader.read_groups();
+
+    let groups = groups
+        .map_err(input_error)?
         .iterator()
         .map(|g| match g {
             Ok(g) => Some(g),
