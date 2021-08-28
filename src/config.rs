@@ -2,6 +2,7 @@
 
 use std::collections::HashMap;
 use std::ffi::OsString;
+use std::fmt::{Display, Formatter};
 use std::io;
 use std::io::{stdin, BufRead, BufReader};
 use std::path::PathBuf;
@@ -28,6 +29,17 @@ pub enum OutputFormat {
 impl OutputFormat {
     pub fn variants() -> Vec<&'static str> {
         vec!["default", "fdupes", "csv", "json"]
+    }
+}
+
+impl Display for OutputFormat {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        match self {
+            OutputFormat::Default => f.pad("default"),
+            OutputFormat::Fdupes => f.pad("fdupes"),
+            OutputFormat::Csv => f.pad("csv"),
+            OutputFormat::Json => f.pad("json"),
+        }
     }
 }
 

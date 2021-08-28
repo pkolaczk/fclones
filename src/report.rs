@@ -15,11 +15,11 @@ use lazy_static::lazy_static;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 
-use crate::{FileGroup, TIMESTAMP_FMT};
 use crate::config::OutputFormat;
 use crate::files::{FileHash, FileLen};
 use crate::path::Path;
 use crate::util::IteratorWrapper;
+use crate::{FileGroup, TIMESTAMP_FMT};
 
 /// Describes how many redundant files were found, in how many groups,
 /// how much space can be reclaimed, etc.
@@ -55,6 +55,8 @@ struct SerializableReport<'a, G: Serialize> {
 
 /// A structure for holding contents of the report after fully deserializing the report.
 /// Used only by report readers that deserialize the whole report at once.
+/// Paths are represented as strings, because strings are more memory efficient than Path here,
+/// because we can't do prefix compression that `Path` was designed for.
 #[derive(Deserialize)]
 struct DeserializedReport {
     header: ReportHeader,
@@ -269,7 +271,7 @@ impl<W: Write> ReportWriter<W> {
     /// Writes the report in the format given by `format` parameter.
     pub fn write<I, G, P>(
         &mut self,
-        format: &OutputFormat,
+        format: OutputFormat,
         header: &ReportHeader,
         groups: I,
     ) -> io::Result<()>
@@ -469,11 +471,7 @@ impl<R: BufRead + Send + 'static> ReportReader for TextReportReader<R> {
         }
 
         let version = self
-            .read_extract(
-                &VERSION_RE,
-                "Not a default fclones report. \
-            Formats other than the default one are not supported yet.",
-            )?
+            .read_extract(&VERSION_RE, "Malformed header: Missing fclones version")?
             .swap_remove(0);
         let timestamp = self
             .read_extract(&TIMESTAMP_RE, "Malformed header: Missing timestamp")?
@@ -542,7 +540,7 @@ impl<R: BufRead + Send + 'static> ReportReader for TextReportReader<R> {
     }
 }
 
-/// Reads the report from a JSON file.
+/// Reads a report from a JSON file.
 /// Currently it is not very memory efficient, because limited to reading the whole file and
 /// deserializing all data into memory.
 pub struct JsonReportReader {
@@ -582,13 +580,27 @@ impl ReportReader for JsonReportReader {
 /// Returns a `ReportReader` that can read and decode the report from the given stream.
 /// Automatically detects the type of the report.
 pub fn open_report(r: impl Read + Send + 'static) -> io::Result<Box<dyn ReportReader>> {
-    let buf_reader = BufReader::with_capacity(16 * 1024, r);
-    Ok(Box::new(TextReportReader::new(buf_reader)))
+    let mut buf_reader = BufReader::with_capacity(16 * 1024, r);
+    let preview = buf_reader.fill_buf()?;
+    let preview = String::from_utf8_lossy(preview);
+    if preview.starts_with('{') {
+        Ok(Box::new(JsonReportReader::new(buf_reader)?))
+    } else if preview.starts_with('#') {
+        Ok(Box::new(TextReportReader::new(buf_reader)))
+    } else {
+        Err(io::Error::new(
+            ErrorKind::InvalidData,
+            format!(
+                "Unknown report format. Supported formats are: {}, {}",
+                OutputFormat::Default,
+                OutputFormat::Json
+            ),
+        ))
+    }
 }
 
 #[cfg(test)]
 mod test {
-    use chrono::Utc;
     use tempfile::NamedTempFile;
 
     use crate::files::{FileHash, FileLen};
@@ -600,7 +612,8 @@ mod test {
         ReportHeader {
             command: vec!["fclones".to_owned(), "find".to_owned(), ".".to_owned()],
             version: env!("CARGO_PKG_VERSION").to_owned(),
-            timestamp: DateTime::from(Utc::now()),
+            timestamp: DateTime::parse_from_str("2021-08-27 12:11:23.456 +0000", TIMESTAMP_FMT)
+                .unwrap(),
             stats: Some(FileStats {
                 group_count: 4,
                 redundant_file_count: 234,
@@ -748,5 +761,24 @@ mod test {
 
         let groups2: Vec<_> = reader.read_groups().unwrap().collect().unwrap();
         assert_eq!(groups, groups2);
+    }
+
+    fn write_read_header(header: &ReportHeader, format: OutputFormat) -> ReportHeader {
+        let groups: Vec<FileGroup<Path>> = vec![];
+        let output = NamedTempFile::new().unwrap();
+        let input = output.reopen().unwrap();
+        let mut writer = ReportWriter::new(output, false);
+        writer.write(format, header, groups.iter()).unwrap();
+        let mut reader = open_report(input).unwrap();
+        reader.read_header().unwrap()
+    }
+
+    #[test]
+    fn test_format_autodetection() {
+        let header = dummy_report_header();
+        let reread_header_1 = write_read_header(&header, OutputFormat::Default);
+        let reread_header_2 = write_read_header(&header, OutputFormat::Json);
+        assert_eq!(header, reread_header_1);
+        assert_eq!(header, reread_header_2);
     }
 }
