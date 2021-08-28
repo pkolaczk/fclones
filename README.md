@@ -184,8 +184,10 @@ Exclude a part of the directory tree from the scan:
     fclones group / --exclude '/dev/**' '/proc/**'    
 
 ### Removing Files
-To remove files or replace them by links, you need to send the default report produced by
+To remove files or replace them by links, you need to send the report produced by
 `fclones group` to the standard input of `fclones remove` or `fclones link` command.
+The report format is detected automatically. Currently, `default` and `json` report 
+formats are supported. 
 
 Assuming the list of duplicates has been saved in file `dupes.txt`, the following commands would remove
 the redundant files: 
