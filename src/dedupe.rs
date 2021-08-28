@@ -849,8 +849,12 @@ mod test {
     #[test]
     fn test_partition_respects_creation_time_priority() {
         with_dir("dedupe/partition/ctime_priority", |root| {
+            if fs::metadata(root).unwrap().created().is_err() {
+                // can't run the test because the filesystem doesn't support fetching
+                // file creation time
+                return;
+            }
             let group = make_group(root);
-
             let mut config = DedupeConfig::default();
             config.priority = vec![Priority::Newest];
             let partitioned_1 = partition(group.clone(), &config, &Log::new()).unwrap();
@@ -899,7 +903,7 @@ mod test {
         with_dir("dedupe/partition/keep", |root| {
             let group = make_group(root);
             let mut config = DedupeConfig::default();
-            config.priority = vec![Priority::Oldest];
+            config.priority = vec![Priority::LeastRecentlyModified];
             config.keep_name_patterns = vec![Pattern::glob("*_1").unwrap()];
             let p = partition(group.clone(), &config, &Log::new()).unwrap();
             assert_eq!(p.to_keep.len(), 1);
@@ -918,7 +922,7 @@ mod test {
         with_dir("dedupe/partition/drop", |root| {
             let group = make_group(root);
             let mut config = DedupeConfig::default();
-            config.priority = vec![Priority::Oldest];
+            config.priority = vec![Priority::LeastRecentlyModified];
             config.name_patterns = vec![Pattern::glob("*_3").unwrap()];
             let p = partition(group.clone(), &config, &Log::new()).unwrap();
             assert_eq!(p.to_drop.len(), 1);
@@ -937,7 +941,7 @@ mod test {
         with_dir("dedupe/partition/dedupe_script", |root| {
             let group = make_group(root);
             let mut config = DedupeConfig::default();
-            config.priority = vec![Priority::Oldest]; // remove oldest
+            config.priority = vec![Priority::LeastRecentlyModified];
             let log = Log::new();
             let script = dedupe(vec![group], DedupeOp::Remove, &config, &log);
             let dedupe_result = run_script(script, &log);
