@@ -1,31 +1,29 @@
 //! Output formatting.
 
+use std::borrow::Borrow;
+use std::cell::Cell;
+use std::cmp::min;
+use std::fmt::Display;
 use std::io;
 use std::io::{BufRead, BufReader, Error, ErrorKind, Read, Write};
 
+use chrono::{DateTime, FixedOffset};
 use console::style;
+use fallible_iterator::FallibleIterator;
+use itertools::Itertools;
 use lazy_static::lazy_static;
 use regex::Regex;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
+use crate::{FileGroup, TIMESTAMP_FMT};
 use crate::config::OutputFormat;
 use crate::files::{FileHash, FileLen};
-
-use crate::util::IteratorWrapper;
-use crate::{FileGroup, TIMESTAMP_FMT};
-use chrono::{DateTime, FixedOffset};
-use fallible_iterator::FallibleIterator;
-
-use std::borrow::Borrow;
-use std::cell::Cell;
-
 use crate::path::Path;
-use std::cmp::min;
-use std::fmt::Display;
+use crate::util::IteratorWrapper;
 
 /// Describes how many redundant files were found, in how many groups,
 /// how much space can be reclaimed, etc.
-#[derive(Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct FileStats {
     pub group_count: usize,
     pub redundant_file_count: usize,
@@ -33,7 +31,7 @@ pub struct FileStats {
 }
 
 /// Data in the header of the whole report.
-#[derive(Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct ReportHeader {
     /// The program version that produced the report
     pub version: String,
@@ -44,6 +42,23 @@ pub struct ReportHeader {
     /// Information on the number of duplicate files reported.
     /// This is optional to allow streaming the report out before finding all files in the future.
     pub stats: Option<FileStats>,
+}
+
+/// A helper struct that allows to serialize the report with serde.
+/// Together with `IteratorWrapper` used as `groups` it allows to serialize
+/// a report in a streaming way, without the need to keep all groups in memory at once.
+#[derive(Serialize)]
+struct SerializableReport<'a, G: Serialize> {
+    header: &'a ReportHeader,
+    groups: G,
+}
+
+/// A structure for holding contents of the report after fully deserializing the report.
+/// Used only by report readers that deserialize the whole report at once.
+#[derive(Deserialize)]
+struct DeserializedReport {
+    header: ReportHeader,
+    groups: Vec<FileGroup<String>>,
 }
 
 /// Formats and writes duplicate files report to a stream.
@@ -242,13 +257,7 @@ impl<W: Write> ReportWriter<W> {
         I: IntoIterator<Item = P>,
         P: Serialize,
     {
-        #[derive(Serialize)]
-        struct Report<'a, G: Serialize> {
-            header: &'a ReportHeader,
-            groups: G,
-        }
-
-        let report = Report {
+        let report = SerializableReport {
             header,
             groups: IteratorWrapper(Cell::new(Some(groups))),
         };
@@ -533,6 +542,43 @@ impl<R: BufRead + Send + 'static> ReportReader for TextReportReader<R> {
     }
 }
 
+/// Reads the report from a JSON file.
+/// Currently it is not very memory efficient, because limited to reading the whole file and
+/// deserializing all data into memory.
+pub struct JsonReportReader {
+    report: DeserializedReport,
+}
+
+impl JsonReportReader {
+    pub fn new<R: Read>(stream: R) -> io::Result<JsonReportReader> {
+        let report: DeserializedReport = serde_json::from_reader(stream).map_err(|e| {
+            Error::new(
+                ErrorKind::InvalidData,
+                format!("Failed to deserialize JSON report: {}", e),
+            )
+        })?;
+        Ok(JsonReportReader { report })
+    }
+}
+
+impl ReportReader for JsonReportReader {
+    fn read_header(&mut self) -> io::Result<ReportHeader> {
+        Ok(self.report.header.clone())
+    }
+
+    fn read_groups(self: Box<Self>) -> io::Result<Box<GroupIterator>> {
+        let iter = self.report.groups.into_iter().map(|g| {
+            Ok(FileGroup {
+                file_len: g.file_len,
+                file_hash: g.file_hash,
+                files: g.files.iter().map(|s| Path::from(s.as_str())).collect_vec(),
+            })
+        });
+        let iter = fallible_iterator::convert(iter);
+        Ok(Box::new(iter))
+    }
+}
+
 /// Returns a `ReportReader` that can read and decode the report from the given stream.
 /// Automatically detects the type of the report.
 pub fn open_report(r: impl Read + Send + 'static) -> io::Result<Box<dyn ReportReader>> {
@@ -542,12 +588,13 @@ pub fn open_report(r: impl Read + Send + 'static) -> io::Result<Box<dyn ReportRe
 
 #[cfg(test)]
 mod test {
-    use super::*;
+    use chrono::Utc;
+    use tempfile::NamedTempFile;
+
     use crate::files::{FileHash, FileLen};
     use crate::path::Path;
 
-    use chrono::Utc;
-    use tempfile::NamedTempFile;
+    use super::*;
 
     fn dummy_report_header() -> ReportHeader {
         ReportHeader {
@@ -654,5 +701,52 @@ mod test {
         let g = group_iterator.next().unwrap().unwrap();
         assert!(g.files.contains(&Path::from("/file3")));
         assert!(g.files.contains(&Path::from("/file4")));
+    }
+
+    #[test]
+    fn test_json_report_header() {
+        let header1 = dummy_report_header();
+        let groups: Vec<FileGroup<Path>> = vec![];
+
+        let output = NamedTempFile::new().unwrap();
+        let input = output.reopen().unwrap();
+
+        let mut writer = ReportWriter::new(output, false);
+        writer.write_as_json(&header1, groups.into_iter()).unwrap();
+
+        let mut reader = JsonReportReader::new(input).unwrap();
+        let header2 = reader.read_header().unwrap();
+        assert_eq!(header2.version, header1.version);
+        assert_eq!(header2.command, header1.command);
+        assert_eq!(header2.timestamp.timestamp(), header1.timestamp.timestamp());
+        assert_eq!(header2.stats, header1.stats);
+    }
+
+    #[test]
+    fn test_json_report_reader_reads_files() {
+        let header = dummy_report_header();
+        let groups = vec![
+            FileGroup {
+                file_len: FileLen(100),
+                file_hash: FileHash(0x00112233445566778899aabbccddeeff),
+                files: vec![Path::from("a"), Path::from("b")],
+            },
+            FileGroup {
+                file_len: FileLen(40),
+                file_hash: FileHash(0x0000000000000555555555ffffffffff),
+                files: vec![Path::from("c"), Path::from("d")],
+            },
+        ];
+
+        let output = NamedTempFile::new().unwrap();
+        let input = output.reopen().unwrap();
+
+        let mut writer = ReportWriter::new(output, false);
+        writer.write_as_json(&header, groups.iter()).unwrap();
+        let mut reader = Box::new(JsonReportReader::new(input).unwrap());
+        reader.read_header().unwrap();
+
+        let groups2: Vec<_> = reader.read_groups().unwrap().collect().unwrap();
+        assert_eq!(groups, groups2);
     }
 }
