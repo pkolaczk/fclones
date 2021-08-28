@@ -93,7 +93,9 @@ impl Sub<FileLen> for FilePos {
 
 /// Represents length of data, in bytes.
 /// Provides more type safety and nicer formatting over using a raw u64.
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, Serialize, Default)]
+#[derive(
+    Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, Deserialize, Serialize, Default,
+)]
 pub struct FileLen(pub u64);
 
 impl FileLen {
@@ -411,6 +413,17 @@ impl Serialize for FileHash {
     }
 }
 
+impl<'de> Deserialize<'de> for FileHash {
+    fn deserialize<D>(deserializer: D) -> Result<FileHash, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let s = String::deserialize(deserializer)?;
+        let hash_value = u128::from_str_radix(s.as_str(), 16).map_err(serde::de::Error::custom)?;
+        Ok(FileHash(hash_value))
+    }
+}
+
 #[cfg(unix)]
 fn to_off_t(offset: u64) -> libc::off_t {
     min(libc::off_t::MAX as u64, offset) as libc::off_t
@@ -628,13 +641,13 @@ pub(crate) fn file_hash_or_log_err(
 
 #[cfg(test)]
 mod test {
-
-    use super::*;
-
-    use crate::path::Path;
     use std::fs::{create_dir_all, File};
     use std::io::Write;
     use std::path::PathBuf;
+
+    use crate::path::Path;
+
+    use super::*;
 
     #[test]
     fn test_format_bytes() {
