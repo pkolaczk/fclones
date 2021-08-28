@@ -918,13 +918,13 @@ pub fn write_report(config: &GroupConfig, log: &Log, groups: &[FileGroup<Path>])
             let iter = groups.iter().inspect(|_g| progress.tick());
             let file = BufWriter::new(File::create(path)?);
             let mut reporter = ReportWriter::new(file, false);
-            reporter.write(&config.format, &header, iter)
+            reporter.write(config.format, &header, iter)
         }
         None => {
             let term = Term::stdout();
             let color = term.is_term();
             let mut reporter = ReportWriter::new(BufWriter::new(term), color);
-            reporter.write(&config.format, &header, groups.iter())
+            reporter.write(config.format, &header, groups.iter())
         }
     }
 }
