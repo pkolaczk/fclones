@@ -357,7 +357,7 @@ where
                 Regex::new(r"^([a-f0-9]{32}), ([0-9]+) B [^*]* \* ([0-9]+):").unwrap();
         }
 
-        let captures = GROUP_HEADER_RE.captures(&header_str).ok_or_else(|| {
+        let captures = GROUP_HEADER_RE.captures(header_str).ok_or_else(|| {
             Error::new(
                 ErrorKind::InvalidData,
                 format!("Malformed group header: {}", header_str),

@@ -100,9 +100,9 @@ fn run_group(mut config: GroupConfig, log: &mut Log) -> Result<(), Error> {
     }
 
     log.info("Started grouping");
-    let results = group_files(&config, &log).map_err(|e| Error::new(e.message))?;
+    let results = group_files(&config, log).map_err(|e| Error::new(e.message))?;
 
-    write_report(&config, &log, &results)
+    write_report(&config, log, &results)
         .map_err(|e| Error::new(format!("Failed to write report: {}", e)))
 }
 

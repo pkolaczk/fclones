@@ -89,7 +89,7 @@ pub enum FsCommand {
 
 impl FsCommand {
     fn remove(path: &Path) -> io::Result<()> {
-        let _ = FileLock::new(&path)?;
+        let _ = FileLock::new(path)?;
         fs::remove_file(path.to_path_buf())
             .map_err(|e| io::Error::new(e.kind(), format!("Failed to remove file {}: {}", path, e)))
     }
@@ -174,14 +174,14 @@ impl FsCommand {
     /// If the function fails, moves the file back to the original location.
     /// If the function succeeds, removes the file permanently.
     fn safe_remove<R>(path: &Path, f: impl Fn(&Path) -> io::Result<R>, log: &Log) -> io::Result<R> {
-        let _ = FileLock::new(&path)?; // don't remove a locked file
+        let _ = FileLock::new(path)?; // don't remove a locked file
         let tmp = Self::temp_file(path);
-        Self::rename(&path, &tmp)?;
-        let result = match f(&path) {
+        Self::rename(path, &tmp)?;
+        let result = match f(path) {
             Ok(result) => result,
             Err(e) => {
                 // Try to undo the move if possible
-                if let Err(remove_err) = Self::rename(&tmp, &path) {
+                if let Err(remove_err) = Self::rename(&tmp, path) {
                     log.warn(format!(
                         "Failed to undo move from {} to {}: {}",
                         &path, &tmp, remove_err
@@ -616,7 +616,7 @@ where
 {
     groups
         .into_par_iter()
-        .flat_map(move |group| match partition(group, &config, log) {
+        .flat_map(move |group| match partition(group, config, log) {
             Ok(group) => group.dedupe_script(op),
             Err(e) => {
                 log.warn(e);
