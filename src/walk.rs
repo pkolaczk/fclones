@@ -204,7 +204,7 @@ impl<'a> Walk<'a> {
         's: 'w,
     {
         if self.follow_links {
-            match self.resolve_link(&path) {
+            match self.resolve_link(path) {
                 Ok(target) => self.visit_path(target, scope, level, state),
                 Err(e) => self.log_warn(format!("Failed to read link {}: {}", path.display(), e)),
             }

@@ -259,7 +259,7 @@ impl FileInfo {
 
     #[cfg(target_os = "linux")]
     pub fn fetch_physical_location(&mut self) -> io::Result<u64> {
-        let new_location = get_physical_file_location(&self.path())?;
+        let new_location = get_physical_file_location(self.path())?;
         if let Some(new_location) = new_location {
             self.location = self.location & DEVICE_MASK | (new_location >> 8) & OFFSET_MASK;
         }
@@ -351,7 +351,7 @@ impl FileId {
 }
 
 pub(crate) fn file_id_or_log_err(file: &Path, log: &Log) -> Option<FileId> {
-    match FileId::new(&file) {
+    match FileId::new(file) {
         Ok(id) => Some(id),
         Err(e) if e.kind() == ErrorKind::NotFound => None,
         Err(e) => {
@@ -488,7 +488,7 @@ fn evict_page_cache_if_low_mem(file: &mut File, len: FileLen) {
             let free_ratio = free_mem as f32 / total_mem as f32;
             if free_ratio < 0.05 {
                 evict_page_cache(
-                    &file,
+                    file,
                     FilePos::zero() + skipped_prefix_len,
                     len - skipped_prefix_len,
                 );
@@ -512,7 +512,7 @@ pub(crate) enum Caching {
 /// Opens a file and positions it at the given offset.
 /// Additionally, sends the advice to the operating system about how many bytes will be read.
 fn open(path: &Path, offset: FilePos, len: FileLen, cache_policy: Caching) -> io::Result<File> {
-    let mut file = open_noatime(&path)?;
+    let mut file = open_noatime(path)?;
     configure_readahead(&file, offset, len, cache_policy);
     if offset > FilePos::zero() {
         file.seek(offset.into())?;

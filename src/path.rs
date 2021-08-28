@@ -159,7 +159,7 @@ impl Path {
     }
 
     pub fn display(&self) -> &Self {
-        &self
+        self
     }
 
     /// Returns a hash of the full path. Useful for deduplicating paths without making path clones.
@@ -270,7 +270,7 @@ impl Path {
 
 impl AsRef<Path> for Path {
     fn as_ref(&self) -> &Path {
-        &self
+        self
     }
 }
 

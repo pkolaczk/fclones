@@ -283,7 +283,7 @@ where
         groups.into_iter().partition(group_pre_filter);
 
     // This way we can split fclonesing to separate thread-pools, one per device:
-    let files = partition_by_devices(groups_to_fclones, &devices);
+    let files = partition_by_devices(groups_to_fclones, devices);
     let mut hash_map =
         GroupMap::new(|f: HashedFileInfo| ((f.file_info.len, f.file_hash), f.file_info));
     let hash_map_ref = &mut hash_map;
@@ -391,10 +391,10 @@ fn scan_files(ctx: &AppCtx<'_>) -> Vec<Vec<FileInfo>> {
     walk.skip_hidden = config.skip_hidden;
     walk.follow_links = config.follow_links;
     walk.path_selector = ctx.path_selector.clone();
-    walk.log = Some(&ctx.log);
+    walk.log = Some(ctx.log);
     walk.on_visit = spinner_tick;
     walk.run(ctx.config.input_paths(), |path| {
-        file_info_or_log_err(path, &ctx.devices, &ctx.log)
+        file_info_or_log_err(path, &ctx.devices, ctx.log)
             .into_iter()
             .filter(|info| {
                 let l = info.len;
@@ -480,7 +480,7 @@ where
                 file_group
                     .into_iter()
                     .inspect(|p| progress(&p.path))
-                    .unique_by(|p| file_id_or_log_err(&p.path, &ctx.log)),
+                    .unique_by(|p| file_id_or_log_err(&p.path, ctx.log)),
             )
         }
     }
@@ -586,7 +586,7 @@ fn group_transformed(
         AccessType::Sequential,
         |(fi, _)| {
             let result = transform
-                .run_or_log_err(&fi.path, &ctx.log)
+                .run_or_log_err(&fi.path, ctx.log)
                 .map(|(len, hash)| {
                     fi.len = len;
                     hash
@@ -669,7 +669,7 @@ fn group_by_prefix(
                 buf_len,
                 caching,
                 |_| {},
-                &ctx.log,
+                ctx.log,
             )
         },
     );
@@ -729,7 +729,7 @@ fn group_by_suffix(ctx: &AppCtx<'_>, groups: Vec<FileGroup<FileInfo>>) -> Vec<Fi
                 buf_len,
                 Caching::Default,
                 |_| {},
-                &ctx.log,
+                ctx.log,
             )
             .map(|new_hash| old_hash ^ new_hash)
         },
@@ -774,7 +774,7 @@ fn group_by_contents(
                 buf_len,
                 Caching::Sequential,
                 |delta| progress.inc(delta),
-                &ctx.log,
+                ctx.log,
             )
         },
     );

@@ -240,7 +240,7 @@ impl Transform {
 
     /// Processes the input file, and computes the length and hash of the returned output stream
     pub fn run(&self, input: &Path) -> io::Result<Output> {
-        let (args, input_conf, output_conf) = self.make_args(&input);
+        let (args, input_conf, output_conf) = self.make_args(input);
         let mut command = Self::build_command(&args, &input_conf, &output_conf)?;
         let result = Self::execute(&mut command, &output_conf)?;
         input_conf.cleanup()?;
@@ -302,7 +302,7 @@ impl Transform {
 
         if let OutputConf::Named(output) = output_conf {
             command.stdout(Stdio::null());
-            Self::create_named_pipe(&output)?;
+            Self::create_named_pipe(output)?;
         } else {
             command.stdout(Stdio::piped());
         }
