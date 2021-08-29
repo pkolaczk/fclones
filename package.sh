@@ -1,14 +1,12 @@
-#!/bin/sh
+#!/bin/bash
 set -e
 bold=$(tput bold)
 normal=$(tput sgr0)
 
-# This script generates packages for a release and places them in target/packages
-echo "${bold}Setting up Rust${normal}"
-set -x
-rustup update stable
-rustup target add x86_64-pc-windows-gnu
-set +x
+# This script generates packages for a release and places them in target/packages/<version>.
+# Don't use it directly, use package-docker.sh instead.
+
+cd "$(dirname $0)"
 
 echo "${bold}Running checks${normal}"
 set -x
@@ -25,7 +23,7 @@ set +x
 echo "${bold}Packaging${normal}"
 set -x
 VERSION=$(cargo pkgid | sed 's/.*#//')
-PKG_DIR=target/packages
+PKG_DIR=target/packages/$VERSION
 mkdir -p $PKG_DIR
 rm -f $PKG_DIR/*
 
@@ -39,4 +37,3 @@ mv *.tgz $PKG_DIR
 
 cargo build --release --target=x86_64-pc-windows-gnu
 zip -j $PKG_DIR/"fclones-$VERSION-win.x86_64.zip" target/x86_64-pc-windows-gnu/release/fclones.exe
-
