@@ -279,8 +279,12 @@ fn component_to_c_string(c: &Component<'_>) -> CString {
     os_to_c_str(c.as_os_str())
 }
 
-impl From<&std::path::Path> for Path {
-    fn from(p: &std::path::Path) -> Self {
+impl<P> From<P> for Path
+where
+    P: AsRef<std::path::Path>,
+{
+    fn from(p: P) -> Self {
+        let p = p.as_ref();
         let mut components = p.components();
         let mut result = Path::new(component_to_c_string(
             &components.next().expect("Empty path not supported"),
@@ -289,36 +293,6 @@ impl From<&std::path::Path> for Path {
             result = Arc::new(result).push(component_to_c_string(&c))
         }
         result
-    }
-}
-
-impl From<&str> for Path {
-    fn from(s: &str) -> Self {
-        Path::from(std::path::PathBuf::from(s).as_path())
-    }
-}
-
-impl From<String> for Path {
-    fn from(s: String) -> Self {
-        Path::from(std::path::PathBuf::from(s).as_path())
-    }
-}
-
-impl From<OsString> for Path {
-    fn from(s: OsString) -> Self {
-        Path::from(std::path::PathBuf::from(s).as_path())
-    }
-}
-
-impl From<std::path::PathBuf> for Path {
-    fn from(p: std::path::PathBuf) -> Self {
-        Path::from(p.as_path())
-    }
-}
-
-impl From<&std::path::PathBuf> for Path {
-    fn from(p: &std::path::PathBuf) -> Self {
-        Path::from(p.as_path())
     }
 }
 
