@@ -250,23 +250,19 @@ impl<'a> Walk<'a> {
     /// Because each worker's queue is a LIFO, the files would be picked up first and the
     /// dirs would be on the other side, amenable for stealing by other workers.
     fn sorted_entries(parent: Path, rd: ReadDir) -> impl Iterator<Item = Entry> {
-        let mut files = vec![];
-        let mut links = vec![];
-        let mut dirs = vec![];
         let path = Arc::new(parent);
         let mut entries: Vec<DirEntry> = rd.filter_map(|e| e.ok()).collect();
         // Accessing entries in the order of identifiers should be faster on rotational drives
         Self::sort_dir_entries_by_inode(&mut entries);
         entries
             .into_iter()
-            .filter_map(|e| Entry::from_dir_entry(&path, e).ok())
-            .for_each(|e| match e.tpe {
-                EntryType::File => files.push(e),
-                EntryType::SymLink => links.push(e),
-                EntryType::Dir => dirs.push(e),
-                EntryType::Other => {}
-            });
-        dirs.into_iter().chain(links).chain(files)
+            .filter_map(move |e| Entry::from_dir_entry(&path, e).ok())
+            .filter_map(|e| match e.tpe {
+                EntryType::File => Some(e),
+                EntryType::SymLink => Some(e),
+                EntryType::Dir => Some(e),
+                EntryType::Other => None,
+            })
     }
 
     /// Returns the absolute target path of a symbolic link
