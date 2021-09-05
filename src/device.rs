@@ -6,6 +6,7 @@ use std::ops::Index;
 use itertools::Itertools;
 use lazy_init::Lazy;
 use rayon::{ThreadPool, ThreadPoolBuilder};
+use regex::Regex;
 use sysinfo::{DiskExt, DiskType, System, SystemExt};
 
 use crate::config::Parallelism;
@@ -209,11 +210,16 @@ impl DiskDevices {
     /// If `name` is a disk partition, it attempts to return the disk device name the partition
     /// resides on. Otherwise, and on failures, it just returns the same `name`.
     #[cfg(target_os = "linux")]
-    fn parent_device_name(name: &OsStr) -> OsString {
-        block_utils::get_parent_devpath_from_path(&std::path::Path::new(name))
-            .unwrap_or(None)
-            .map(|p| p.into_os_string())
-            .unwrap_or_else(|| name.to_os_string())
+    fn physical_device_name(name: &OsStr) -> OsString {
+        let regex = Regex::new(r"^/dev/([fhs]d[a-z]|nvme[0-9]+).*").unwrap();
+        let name_str = name.to_string_lossy();
+        match regex.captures(name_str.as_ref()) {
+            Some(captures) => {
+                let parent = "/dev/".to_owned() + captures.get(1).unwrap().as_str();
+                OsString::from(parent)
+            }
+            None => name.to_os_string(),
+        }
     }
 
     #[cfg(not(target_os = "linux"))]
@@ -235,7 +241,7 @@ impl DiskDevices {
         result.add_device(OsString::from("default"), DiskType::Unknown(-1), pool_sizes);
 
         for d in sys.get_disks() {
-            let device_name = Self::parent_device_name(d.get_name());
+            let device_name = Self::physical_device_name(d.get_name());
             let index = result.add_device(device_name, d.get_type(), pool_sizes);
             result
                 .mount_points
@@ -295,5 +301,34 @@ impl Index<usize> for DiskDevices {
 
     fn index(&self, index: usize) -> &Self::Output {
         &self.devices[index]
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    #[test]
+    fn test_physical_device_name() {
+        assert_eq!(
+            DiskDevices::physical_device_name(OsStr::new("/dev/sda")),
+            OsString::from("/dev/sda")
+        );
+        assert_eq!(
+            DiskDevices::physical_device_name(OsStr::new("/dev/sda1")),
+            OsString::from("/dev/sda")
+        );
+        assert_eq!(
+            DiskDevices::physical_device_name(OsStr::new("/dev/hdc20")),
+            OsString::from("/dev/hdc")
+        );
+        assert_eq!(
+            DiskDevices::physical_device_name(OsStr::new("/dev/nvme0n1p3")),
+            OsString::from("/dev/nvme0")
+        );
+        assert_eq!(
+            DiskDevices::physical_device_name(OsStr::new("/dev/unknown")),
+            OsString::from("/dev/unknown")
+        );
     }
 }
