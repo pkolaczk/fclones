@@ -223,7 +223,7 @@ impl DiskDevices {
     }
 
     #[cfg(not(target_os = "linux"))]
-    fn parent_device_name(name: &OsStr) -> OsString {
+    fn physical_device_name(name: &OsStr) -> OsString {
         name.to_os_string()
     }
 
