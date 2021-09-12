@@ -84,6 +84,17 @@ impl Path {
         result
     }
 
+    /// If `path` is relative, works the same as [`join`].
+    /// If `path` is absolute, ignores `self` and returns `path`.
+    pub fn resolve<P: AsRef<Path>>(self: &Arc<Path>, path: P) -> Path {
+        let path = path.as_ref();
+        if path.is_relative() {
+            self.join(path)
+        } else {
+            path.clone()
+        }
+    }
+
     /// Returns the name of the last component of this path or None
     /// if the path is directory (e.g. root dir or parent dir).
     pub fn file_name(&self) -> Option<OsString> {
@@ -127,6 +138,17 @@ impl Path {
             base_components.next();
         }
         Some(Path::make(self_components))
+    }
+
+    /// If this path is absolute, strips the root component and returns a relative path.
+    /// Otherwise returns a clone of this path.
+    /// E.g. `/foo/bar` becomes `foo/bar`
+    pub fn strip_root(&self) -> Path {
+        if self.is_absolute() {
+            Path::make(self.components().into_iter().skip(1))
+        } else {
+            self.clone()
+        }
     }
 
     /// Returns true if self is a prefix of another path

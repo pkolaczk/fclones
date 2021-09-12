@@ -510,6 +510,19 @@ pub enum Command {
     /// The list of groups earlier produced by `fclones group` should be submitted
     /// on the standard input. Only the default text format is supported.
     Remove(DedupeConfig),
+
+    /// Moves redundant files to the given directory.
+    ///
+    /// The list of groups earlier produced by `fclones group` should be submitted
+    /// on the standard input. Only the default text format is supported.
+    Move {
+        #[structopt(flatten)]
+        config: DedupeConfig,
+
+        /// Target directory where the redundant files should be moved to.
+        #[structopt(parse(from_os_str))]
+        target: PathBuf,
+    },
 }
 
 /// Finds and cleans up redundant files
