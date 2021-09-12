@@ -3,6 +3,7 @@ use std::ffi::{OsStr, OsString};
 use std::fs::File;
 use std::io::{stdin, Write};
 use std::process::exit;
+use std::sync::Arc;
 use std::{fs, io};
 
 use fallible_iterator::FallibleIterator;
@@ -201,6 +202,14 @@ fn main() {
         log.no_progress = true;
     }
 
+    let cwd = match std::env::current_dir() {
+        Ok(cwd) => cwd,
+        Err(e) => {
+            log.err(format!("Cannot determine current working directory: {}", e));
+            exit(1);
+        }
+    };
+
     let result = match config.command {
         Command::Group(config) => run_group(config, &mut log),
         Command::Remove(config) => run_dedupe(DedupeOp::Remove, config, &mut log),
@@ -209,6 +218,11 @@ fn main() {
             config,
             soft: false,
         } => run_dedupe(DedupeOp::HardLink, config, &mut log),
+        Command::Move { config, target } => {
+            let target = fclones::path::Path::from(target);
+            let target = Arc::new(fclones::path::Path::from(cwd)).resolve(target);
+            run_dedupe(DedupeOp::Move(Arc::new(target)), config, &mut log)
+        }
     };
 
     if let Err(e) = result {

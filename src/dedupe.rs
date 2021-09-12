@@ -16,18 +16,22 @@ use rayon::iter::IntoParallelIterator;
 use rayon::iter::ParallelIterator;
 
 use crate::config::{DedupeConfig, Priority};
+use crate::device::DiskDevices;
 use crate::files::FileLen;
 use crate::lock::FileLock;
 use crate::log::Log;
 use crate::path::Path;
 use crate::util::fallible_sort_by_key;
 use crate::{Error, FileGroup, TIMESTAMP_FMT};
+use std::collections::HashMap;
 
 /// Defines what to do with redundant files
-#[derive(Copy, Clone)]
+#[derive(Clone)]
 pub enum DedupeOp {
     /// Removes redundant files.
     Remove,
+    /// Moves redundant files to a different dir
+    Move(Arc<Path>),
     /// Replaces redundant files with soft-links (ln -s on Unix).
     SoftLink,
     /// Replaces redundant files with hard-links (ln on Unix).
@@ -77,6 +81,11 @@ pub enum FsCommand {
     Remove {
         file: FileMetadata,
     },
+    Move {
+        source: FileMetadata,
+        target: Path,
+        use_rename: bool, // try to move the file directly by issuing fs rename command
+    },
     SoftLink {
         target: Arc<FileMetadata>,
         link: FileMetadata,
@@ -125,29 +134,79 @@ impl FsCommand {
         })
     }
 
-    fn rename(old: &Path, new: &Path) -> io::Result<()> {
-        let new = new.to_path_buf();
-        if new.exists() {
+    fn check_can_rename(source: &Path, target: &Path) -> io::Result<()> {
+        if target.to_path_buf().exists() {
             return Err(io::Error::new(
                 ErrorKind::AlreadyExists,
                 format!(
-                    "Cannot rename file from {} to {}: Target already exists",
-                    old,
-                    new.display()
+                    "Cannot move {} to {}: Target already exists",
+                    source.display(),
+                    target.display()
                 ),
             ));
         }
-        fs::rename(&old.to_path_buf(), &new).map_err(|e| {
+        Ok(())
+    }
+
+    fn mkdirs(path: &Path) -> io::Result<()> {
+        fs::create_dir_all(path.to_path_buf()).map_err(|e| {
+            io::Error::new(
+                e.kind(),
+                format!("Failed to create directory {}: {}", path, e),
+            )
+        })
+    }
+
+    /// Renames/moves a file from one location to another.
+    /// If the target exists, it would be overwritten.
+    fn unsafe_rename(source: &Path, target: &Path) -> io::Result<()> {
+        fs::rename(&source.to_path_buf(), &target.to_path_buf()).map_err(|e| {
             io::Error::new(
                 e.kind(),
                 format!(
                     "Failed to rename file from {} to {}: {}",
-                    old,
-                    new.display(),
+                    source,
+                    target.display(),
                     e
                 ),
             )
         })
+    }
+
+    /// Copies a file from one location to another.
+    /// If the target exists, it would be overwritten.
+    fn unsafe_copy(source: &Path, target: &Path) -> io::Result<()> {
+        fs::copy(&source.to_path_buf(), &target.to_path_buf()).map_err(|e| {
+            io::Error::new(
+                e.kind(),
+                format!(
+                    "Failed to copy file from {} to {}: {}",
+                    source,
+                    target.display(),
+                    e
+                ),
+            )
+        })?;
+        Ok(())
+    }
+
+    /// Moves the file from one location to another by single `fs::rename` command.
+    /// Fails if target exists.
+    fn move_rename(source: &Path, target: &Path) -> io::Result<()> {
+        Self::check_can_rename(source, target)?;
+        Self::mkdirs(target.parent().unwrap())?;
+        Self::unsafe_rename(source, target)?;
+        Ok(())
+    }
+
+    /// Moves the file by copying it first to another location and then removing the original.
+    /// Fails if target exists.
+    fn move_copy(source: &Path, target: &Path) -> io::Result<()> {
+        Self::check_can_rename(source, target)?;
+        Self::mkdirs(target.parent().unwrap())?;
+        Self::unsafe_copy(source, target)?;
+        Self::remove(source)?;
+        Ok(())
     }
 
     /// Returns a random temporary file name in the same directory, guaranteed to not collide with
@@ -176,12 +235,12 @@ impl FsCommand {
     fn safe_remove<R>(path: &Path, f: impl Fn(&Path) -> io::Result<R>, log: &Log) -> io::Result<R> {
         let _ = FileLock::new(path)?; // don't remove a locked file
         let tmp = Self::temp_file(path);
-        Self::rename(path, &tmp)?;
+        Self::unsafe_rename(path, &tmp)?;
         let result = match f(path) {
             Ok(result) => result,
             Err(e) => {
                 // Try to undo the move if possible
-                if let Err(remove_err) = Self::rename(&tmp, path) {
+                if let Err(remove_err) = Self::unsafe_rename(&tmp, path) {
                     log.warn(format!(
                         "Failed to undo move from {} to {}: {}",
                         &path, &tmp, remove_err
@@ -212,6 +271,18 @@ impl FsCommand {
                 Self::safe_remove(&link.path, |link| Self::hardlink(&target.path, link), log)?;
                 Ok(FileLen(link.metadata.len()))
             }
+            FsCommand::Move {
+                source,
+                target,
+                use_rename,
+            } => {
+                let len = FileLen(source.metadata.len());
+                if *use_rename && Self::move_rename(&source.path, target).is_ok() {
+                    return Ok(len);
+                }
+                Self::move_copy(&source.path, target)?;
+                Ok(len)
+            }
         }
     }
 
@@ -220,7 +291,8 @@ impl FsCommand {
         match self {
             FsCommand::Remove { file, .. }
             | FsCommand::SoftLink { link: file, .. }
-            | FsCommand::HardLink { link: file, .. } => FileLen(file.metadata.len()),
+            | FsCommand::HardLink { link: file, .. }
+            | FsCommand::Move { source: file, .. } => FileLen(file.metadata.len()),
         }
     }
 
@@ -249,6 +321,20 @@ impl FsCommand {
                 result.push(format!("ln {} {}", target, link));
                 result.push(format!("rm {}", tmp));
             }
+            FsCommand::Move {
+                source,
+                target,
+                use_rename,
+            } => {
+                let source = source.path.shell_quote();
+                let target = target.shell_quote();
+                if *use_rename {
+                    result.push(format!("mv {} {}", &source, &target));
+                } else {
+                    result.push(format!("cp {} {}", &source, &target));
+                    result.push(format!("rm {}", &source));
+                }
+            }
         }
         result
     }
@@ -276,6 +362,20 @@ impl FsCommand {
                 result.push(format!("move {} {}", link, tmp));
                 result.push(format!("mklink /H {} {}", target, link));
                 result.push(format!("del {}", tmp));
+            }
+            FsCommand::Move {
+                source,
+                target,
+                use_rename,
+            } => {
+                let source = source.path.shell_quote();
+                let target = target.shell_quote();
+                if *use_rename {
+                    result.push(format!("move {} {}", &source, &target));
+                } else {
+                    result.push(format!("copy {} {}", &source, &target));
+                    result.push(format!("del {}", &source));
+                }
             }
         }
         result
@@ -443,8 +543,30 @@ struct PartitionedFileGroup {
 }
 
 impl PartitionedFileGroup {
+    /// Returns the destination path where the file should be moved when the
+    /// dedupe mode was selected to move
+    fn move_target(target_dir: &Arc<Path>, source_path: &Path) -> Path {
+        let root = source_path
+            .root()
+            .to_string()
+            .replace("/", "")
+            .replace(":", "");
+        let suffix = source_path.strip_root();
+        if root.is_empty() {
+            target_dir.join(suffix)
+        } else {
+            Arc::new(target_dir.join(Path::from(root))).join(suffix)
+        }
+    }
+
+    fn are_on_same_mount(devices: &DiskDevices, file1: &Path, file2: &Path) -> bool {
+        let mount1 = devices.get_mount_point(file1);
+        let mount2 = devices.get_mount_point(file2);
+        mount1 == mount2
+    }
+
     /// Returns a list of commands that would remove redundant files in this group when executed.
-    fn dedupe_script(mut self, strategy: DedupeOp) -> Vec<FsCommand> {
+    fn dedupe_script(mut self, strategy: &DedupeOp, devices: &DiskDevices) -> Vec<FsCommand> {
         if self.to_drop.is_empty() {
             return vec![];
         }
@@ -471,6 +593,17 @@ impl PartitionedFileGroup {
                     link: dropped_file,
                 }),
                 DedupeOp::Remove => commands.push(FsCommand::Remove { file: dropped_file }),
+                DedupeOp::Move(target_dir) => {
+                    let source = dropped_file;
+                    let source_path = &source.path;
+                    let use_rename = Self::are_on_same_mount(devices, source_path, target_dir);
+                    let target = Self::move_target(target_dir, source_path);
+                    commands.push(FsCommand::Move {
+                        source,
+                        target,
+                        use_rename,
+                    })
+                }
             }
         }
         commands
@@ -614,10 +747,11 @@ pub fn dedupe<'a, I>(
 where
     I: IntoParallelIterator<Item = FileGroup<Path>> + 'a,
 {
+    let devices = DiskDevices::new(&HashMap::new());
     groups
         .into_par_iter()
         .flat_map(move |group| match partition(group, config, log) {
-            Ok(group) => group.dedupe_script(op),
+            Ok(group) => group.dedupe_script(&op, &devices),
             Err(e) => {
                 log.warn(e);
                 Vec::new()
@@ -721,6 +855,62 @@ mod test {
             let cmd = FsCommand::Remove { file };
             cmd.execute(&log).unwrap();
             assert!(!file_path.exists())
+        })
+    }
+
+    #[test]
+    fn test_move_command_moves_file_by_rename() {
+        with_dir("dedupe/move_rename_cmd", |root| {
+            let log = Log::new();
+            let file_path = root.join("file");
+            let target = Path::from(root.join("target"));
+            create_file(&file_path);
+            let file = FileMetadata::new(Path::from(&file_path)).unwrap();
+            let cmd = FsCommand::Move {
+                source: file,
+                target: target.clone(),
+                use_rename: true,
+            };
+            cmd.execute(&log).unwrap();
+            assert!(!file_path.exists());
+            assert!(target.to_path_buf().exists());
+        })
+    }
+
+    #[test]
+    fn test_move_command_moves_file_by_copy() {
+        with_dir("dedupe/move_copy_cmd", |root| {
+            let log = Log::new();
+            let file_path = root.join("file");
+            let target = Path::from(root.join("target"));
+            create_file(&file_path);
+            let file = FileMetadata::new(Path::from(&file_path)).unwrap();
+            let cmd = FsCommand::Move {
+                source: file,
+                target: target.clone(),
+                use_rename: false,
+            };
+            cmd.execute(&log).unwrap();
+            assert!(!file_path.exists());
+            assert!(target.to_path_buf().exists());
+        })
+    }
+
+    #[test]
+    fn test_move_fails_if_target_exists() {
+        with_dir("dedupe/move_target_exists", |root| {
+            let log = Log::new();
+            let file_path = root.join("file");
+            let target = root.join("target");
+            create_file(&file_path);
+            create_file(&target);
+            let file = FileMetadata::new(Path::from(&file_path)).unwrap();
+            let cmd = FsCommand::Move {
+                source: file,
+                target: Path::from(&target),
+                use_rename: false,
+            };
+            assert!(cmd.execute(&log).is_err());
         })
     }
 

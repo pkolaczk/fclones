@@ -38,7 +38,7 @@ As a result, FClones easily outperforms many other popular duplicate finders by 
   - filtering by min/max file size
   - proper handling of symlinks and hardlinks
 * Removing redundant files
-  - removing or replacing files with soft or hard links
+  - removing, moving or replacing files with soft or hard links
   - selecting files for removal by path or name patterns  
   - prioritizing files to remove by creation, modification, last access time or nesting level
 * High performance
@@ -184,17 +184,20 @@ Exclude a part of the directory tree from the scan:
     fclones group / --exclude '/dev/**' '/proc/**'    
 
 ### Removing Files
-To remove files or replace them by links, you need to send the report produced by
-`fclones group` to the standard input of `fclones remove` or `fclones link` command.
+To remove duplicate files, move them to a different place or replace them by links, 
+you need to send the report produced by `fclones group` to the standard input 
+of `fclones remove`, `fclones move` or `fclones link` command.
 The report format is detected automatically. Currently, `default` and `json` report 
 formats are supported. 
 
 Assuming the list of duplicates has been saved in file `dupes.txt`, the following commands would remove
 the redundant files: 
 
-    fclones link <dupes.txt         # replace with hard links
-    fclones link -s <dupes.txt      # replace with soft links
-    fclones remove <dupes.txt       # remove totally
+    fclones link <dupes.txt             # replace with hard links
+    fclones link -s <dupes.txt          # replace with soft links
+    fclones move target_dir <dupes.txt  # move to target_dir  
+    fclones remove <dupes.txt           # remove totally
+    
 
 If you prefer to do everything at once without storing the list of groups in a file, you can pipe:
 

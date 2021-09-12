@@ -254,6 +254,15 @@ impl DiskDevices {
         result
     }
 
+    /// Returns the mount point holding given path
+    pub fn get_mount_point(&self, path: &Path) -> &Path {
+        self.mount_points
+            .iter()
+            .map(|(p, _)| p)
+            .find(|p| p.is_prefix_of(path))
+            .unwrap_or(&self.mount_points[0].0)
+    }
+
     /// Returns the disk device which holds the given path
     pub fn get_by_path(&self, path: &Path) -> &DiskDevice {
         self.mount_points
