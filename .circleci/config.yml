@@ -11,7 +11,7 @@ jobs:
           name: Setup build environment
           command: |
             sudo apt-get update
-            sudo apt-get install -y git libudev1 libudev-dev
+            sudo apt-get install -y git
           no_output_timeout: 1800s
       - run:
           name: Calculate dependencies
