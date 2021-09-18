@@ -276,13 +276,13 @@ where
 
     let (tx, rx): (Sender<HashedFileInfo>, Receiver<HashedFileInfo>) = channel();
 
-    // There is no point in fclonesing groups containing a single file.
+    // There is no point in processing groups containing a single file.
     // Normally when searching for duplicates such groups are filtered out automatically after
     // each stage, however they are possible when searching for unique files.
     let (groups_to_fclones, groups_to_pass): (Vec<_>, Vec<_>) =
         groups.into_iter().partition(group_pre_filter);
 
-    // This way we can split fclonesing to separate thread-pools, one per device:
+    // This way we can split processing to separate thread-pools, one per device:
     let files = partition_by_devices(groups_to_fclones, devices);
     let mut hash_map =
         GroupMap::new(|f: HashedFileInfo| ((f.file_info.len, f.file_hash), f.file_info));
@@ -299,7 +299,7 @@ where
 
             let tx = tx.clone();
 
-            // Launch a separate thread for each device, so we can fclones
+            // Launch a separate thread for each device, so we can process
             // files on each device independently
             s.spawn(move |_| {
                 // Sort files by their physical location, to reduce disk seek latency
@@ -321,7 +321,7 @@ where
                 // Each task creates a heap allocation and reserves memory in the queue.
                 // It is more memory efficient to keep these tasks as long as possible
                 // in our vector. Without this limit we observed over 20% more memory use
-                // when fclonesing 1M of files.
+                // when processing 1M of files.
                 let semaphore = Arc::new(Semaphore::new(8 * thread_count));
 
                 // Run hashing on the thread-pool dedicated to the device
@@ -332,7 +332,7 @@ where
                     // Spawning a task into a thread-pool requires a static lifetime,
                     // because generally the task could outlive caller's stack frame.
                     // However, this is not the case for rehash function, because
-                    // we don't exit before all tasks are fclonesed.
+                    // we don't exit before all tasks are closed.
                     // In the perfect world we should use scopes for that. Unfortunately
                     // the current implementation of rayon scopes runs the scope body
                     // on one of the thread-pool worker threads, so it is not possible
