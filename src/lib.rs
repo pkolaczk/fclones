@@ -476,6 +476,12 @@ where
                     .unique_by(|p| p.path.hash128()),
             )
         } else {
+            // The BTreeMap inside GroupMap results in a random ordering, so repeated runs
+            // will list a different representative filename first for a given inode.
+            // By ordering these the output becomes deterministic.
+            let mut file_group = file_group;
+            file_group.sort_by(|f1, f2| f1.path.cmp(&f2.path));
+
             files.extend(
                 file_group
                     .into_iter()
