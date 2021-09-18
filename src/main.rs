@@ -180,19 +180,27 @@ pub fn run_dedupe(op: DedupeOp, config: DedupeConfig, log: &mut Log) -> Result<(
         .inspect(|_| progress.tick())
         .par_bridge();
 
+    let upto = if op == DedupeOp::RefLink {
+        // Can't be sure because any previous deduplications are not
+        // visible without calling fs-specific tooling.
+        "up to "
+    } else {
+        ""
+    };
+
     let script = dedupe(groups, op, &dedupe_config, log);
     if dedupe_config.dry_run {
         let out = get_output_writer(&dedupe_config)?;
         let result = log_script(script, out).map_err(|e| format!("Output error: {}", e))?;
         log.info(format!(
-            "Would process {} files and reclaim {} space",
-            result.processed_count, result.reclaimed_space
+            "Would process {} files and reclaim {}{} space",
+            result.processed_count, upto, result.reclaimed_space
         ));
     } else {
         let result = run_script(script, log);
         log.info(format!(
-            "Processed {} files and reclaimed {} space",
-            result.processed_count, result.reclaimed_space
+            "Processed {} files and reclaimed {}{} space",
+            result.processed_count, upto, result.reclaimed_space
         ));
     };
     result.map_err(|e| Error::new(format!("Failed to read file list: {}", e)))
@@ -226,6 +234,13 @@ fn main() {
             config,
             soft: false,
         } => run_dedupe(DedupeOp::HardLink, config, &mut log),
+        Command::Dedupe { config, .. } => {
+            if cfg!(windows) {
+                log.err("Command \"dedupe\" is unsupported on Windows");
+                exit(1);
+            }
+            run_dedupe(DedupeOp::RefLink, config, &mut log)
+        }
         Command::Move { config, target } => {
             let target = fclones::path::Path::from(target);
             let target = Arc::new(fclones::path::Path::from(cwd)).resolve(target);

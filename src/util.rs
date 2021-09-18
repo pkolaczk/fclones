@@ -33,8 +33,22 @@ pub mod test {
     use std::fs::{create_dir_all, remove_dir_all, File};
     use std::io::{BufReader, Read, Write};
     use std::path::PathBuf;
+    use std::sync::Mutex;
     use std::time::SystemTime;
     use std::{fs, thread};
+
+    use lazy_static::lazy_static;
+
+    #[derive(Debug, PartialEq, Eq)]
+    enum FsSupportsReflink {
+        Untested,
+        Supported(bool),
+    }
+
+    lazy_static! {
+        static ref REFLINK_SUPPORTED: Mutex<FsSupportsReflink> =
+            Mutex::new(FsSupportsReflink::Untested);
+    }
 
     /// Runs test code that needs access to temporary file storage.
     /// Makes sure the test root directory exists and is empty.
@@ -105,5 +119,28 @@ pub mod test {
         let mut result = String::new();
         r.read_to_string(&mut result).unwrap();
         result
+    }
+
+    pub fn cached_reflink_supported() -> bool {
+        let mut guard = REFLINK_SUPPORTED.lock().unwrap();
+
+        match *guard {
+            FsSupportsReflink::Untested => {
+                with_dir("fs_supports_reflink", |test_dir| {
+                    let src_file = test_dir.join("src_file");
+                    let dest_file = test_dir.join("dest_file");
+                    write_file(&src_file, "1");
+
+                    let result = reflink::reflink(src_file, dest_file).is_ok();
+                    *guard = FsSupportsReflink::Supported(result);
+
+                    if !result {
+                        println!("  Notice: filesystem does not support reflinks, skipping related tests")
+                    }
+                    result
+                })
+            }
+            FsSupportsReflink::Supported(val) => val,
+        }
     }
 }

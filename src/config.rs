@@ -530,6 +530,21 @@ pub enum Command {
         soft: bool,
     },
 
+    /// Deduplicate files.
+    ///
+    /// The list of groups earlier produced by `fclones group` should be submitted
+    /// on the standard input. Only the default text format is supported.
+    ///
+    /// Can not cross file system boundaries, not all file systems support deduplication.
+    /// The result is not visible to userland applications, so repeated runs
+    /// will find the same files again. This also applies to `fclones dedupe` itself:
+    /// The options `--priority` and `--rf-over` do not detect earlier deduplications.
+    /// Not all metadata is preserved on macOS. Unsupported on Windows.
+    Dedupe {
+        #[structopt(flatten)]
+        config: DedupeConfig,
+    },
+
     /// Removes redundant files.
     ///
     /// The list of groups earlier produced by `fclones group` should be submitted
