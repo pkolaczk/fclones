@@ -530,6 +530,20 @@ pub enum Command {
         soft: bool,
     },
 
+    /// Deduplicate files.
+    ///
+    /// The list of groups earlier produced by `fclones group` should be submitted
+    /// on the standard input. Only the default text format is supported.
+    ///
+    /// Can not cross filesystem boundaries, not all filesystems support deduplication.
+    /// The result is not visible to userland applications, so repreated runs
+    /// will find the same files again. This also applies to `fclones dedupe` itself:
+    /// The options `--priority` and `--rf-over` do not detect earlier deduplications.
+    Dedupe {
+        #[structopt(flatten)]
+        config: DedupeConfig,
+    },
+
     /// Removes redundant files.
     ///
     /// The list of groups earlier produced by `fclones group` should be submitted
@@ -574,4 +588,40 @@ pub struct Config {
     /// Finds files
     #[structopt(subcommand)]
     pub command: Command,
+}
+
+#[cfg(not(test))]
+pub mod test {
+    pub const fn crosstest() -> bool {
+        false
+    }
+}
+#[cfg(test)]
+pub mod test {
+    // Helpers to switch reflink implementation when running tests
+    // and to ensure only one reflink test runs at a time.
+
+    use lazy_static::lazy_static;
+    use std::sync::Mutex;
+    use std::sync::MutexGuard;
+    lazy_static! {
+        pub static ref CROSSTEST: Mutex<bool> = Mutex::new(false);
+        pub static ref SEQUENTIAL_REFLINK_TESTS: Mutex<()> = Mutex::default();
+    }
+    pub struct CrossTest<'a>(MutexGuard<'a, ()>);
+    impl<'a> CrossTest<'a> {
+        pub fn new(crosstest: bool) -> CrossTest<'a> {
+            let x = CrossTest(SEQUENTIAL_REFLINK_TESTS.lock().unwrap());
+            *crate::config::test::CROSSTEST.lock().unwrap() = crosstest;
+            x
+        }
+    }
+    impl<'a> Drop for CrossTest<'a> {
+        fn drop(&mut self) {
+            *crate::config::test::CROSSTEST.lock().unwrap() = false;
+        }
+    }
+    pub fn crosstest() -> bool {
+        *CROSSTEST.lock().unwrap()
+    }
 }
