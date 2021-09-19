@@ -12,6 +12,7 @@ use rayon::iter::ParallelBridge;
 use regex::Regex;
 use structopt::StructOpt;
 
+use console::style;
 use fclones::config::{Command, Config, DedupeConfig, GroupConfig, Parallelism};
 use fclones::log::Log;
 use fclones::report::open_report;
@@ -64,21 +65,23 @@ fn run_group(mut config: GroupConfig, log: &mut Log) -> Result<(), Error> {
         // problems and report as warnings.
         let mut access_error = false;
         let depth = config.depth;
-        config.paths.retain(|p| match fs::metadata(&p) {
-            Ok(m) if m.is_dir() && depth == Some(0) => {
-                log.warn(format!(
-                    "Skipping directory {} because recursive scan is disabled.",
-                    p.display()
-                ));
-                false
-            }
-            Err(e) => {
-                log.err(format!("Can't access {}: {}", p.display(), e));
-                access_error = true;
-                false
-            }
-            Ok(_) => true,
-        });
+        config
+            .paths
+            .retain(|p| match fs::metadata(&p.to_path_buf()) {
+                Ok(m) if m.is_dir() && depth == Some(0) => {
+                    log.warn(format!(
+                        "Skipping directory {} because recursive scan is disabled.",
+                        p.display()
+                    ));
+                    false
+                }
+                Err(e) => {
+                    log.err(format!("Can't access {}: {}", p.display(), e));
+                    access_error = true;
+                    false
+                }
+                Ok(_) => true,
+            });
         if access_error {
             return Err(Error::from("Some input paths could not be accessed."));
         }
@@ -196,7 +199,12 @@ pub fn run_dedupe(op: DedupeOp, config: DedupeConfig, log: &mut Log) -> Result<(
 }
 
 fn main() {
-    let config = Config::from_args();
+    let config: Config = Config::from_args();
+    if let Err(e) = config.command.validate() {
+        eprintln!("{} {}", style("error:").for_stderr().bold().red(), e);
+        exit(1);
+    }
+
     let mut log = Log::new();
     if config.quiet {
         log.no_progress = true;
