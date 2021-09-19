@@ -158,6 +158,10 @@ pub struct GroupConfig {
     #[structopt(short = "H", long)]
     pub hard_links: bool,
 
+    /// Don't count matching files found within the same directory argument as duplicates.
+    #[structopt(short("I"), long)]
+    pub isolate: bool,
+
     /// Before matching, transforms each file by the specified program.
     /// The value of this parameter should contain a command: the path to the program
     /// and optionally a list of space-separated arguments.
@@ -265,10 +269,34 @@ pub struct GroupConfig {
     /// By default descends into directories recursively, unless a recursion depth
     /// limit is specified with `--depth`.
     #[structopt(parse(from_os_str), required_unless("stdin"))]
-    pub paths: Vec<PathBuf>,
+    pub paths: Vec<Path>,
 }
 
 impl GroupConfig {
+    fn validate(&self) -> Result<(), String> {
+        if self.isolate && self.paths.len() <= self.rf_over() {
+            return Err(format!(
+                "The --isolate flag requires that the number of input paths ({}) \
+                 is at least as large as the replication factor lower bound ({}). \
+                 No files would be considered duplicate, regardless of their contents.",
+                self.paths.len(),
+                self.rf_over() + 1,
+            ));
+        }
+        if self.isolate && self.paths.len() < self.rf_under() {
+            return Err(format!(
+                "The --isolate flag requires that the number of input paths ({}) \
+                 is larger than the replication factor upper bound ({}). \
+                 All files would be considered unique or under-replicated, \
+                 regardless of their contents.",
+                self.paths.len(),
+                self.rf_under() - 1,
+            ));
+        }
+
+        Ok(())
+    }
+
     fn compile_pattern(&self, s: &str) -> Result<Pattern, PatternError> {
         let pattern_opts = if self.caseless {
             PatternOpts::case_insensitive()
@@ -346,13 +374,7 @@ impl GroupConfig {
                     .map(|s| Path::from(s.unwrap().as_str())),
             )
         } else {
-            Box::new(
-                self.paths
-                    .iter()
-                    .map(Path::from)
-                    .collect::<Vec<_>>()
-                    .into_iter(),
-            )
+            Box::new(self.paths.clone().into_iter())
         }
     }
 
@@ -523,6 +545,15 @@ pub enum Command {
         #[structopt(parse(from_os_str))]
         target: PathBuf,
     },
+}
+
+impl Command {
+    pub fn validate(&self) -> Result<(), String> {
+        match self {
+            Command::Group(c) => c.validate(),
+            _ => Ok(()),
+        }
+    }
 }
 
 /// Finds and cleans up redundant files

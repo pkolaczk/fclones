@@ -162,7 +162,12 @@ Limit the recursion depth:
 
 Caution: Versions up to 0.10 did not descend into directories by default.
 In those old versions, add `-R` flag to enable recursive directory walking.
- 
+
+Finding files that match across two directory trees, without matching identical files
+within each tree:
+
+    fclones group --isolate dir1 dir2
+
 Finding duplicate files of size at least 100 MB: 
 
     fclones group . -s 100M

@@ -1,7 +1,7 @@
 use core::fmt;
 use std::cell::RefCell;
 use std::cmp::{max, Reverse};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::env::{args, current_dir};
 use std::ffi::{OsStr, OsString};
 use std::fmt::{Display, Formatter};
@@ -93,6 +93,7 @@ impl From<&str> for Error {
 struct AppCtx<'a> {
     pub config: &'a GroupConfig,
     pub log: &'a Log,
+    input_paths: Vec<Path>,
     devices: DiskDevices,
     transform: Option<Transform>,
     path_selector: PathSelector,
@@ -108,6 +109,12 @@ impl<'a> AppCtx<'a> {
             Some(Err(e)) => return Err(Error::new(format!("Invalid transform: {}", e))),
         };
         let base_dir = Path::from(current_dir().unwrap_or_default());
+        let base_dir_ref = Arc::new(base_dir.clone());
+        let root_paths = config
+            .paths
+            .iter()
+            .map(|p| base_dir_ref.resolve(p))
+            .collect();
         let selector = config
             .path_selector(&base_dir)
             .map_err(|e| format!("Invalid pattern: {}", e))?;
@@ -117,6 +124,7 @@ impl<'a> AppCtx<'a> {
         Ok(AppCtx {
             config,
             log,
+            input_paths: root_paths,
             devices,
             transform,
             path_selector: selector,
@@ -421,6 +429,33 @@ fn scan_files(ctx: &AppCtx<'_>) -> Vec<Vec<FileInfo>> {
     files
 }
 
+/// Finds the path root that is a prefix of the given path.
+/// If no match is found, returns the original path.
+fn root_of<'a>(path: &'a Path, roots: &'a [Path]) -> &'a Path {
+    for p in roots {
+        if p.is_prefix_of(path) {
+            return p;
+        }
+    }
+    path
+}
+
+/// Returns `true` if a group of files is big enough to meet the desired grouping criteria.
+/// The number of distinct files in a group must be greater than `rf-over`.
+/// If `--isolate` flag is set, file paths that start with a common input path are counted as one.
+/// Called on each result group after each stage.
+fn should_forward<P: AsPath>(ctx: &AppCtx<'_>, group: &[P]) -> bool {
+    if !ctx.config.isolate {
+        group.len() > ctx.config.rf_over()
+    } else {
+        let s: HashSet<_> = group
+            .iter()
+            .map(|p| root_of(p.path(), &ctx.input_paths))
+            .collect();
+        s.len() > ctx.config.rf_over()
+    }
+}
+
 fn group_by_size(ctx: &AppCtx<'_>, files: Vec<Vec<FileInfo>>) -> Vec<FileGroup<FileInfo>> {
     let file_count: usize = files.iter().map(|v| v.len()).sum();
     let progress = ctx.log.progress_bar("Grouping by size", file_count as u64);
@@ -437,7 +472,7 @@ fn group_by_size(ctx: &AppCtx<'_>, files: Vec<Vec<FileInfo>>) -> Vec<FileGroup<F
 
     let groups: Vec<_> = groups
         .into_iter()
-        .filter(|(_, files)| files.len() > rf_over)
+        .filter(|(_, files)| should_forward(ctx, files.as_slice()))
         .map(|(l, files)| FileGroup {
             file_len: l,
             file_hash: FileHash(0),
@@ -507,7 +542,7 @@ fn remove_same_files(
     let groups: Vec<_> = groups
         .into_par_iter()
         .update(|g| deduplicate(ctx, &mut g.files, |_| progress.tick()))
-        .filter(|g| g.files.len() > rf_over)
+        .filter(|g| should_forward(ctx, g.files.as_slice()))
         .collect();
 
     let count: usize = groups.selected_count(rf_over, rf_under);
@@ -587,7 +622,7 @@ fn group_transformed(
     let groups = rehash(
         groups,
         |_| true,
-        |g| g.files.len() > rf_over,
+        |g| should_forward(ctx, g.files.as_slice()),
         &ctx.devices,
         AccessType::Sequential,
         |(fi, _)| {
@@ -655,7 +690,7 @@ fn group_by_prefix(
     let groups = rehash(
         groups,
         pre_filter,
-        |g| g.files.len() > rf_over,
+        |g| should_forward(ctx, g.files.as_slice()),
         &ctx.devices,
         AccessType::Random,
         |(fi, _)| {
@@ -721,7 +756,7 @@ fn group_by_suffix(ctx: &AppCtx<'_>, groups: Vec<FileGroup<FileInfo>>) -> Vec<Fi
     let groups = rehash(
         groups,
         pre_filter,
-        |g| g.files.len() > rf_over,
+        |g| should_forward(ctx, g.files.as_slice()),
         &ctx.devices,
         AccessType::Random,
         |(fi, old_hash)| {
@@ -767,7 +802,7 @@ fn group_by_contents(
     let groups = rehash(
         groups,
         pre_filter,
-        |g| g.files.len() > rf_over,
+        |g| should_forward(ctx, g.files.as_slice()),
         &ctx.devices,
         AccessType::Sequential,
         |(fi, _)| {
@@ -848,12 +883,12 @@ fn group_by_contents(
 /// ```
 /// use fclones::log::Log;
 /// use fclones::config::GroupConfig;
+/// use fclones::path::Path;
 /// use fclones::{group_files, write_report};
-/// use std::path::PathBuf;
 ///
 /// let log = Log::new();
 /// let mut config = GroupConfig::default();
-/// config.paths = vec![PathBuf::from("/path/to/a/dir")];
+/// config.paths = vec![Path::from("/path/to/a/dir")];
 ///
 /// let groups = group_files(&config, &log).unwrap();
 /// println!("Found {} groups: ", groups.len());
@@ -937,7 +972,7 @@ pub fn write_report(config: &GroupConfig, log: &Log, groups: &[FileGroup<Path>])
 
 #[cfg(test)]
 mod test {
-    use std::fs::{hard_link, File, OpenOptions};
+    use std::fs::{create_dir, hard_link, File, OpenOptions};
     use std::io::{Read, Write};
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicBool, Ordering};
@@ -1143,7 +1178,7 @@ mod test {
 
             let log = test_log();
             let mut config = GroupConfig::default();
-            config.paths = vec![file1, file2];
+            config.paths = vec![file1.into(), file2.into()];
             let results = group_files(&config, &log).unwrap();
             assert_eq!(results.len(), 1);
             assert_eq!(results[0].file_len, FileLen(3));
@@ -1161,7 +1196,7 @@ mod test {
 
             let log = test_log();
             let mut config = GroupConfig::default();
-            config.paths = vec![file1, file2];
+            config.paths = vec![file1.into(), file2.into()];
 
             let results = group_files(&config, &log).unwrap();
             assert_eq!(results.len(), 1);
@@ -1177,6 +1212,9 @@ mod test {
             write_test_file(&file1, b"aaaa", b"", b"");
             write_test_file(&file2, b"aaa", b"", b"");
 
+            let file1 = Path::from(file1);
+            let file2 = Path::from(file2);
+
             let log = test_log();
             let mut config = GroupConfig::default();
             config.paths = vec![file1.clone(), file2.clone()];
@@ -1184,14 +1222,8 @@ mod test {
 
             let results = group_files(&config, &log).unwrap();
             assert_eq!(results.len(), 2);
-            assert_eq!(
-                results[0].files,
-                vec![Path::from(file1.canonicalize().unwrap())]
-            );
-            assert_eq!(
-                results[1].files,
-                vec![Path::from(file2.canonicalize().unwrap())]
-            );
+            assert_eq!(results[0].files, vec![Path::from(file1.canonicalize())]);
+            assert_eq!(results[1].files, vec![Path::from(file2.canonicalize())]);
         });
     }
 
@@ -1205,7 +1237,7 @@ mod test {
 
             let log = test_log();
             let mut config = GroupConfig::default();
-            config.paths = vec![file1.clone(), file2.clone()];
+            config.paths = vec![file1.into(), file2.into()];
             config.unique = true;
 
             let results = group_files(&config, &log).unwrap();
@@ -1227,7 +1259,7 @@ mod test {
 
             let log = test_log();
             let mut config = GroupConfig::default();
-            config.paths = vec![file1.clone(), file2.clone()];
+            config.paths = vec![file1.into(), file2.into()];
             config.unique = true;
 
             let results = group_files(&config, &log).unwrap();
@@ -1249,7 +1281,7 @@ mod test {
 
             let log = test_log();
             let mut config = GroupConfig::default();
-            config.paths = vec![file1.clone(), file2.clone()];
+            config.paths = vec![file1.into(), file2.into()];
             config.unique = true;
 
             let results = group_files(&config, &log).unwrap();
@@ -1269,7 +1301,7 @@ mod test {
 
             let log = test_log();
             let mut config = GroupConfig::default();
-            config.paths = vec![file1.clone(), file2.clone()];
+            config.paths = vec![file1.into(), file2.into()];
             config.unique = true;
 
             let results = group_files(&config, &log).unwrap();
@@ -1285,6 +1317,7 @@ mod test {
             write_test_file(&file1, b"foo", b"", b"");
             let log = test_log();
             let mut config = GroupConfig::default();
+            let file1 = Path::from(file1);
             config.paths = vec![file1.clone(), file1.clone(), file1.clone()];
             config.unique = true;
             config.hard_links = true;
@@ -1310,13 +1343,42 @@ mod test {
 
             let log = test_log();
             let mut config = GroupConfig::default();
-            config.paths = vec![file1.clone(), file2.clone()];
+            config.paths = vec![file1.into(), file2.into()];
             config.unique = true;
             config.hard_links = true;
 
             let results = group_files(&config, &log).unwrap();
             assert_eq!(results.len(), 1);
             assert_eq!(results[0].files.len(), 1);
+        });
+    }
+
+    #[test]
+    fn duplicate_files_different_roots() {
+        with_dir("main/duplicate_files_different_roots", |root| {
+            let root1 = root.join("root1");
+            let root2 = root.join("root2");
+            create_dir(&root1).unwrap();
+            create_dir(&root2).unwrap();
+
+            let file1 = root1.join("file1");
+            let file2 = root1.join("file2");
+
+            write_test_file(&file1, b"foo", b"", b"");
+            write_test_file(&file2, b"foo", b"", b"");
+
+            let log = test_log();
+            let mut config = GroupConfig::default();
+            config.paths = vec![root1.into(), root2.into()];
+            config.isolate = true;
+
+            let results = group_files(&config, &log).unwrap();
+            assert_eq!(results.len(), 0);
+
+            config.isolate = false;
+            let results = group_files(&config, &log).unwrap();
+            assert_eq!(results.len(), 1);
+            assert_eq!(results[0].files.len(), 2);
         });
     }
 
@@ -1329,7 +1391,7 @@ mod test {
             let report_file = root.join("report.txt");
             let log = test_log();
             let mut config = GroupConfig::default();
-            config.paths = vec![file.clone()];
+            config.paths = vec![file.into()];
             config.unique = true;
             config.output = Some(report_file.clone());
 
