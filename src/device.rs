@@ -318,6 +318,7 @@ mod test {
     use super::*;
 
     #[test]
+    #[cfg_attr(not(target_os = "linux"), ignore)]
     fn test_physical_device_name() {
         assert_eq!(
             DiskDevices::physical_device_name(OsStr::new("/dev/sda")),
