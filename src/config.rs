@@ -159,7 +159,7 @@ pub struct GroupConfig {
     pub hard_links: bool,
 
     /// Don't count matching files found within the same directory argument as duplicates.
-    #[structopt(short("I"), long)]
+    #[structopt(short("I"), long, conflicts_with("follow-links"))]
     pub isolate: bool,
 
     /// Before matching, transforms each file by the specified program.
@@ -283,7 +283,10 @@ impl GroupConfig {
                 self.rf_over() + 1,
             ));
         }
-        if self.isolate && self.paths.len() < self.rf_under() {
+        if self.isolate
+            && (self.rf_under.is_some() || self.unique)
+            && self.paths.len() < self.rf_under()
+        {
             return Err(format!(
                 "The --isolate flag requires that the number of input paths ({}) \
                  is larger than the replication factor upper bound ({}). \
