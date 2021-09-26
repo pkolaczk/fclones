@@ -279,7 +279,8 @@ The following wildcards can be used:
 - `?(a|b)`    matches at most one occurrence of the pattern inside the brackets
 - `+(a|b)`    matches at least occurrence of the patterns given inside the brackets
 - `*(a|b)`    matches any number of occurrences of the patterns given inside the brackets
-- `{escape}`  escapes wildcards, e.g. `{escape}?` would match `?` literally
+- `\`         escapes wildcards on Unix-like systems, e.g. `\?` would match `?` literally
+- `^`         escapes wildcards on Windows, e.g. `^?` would match `?` literally
 
 #### Caution
 
