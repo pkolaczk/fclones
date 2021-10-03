@@ -1,0 +1,17 @@
+name: fclones
+version: git
+summary: Efficient duplicate file finder and remover
+description: Finds duplicate, unique, under- or over-replicated files and offers many ways to get rid of them
+base: core18
+confinement: strict
+grade: stable
+parts:
+  fclones:
+    plugin: rust
+    source: .
+apps:
+  fclones:
+    command: bin/fclones
+    plugs:
+      - home
+      - removable-media
