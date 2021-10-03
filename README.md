@@ -120,8 +120,12 @@ Help test and/or port to other platforms is welcome.
 Please report successes as well as failures.      
 
 ### Official Packages
+FClones is available in the Snap store:
+
+    sudo snap install fclones
+
 Installation packages and binaries for some platforms 
-are attached directly to [Releases](https://github.com/pkolaczk/fclones/releases).
+are also attached directly to [Releases](https://github.com/pkolaczk/fclones/releases).
 
 ### Third-party Packages
 * [Linux Arch Package](https://aur.archlinux.org/packages/fclones-git/) by [@aurelg](https://github.com/aurelg)   
