@@ -38,16 +38,27 @@ pub mod test {
 
     /// Runs test code that needs access to temporary file storage.
     /// Makes sure the test root directory exists and is empty.
-    /// Deletes the directory and its contents after the test unless test fails.
-    pub fn with_dir<F>(test_root: &str, test_code: F)
+    /// Returns the return value of the test code and recursively deletes
+    /// the directory after the test, unless the test fails.
+    pub fn with_dir<F, R>(test_root: &str, test_code: F) -> R
     where
-        F: FnOnce(&PathBuf),
+        F: FnOnce(&PathBuf) -> R,
     {
         let test_root = PathBuf::from("target/test").join(test_root);
+
+        // Quick sanity check: Joining a relative with an absolute path
+        // returns an absolute path.
+        if test_root.is_absolute() && !test_root.starts_with("/dev/shm/") {
+            panic!("Internal test error: only use relative paths!");
+        }
+
         remove_dir_all(&test_root).ok();
         create_dir_all(&test_root).unwrap();
-        (test_code)(&test_root.canonicalize().unwrap());
-        remove_dir_all(&test_root).unwrap();
+
+        let ret = test_code(&test_root.canonicalize().unwrap());
+
+        remove_dir_all(&test_root).ok();
+        ret
     }
 
     /// Creates a new empty file.
