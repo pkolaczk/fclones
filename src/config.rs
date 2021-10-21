@@ -516,7 +516,7 @@ pub enum Command {
     /// Replaces redundant files with links.
     ///
     /// The list of groups earlier produced by `fclones group` should be submitted
-    /// on the standard input. Only the default text format is supported.
+    /// on the standard input.
     ///
     /// Unless `--soft` is specified, hard links are created for links within
     /// the same file system. Soft links are always created to link files between
@@ -530,16 +530,22 @@ pub enum Command {
         soft: bool,
     },
 
-    /// Deduplicate files.
+    /// Deduplicates file data using native filesystem deduplication capabilities.
     ///
     /// The list of groups earlier produced by `fclones group` should be submitted
-    /// on the standard input. Only the default text format is supported.
+    /// on the standard input.
     ///
-    /// Can not cross file system boundaries, not all file systems support deduplication.
+    /// After successful deduplication, all file clones would be still visible as distinct files,
+    /// but the data would be stored only once, hence taking up possibly less space than before.
+    /// Unlike with hard links, modifying a file does not modify any of its clones.
     /// The result is not visible to userland applications, so repeated runs
     /// will find the same files again. This also applies to `fclones dedupe` itself:
     /// The options `--priority` and `--rf-over` do not detect earlier deduplications.
-    /// Not all metadata is preserved on macOS. Unsupported on Windows.
+    ///
+    /// This command cannot cross file system boundaries.
+    /// Not all file systems support deduplication.
+    /// Not all metadata is preserved on macOS.
+    /// Unsupported on Windows.
     Dedupe {
         #[structopt(flatten)]
         config: DedupeConfig,
@@ -548,13 +554,13 @@ pub enum Command {
     /// Removes redundant files.
     ///
     /// The list of groups earlier produced by `fclones group` should be submitted
-    /// on the standard input. Only the default text format is supported.
+    /// on the standard input.
     Remove(DedupeConfig),
 
     /// Moves redundant files to the given directory.
     ///
     /// The list of groups earlier produced by `fclones group` should be submitted
-    /// on the standard input. Only the default text format is supported.
+    /// on the standard input.
     Move {
         #[structopt(flatten)]
         config: DedupeConfig,
