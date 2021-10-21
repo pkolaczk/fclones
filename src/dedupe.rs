@@ -26,7 +26,7 @@ use crate::{Error, FileGroup, TIMESTAMP_FMT};
 use std::collections::HashMap;
 
 /// Defines what to do with redundant files
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Clone)]
 pub enum DedupeOp {
     /// Removes redundant files.
     Remove,
@@ -36,8 +36,6 @@ pub enum DedupeOp {
     SoftLink,
     /// Replaces redundant files with hard-links (ln on Unix).
     HardLink,
-    /// Reflink redundant files (cp --reflink=always, only some filesystems).
-    RefLink,
 }
 
 /// Convenience struct for holding a path to a file and its metadata together
@@ -96,14 +94,10 @@ pub enum FsCommand {
         target: Arc<FileMetadata>,
         link: FileMetadata,
     },
-    RefLink {
-        target: Arc<FileMetadata>,
-        link: FileMetadata,
-    },
 }
 
 impl FsCommand {
-    pub fn remove(path: &Path) -> io::Result<()> {
+    fn remove(path: &Path) -> io::Result<()> {
         let _ = FileLock::new(path)?;
         fs::remove_file(path.to_path_buf())
             .map_err(|e| io::Error::new(e.kind(), format!("Failed to remove file {}: {}", path, e)))
@@ -165,7 +159,7 @@ impl FsCommand {
 
     /// Renames/moves a file from one location to another.
     /// If the target exists, it would be overwritten.
-    pub fn unsafe_rename(source: &Path, target: &Path) -> io::Result<()> {
+    fn unsafe_rename(source: &Path, target: &Path) -> io::Result<()> {
         fs::rename(&source.to_path_buf(), &target.to_path_buf()).map_err(|e| {
             io::Error::new(
                 e.kind(),
@@ -217,7 +211,7 @@ impl FsCommand {
 
     /// Returns a random temporary file name in the same directory, guaranteed to not collide with
     /// any other file in the same directory
-    pub fn temp_file(path: &Path) -> Path {
+    fn temp_file(path: &Path) -> Path {
         let mut name = path
             .file_name()
             .expect("must be a regular file with a name");
@@ -238,11 +232,7 @@ impl FsCommand {
     /// Safely moves the file to a different location and invokes the function.
     /// If the function fails, moves the file back to the original location.
     /// If the function succeeds, removes the file permanently.
-    pub fn safe_remove<R>(
-        path: &Path,
-        f: impl Fn(&Path) -> io::Result<R>,
-        log: &Log,
-    ) -> io::Result<R> {
+    fn safe_remove<R>(path: &Path, f: impl Fn(&Path) -> io::Result<R>, log: &Log) -> io::Result<R> {
         let _ = FileLock::new(path)?; // don't remove a locked file
         let tmp = Self::temp_file(path);
         Self::unsafe_rename(path, &tmp)?;
@@ -281,10 +271,6 @@ impl FsCommand {
                 Self::safe_remove(&link.path, |link| Self::hardlink(&target.path, link), log)?;
                 Ok(FileLen(link.metadata.len()))
             }
-            FsCommand::RefLink { target, link } => {
-                crate::reflink::reflink(target, link, log)?;
-                Ok(FileLen(link.metadata.len()))
-            }
             FsCommand::Move {
                 source,
                 target,
@@ -306,7 +292,6 @@ impl FsCommand {
             FsCommand::Remove { file, .. }
             | FsCommand::SoftLink { link: file, .. }
             | FsCommand::HardLink { link: file, .. }
-            | FsCommand::RefLink { link: file, .. }
             | FsCommand::Move { source: file, .. } => FileLen(file.metadata.len()),
         }
     }
@@ -334,15 +319,6 @@ impl FsCommand {
                 let link = link.path.shell_quote();
                 result.push(format!("mv {} {}", link, tmp));
                 result.push(format!("ln {} {}", target, link));
-                result.push(format!("rm {}", tmp));
-            }
-            FsCommand::RefLink { target, link, .. } => {
-                let tmp = Self::temp_file(&link.path);
-                let target = target.path.shell_quote();
-                let link = link.path.shell_quote();
-                // Not really what happens on linux, there the `mv` is also a reflink.
-                result.push(format!("mv {} {}", link, tmp));
-                result.push(format!("cp --reflink=always {} {}", target, link));
                 result.push(format!("rm {}", tmp));
             }
             FsCommand::Move {
@@ -386,9 +362,6 @@ impl FsCommand {
                 result.push(format!("move {} {}", link, tmp));
                 result.push(format!("mklink /H {} {}", target, link));
                 result.push(format!("del {}", tmp));
-            }
-            FsCommand::RefLink { target, link, .. } => {
-                result.push(format!("; deduplicate {} {}", link, target));
             }
             FsCommand::Move {
                 source,
@@ -434,8 +407,8 @@ impl AddAssign for DedupeResult {
     }
 }
 
-/// Returns true if any of the files have been modified after the given timestamp.
-/// Also returns true if file timestamp could not be read.
+/// Returns true if any of the files has been modified after given timestamp
+/// Also returns true if file timestamp could
 fn was_modified(files: &[FileMetadata], after: DateTime<FixedOffset>, log: &Log) -> bool {
     let mut result = false;
     let after: DateTime<Local> = after.into();
@@ -616,10 +589,6 @@ impl PartitionedFileGroup {
                     link: dropped_file,
                 }),
                 DedupeOp::HardLink => commands.push(FsCommand::HardLink {
-                    target: retained_file.clone(),
-                    link: dropped_file,
-                }),
-                DedupeOp::RefLink => commands.push(FsCommand::RefLink {
                     target: retained_file.clone(),
                     link: dropped_file,
                 }),
@@ -860,10 +829,7 @@ mod test {
 
     use crate::files::FileHash;
     use crate::pattern::Pattern;
-    use crate::util::test::{
-        cached_reflink_supported, create_file, create_file_newer_than, read_file, with_dir,
-        write_file,
-    };
+    use crate::util::test::{create_file, create_file_newer_than, read_file, with_dir, write_file};
 
     use super::*;
 
@@ -997,46 +963,6 @@ mod test {
             assert!(file_path_2.exists());
             assert_eq!(read_file(&file_path_2), "foo");
         })
-    }
-
-    fn test_reflink_command_fills_file_with_content() {
-        if !cached_reflink_supported() {
-            return;
-        }
-        with_dir("dedupe/reflink_cmd", |root| {
-            let log = Log::new();
-            let file_path_1 = root.join("file_1");
-            let file_path_2 = root.join("file_2");
-
-            write_file(&file_path_1, "foo");
-            write_file(&file_path_2, "");
-
-            let file_1 = FileMetadata::new(Path::from(&file_path_1)).unwrap();
-            let file_2 = FileMetadata::new(Path::from(&file_path_2)).unwrap();
-            let cmd = FsCommand::RefLink {
-                target: Arc::new(file_1),
-                link: file_2,
-            };
-            cmd.execute(&log).unwrap();
-
-            assert!(file_path_1.exists());
-            assert!(file_path_2.exists());
-            assert_eq!(read_file(&file_path_2), "foo");
-        })
-    }
-
-    #[test]
-    fn test_reflink_command_fills_file_with_content_anyos() {
-        let _sequential = crate::config::test::CrossTest::new(false);
-        test_reflink_command_fills_file_with_content();
-    }
-
-    // This test the reflink code path (using the reflink crate) usually not used on linux.
-    #[test]
-    #[cfg(any(target_os = "linux", target_os = "android"))]
-    fn test_reflink_command_fills_file_with_content_not_ioctl_linux() {
-        let _sequential = crate::config::test::CrossTest::new(true);
-        test_reflink_command_fills_file_with_content();
     }
 
     /// Creates 3 empty files with different creation time and returns a FileGroup describing them

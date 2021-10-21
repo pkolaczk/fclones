@@ -48,7 +48,6 @@ mod device;
 mod group;
 mod lock;
 mod pattern;
-mod reflink;
 mod regex;
 mod selector;
 mod semaphore;
