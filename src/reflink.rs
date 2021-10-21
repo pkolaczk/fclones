@@ -42,11 +42,15 @@ fn linux_reflink(target: &FileMetadata, link: &FileMetadata, log: &Log) -> io::R
     let fs_target = target.path.to_path_buf();
     let std_link = link.path.to_path_buf();
 
+    let remove_temporary = |temporary| {
+        if let Err(e) = FsCommand::remove(&temporary) {
+            log.warn(format!("Failed to remove temporary {}: {}", &temporary, e))
+        }
+    };
+
     // Backup via reflink, if this fails then the fs does not support reflinking.
     if let Err(e) = reflink_overwrite(&std_link, &std_tmp) {
-        if let Err(e) = FsCommand::remove(&tmp) {
-            log.warn(format!("Failed to remove temporary {}: {}", &tmp, e))
-        }
+        remove_temporary(tmp);
         return Err(e);
     }
 
@@ -62,7 +66,10 @@ fn linux_reflink(target: &FileMetadata, link: &FileMetadata, log: &Log) -> io::R
             }
             Err(e)
         }
-        ok => ok,
+        Ok(ok) => {
+            remove_temporary(tmp);
+            Ok(ok)
+        }
     };
 
     result
