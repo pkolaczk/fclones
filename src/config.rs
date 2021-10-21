@@ -579,7 +579,18 @@ impl Command {
 #[structopt(
     name = "fclones",
     setting(AppSettings::ColoredHelp),
-    setting(AppSettings::DeriveDisplayOrder)
+    setting(AppSettings::DeriveDisplayOrder),
+    after_help = r#"EXAMPLES:
+
+First call "fclones group -o duplicates.txt directory/" to find all duplicates
+in a directory. See "fclones group --help" on how to modify this search.
+
+Then you may call "fclones SUBCOMMAND < duplicates.txt", where SUBCOMMAND is one
+of link, dedupe, remove or move. See the --help output of each subcommand
+for more information. All have a --dry-run flag to preview changes.
+
+It is also possible to combine the first and second step, e.g.:
+"fclones group dir1/ dir2/ | fclones SUBCOMMAND""#
 )]
 pub struct Config {
     /// Suppresses progress reporting
