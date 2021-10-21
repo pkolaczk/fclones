@@ -535,7 +535,7 @@ pub enum Command {
     /// The list of groups earlier produced by `fclones group` should be submitted
     /// on the standard input.
     ///
-    /// After successful deduplication, all file clones would be still visible as distinct files,
+    /// After successful deduplication, all file clones would still be visible as distinct files,
     /// but the data would be stored only once, hence taking up possibly less space than before.
     /// Unlike with hard links, modifying a file does not modify any of its clones.
     /// The result is not visible to userland applications, so repeated runs
