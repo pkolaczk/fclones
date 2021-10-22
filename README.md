@@ -1,26 +1,37 @@
-# FClones — Efficient Duplicate File Finder and Remover
+fclones
+===============================================
+**Efficient duplicate file finder and remover**
+
 [![CircleCI](https://circleci.com/gh/pkolaczk/fclones.svg?style=shield)](https://circleci.com/gh/pkolaczk/fclones)
 [![crates.io](https://img.shields.io/crates/v/fclones.svg)](https://crates.io/crates/fclones)
 [![Documentation](https://docs.rs/fclones/badge.svg)](https://docs.rs/fclones)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-Sometimes you accidentally copied your files in too many places - `fclones group` will scan the file-system 
-and quickly identify groups of identical files. Depending on the settings, 
-it can be used to find redundant (duplicate), unique or under-replicated files, e.g., to 
-check if your backups contain the required number of copies. It also offers a rich set of filtering 
-options letting you analyze only a small subset of the directory tree.
+`fclones` is a command line utility that identifies groups of identical files and gets rid 
+of the file copies you no longer need. It comes with plenty of configuration options for controlling
+the search scope and offers many ways of removing duplicates. For maximum flexibility,
+it integrates well with other Unix programs like `find` and it speaks JSON, so you can have a lot
+of control over the search and cleanup process.
 
-The redundant files found by `fclones group` can be then removed by executing `fclones remove` or 
-replaced by soft of hard links with `fclones link`. 
-For maximum safety, there is also a `--dry-run` option that prints out all the file-system changes 
-to be performed without actually running them. 
+`fclones` treats your data seriously. You can inspect and modify the list of duplicate files before removing them.
+There is also a `--dry-run` option that can tell you exactly what changes on the file system would be made.
 
-FClones has been implemented in Rust with a strong focus on high performance on modern hardware. 
-It employs several techniques not present in many other
-programs (which often claim to be "fast" duplicate finders). FClones adapts to the type of the hard drive, 
-orders file operations by physical data placement on HDDs, scans directory tree in parallel and uses prefix compression
-of paths to reduce memory consumption when working with millions of files.
-As a result, FClones easily outperforms many other popular duplicate finders by a wide margin on either SSD or HDD storage 
-(see [Benchmarks](#benchmarks)).
+`fclones` has been implemented in Rust with a strong focus on high performance on modern hardware. 
+It employs several optimization techniques not present in many other programs. 
+It adapts to the type of the hard drive, orders file operations by physical data placement on HDDs, 
+scans directory tree in parallel and uses prefix compression of paths to reduce memory consumption when working 
+with millions of files. It is also friendly to page-cache and does not push out your data out of cache.
+As a result, `fclones` easily outperforms many other popular duplicate finders by a wide margin 
+on either SSD or HDD storage.
+
+`fclones` is available on a wide variety of operating systems, but it works best on Linux. 
+
+- [Features](#features)
+- [Demo](#demo)
+- [Installation](#installation)
+- [Usage](#usage)
+- [Algorithm](#the-algorithm)
+- [Benchmarks](#benchmarks)
 
 ## Features
 * Identifying groups of identical files
@@ -37,8 +48,9 @@ As a result, FClones easily outperforms many other popular duplicate finders by 
   - filtering names and paths by regular expressions
   - filtering by min/max file size
   - proper handling of symlinks and hardlinks
-* Removing redundant files
+* Removing redundant data
   - removing, moving or replacing files with soft or hard links
+  - removing redundant file data using native copy-on-write (reflink) support on some file systems 
   - selecting files for removal by path or name patterns  
   - prioritizing files to remove by creation, modification, last access time or nesting level
 * High performance
@@ -46,7 +58,6 @@ As a result, FClones easily outperforms many other popular duplicate finders by 
   - automatic tuning of parallelism and access strategy based on device type (SSD vs HDD)
   - low memory footprint thanks to heavily optimized path representation
   - fast, non-cryptographic 128-bit hashing function
-  - linear complexity
   - doesn't push data out of the page-cache (Linux-only)
   - accurate progress reporting   
 * Variety of output formats for easy further processing of results  
@@ -54,13 +65,15 @@ As a result, FClones easily outperforms many other popular duplicate finders by 
     - groups separated by group headers with file size and hash 
     - one path per line in a group  
   - optional `fdupes` compatibility (no headers, no indent, groups separated by blank lines)    
-  - machine-readable formats: `CSV`, `JSON`     
+  - machine-readable formats: `CSV`, `JSON`
 
 ### Limitations
+Copy-on-write file data deduplication (reflink) is not supported on Windows. 
+
 Some optimisations are not available on platforms other than Linux:
   - ordering of file accesses by physical placement
   - page-cache drop-behind
-
+  
 ## Demo
 Let's first create some files:
 
@@ -114,13 +127,13 @@ Finally we can replace the duplicates by soft links:
     lrwxrwxrwx 1 pkolaczk pkolaczk  18 cze  5 18:25 foo3.txt -> /tmp/test/foo1.txt
 
 ## Installation
-The code has been thoroughly tested on Ubuntu Linux 20.10.
+The code has been thoroughly tested on Ubuntu Linux 21.10.
 Other systems like Windows or Mac OS X and other architectures may work. 
 Help test and/or port to other platforms is welcome.
 Please report successes as well as failures.      
 
 ### Official Packages
-FClones is available in the Snap store:
+`fclones` is available in the [Snap store](https://snapcraft.io/fclones):
 
     sudo snap install fclones
 
@@ -128,7 +141,9 @@ Installation packages and binaries for some platforms
 are also attached directly to [Releases](https://github.com/pkolaczk/fclones/releases).
 
 ### Third-party Packages
-* [Linux Arch Package](https://aur.archlinux.org/packages/fclones-git/) by [@aurelg](https://github.com/aurelg)   
+* [Arch Linux](https://aur.archlinux.org/packages/fclones/) 
+* [Alpine Linux](https://pkgs.alpinelinux.org/package/edge/testing/x86_64/fclones)
+* [NixOS](https://search.nixos.org/packages?channel=unstable&show=fclones&from=0&size=50&sort=relevance&type=packages&query=fclones)
 
 ### Building from Source 
 1. [Install Rust Toolchain](https://www.rust-lang.org/tools/install)
@@ -138,12 +153,13 @@ The build will write the binary to `.cargo/bin/fclones`.
 
 ## Usage
 
-FClones offers separate commands for finding and removing files. This way, you can inspect
+`fclones` offers separate commands for finding and removing files. This way, you can inspect
 the list of found files before applying any modifications to the file system. 
 
-  - `group` - identifies groups of identical files and prints them to the standard output
-  - `remove` - removes redundant files earlier identified by `group`
-  - `link` - replaces redundant files with links (default: hard links)
+  - `group` – identifies groups of identical files and prints them to the standard output
+  - `remove` – removes redundant files earlier identified by `group`
+  - `link` – replaces redundant files with links (default: hard links)
+  - `dedupe` – does not remove any files, but deduplicates file data by using native copy-on-write capabilities of the file system (reflink) 
 
 ### Finding Files
 
@@ -218,7 +234,7 @@ To leave 2 replicas in each group, run:
 
     fclones remove -n 2 <dupes.txt
 
-By default, FClones follows the order of files specified in the input file. It keeps the files given at the beginning
+By default, `fclones` follows the order of files specified in the input file. It keeps the files given at the beginning
 of each list, and removes / replaces the files given at the end of each list. It is possible to change that 
 order by `--priority` option, for example:
 
@@ -271,7 +287,7 @@ List more options:
     fclones [command] --help  # detailed help
 
 ### Path Globbing
-FClones understands a subset of Bash Extended Globbing.
+`fclones` understands a subset of Bash Extended Globbing.
 The following wildcards can be used:
 - `?`         matches any character except the directory separator
 - `[a-z]`     matches one of the characters or character ranges given in the square brackets
