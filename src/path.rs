@@ -84,7 +84,7 @@ impl Path {
         result
     }
 
-    /// If `path` is relative, works the same as [`join`].
+    /// If `path` is relative, works the same as [`join`](Path::join).
     /// If `path` is absolute, ignores `self` and returns `path`.
     pub fn resolve<P: AsRef<Path>>(self: &Arc<Path>, path: P) -> Path {
         let path = path.as_ref();

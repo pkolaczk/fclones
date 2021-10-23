@@ -10,7 +10,7 @@ fclones
 `fclones` is a command line utility that identifies groups of identical files and gets rid 
 of the file copies you no longer need. It comes with plenty of configuration options for controlling
 the search scope and offers many ways of removing duplicates. For maximum flexibility,
-it integrates well with other Unix programs like `find` and it speaks JSON, so you can have a lot
+it integrates well with other Unix utilities like `find` and it speaks JSON, so you have a lot
 of control over the search and cleanup process.
 
 `fclones` treats your data seriously. You can inspect and modify the list of duplicate files before removing them.
