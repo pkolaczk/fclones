@@ -9,21 +9,27 @@ use crate::lock::FileLock;
 use crate::log::Log;
 use crate::Path as FcPath;
 
-// Call OS-specific reflink implementations with an option to call the more generic
-// one during testing one on Linux ("crosstesting").
-pub fn reflink(target: &FileMetadata, link: &FileMetadata, log: &Log) -> io::Result<()> {
-    let _ = FileLock::new(&link.path)?; // don't touch a locked file
-
-    if cfg!(any(target_os = "linux", target_os = "android")) && !test::cfg::crosstest() {
-        linux_reflink(target, link, log).map_err(|e| {
-            io::Error::new(
-                e.kind(),
-                format!("Failed to deduplicate {} -> {}: {}", link, target, e),
-            )
-        })
-    } else {
-        reflink_keep_some_metadata(target, link, log)
+/// Calls OS-specific reflink implementations with an option to call the more generic
+/// one during testing one on Linux ("crosstesting").
+/// The destination file is allowed to exist.
+pub fn reflink(src: &FileMetadata, dest: &FileMetadata, log: &Log) -> io::Result<()> {
+    let _ = FileLock::new(&dest.path)?; // don't touch a locked file
+    let result = {
+        if cfg!(any(target_os = "linux", target_os = "android")) && !test::cfg::crosstest() {
+            linux_reflink(src, dest, log).map_err(|e| {
+                io::Error::new(
+                    e.kind(),
+                    format!("Failed to deduplicate {} -> {}: {}", dest, src, e),
+                )
+            })
+        } else {
+            safe_reflink(src, dest, log)
+        }
+    };
+    if let Err(err) = restore_some_metadata(&dest.path.to_path_buf(), &dest.metadata) {
+        log.warn(format!("Failed keep metadata for {}: {:?}", dest, err))
     }
+    result
 }
 
 // Dummy function so tests compile
@@ -35,12 +41,12 @@ fn linux_reflink(_target: &FileMetadata, _link: &FileMetadata, _log: &Log) -> io
 // First reflink (not move) the target file out of the way (this also checks for
 // reflink support), then overwrite the existing file to preserve metadata.
 #[cfg(any(target_os = "linux", target_os = "android"))]
-fn linux_reflink(target: &FileMetadata, link: &FileMetadata, log: &Log) -> io::Result<()> {
-    let tmp = FsCommand::temp_file(&link.path);
+fn linux_reflink(src: &FileMetadata, dest: &FileMetadata, log: &Log) -> io::Result<()> {
+    let tmp = FsCommand::temp_file(&dest.path);
     let std_tmp = tmp.to_path_buf();
 
-    let fs_target = target.path.to_path_buf();
-    let std_link = link.path.to_path_buf();
+    let fs_target = src.path.to_path_buf();
+    let std_link = dest.path.to_path_buf();
 
     let remove_temporary = |temporary| {
         if let Err(e) = FsCommand::remove(&temporary) {
@@ -54,15 +60,13 @@ fn linux_reflink(target: &FileMetadata, link: &FileMetadata, log: &Log) -> io::R
         return Err(e);
     }
 
-    let result = match reflink_overwrite(&fs_target, &std_link) {
+    match reflink_overwrite(&fs_target, &std_link) {
         Err(e) => {
-            if let Err(remove_err) = FsCommand::unsafe_rename(&tmp, &link.path) {
+            if let Err(remove_err) = FsCommand::unsafe_rename(&tmp, &dest.path) {
                 log.warn(format!(
                     "Failed to undo deduplication from {} to {}: {}",
-                    &link, &tmp, remove_err
+                    &dest, &tmp, remove_err
                 ))
-            } else if let Err(err) = restore_some_metadata(&std_link, &link.metadata) {
-                log.warn(format!("Failed keep metadata for {}: {:?}", link, err))
             }
             Err(e)
         }
@@ -70,9 +74,7 @@ fn linux_reflink(target: &FileMetadata, link: &FileMetadata, log: &Log) -> io::R
             remove_temporary(tmp);
             Ok(ok)
         }
-    };
-
-    result
+    }
 }
 
 /// Reflink `target` to `link` and expect these two files to be equally sized.
@@ -133,28 +135,18 @@ fn restore_some_metadata(path: &std::path::Path, metadata: &Metadata) -> io::Res
 }
 
 // Reflink which expects the destination to not exist.
-fn safe_reflink(target: &FcPath, link: &FcPath) -> io::Result<()> {
-    reflink::reflink(&target.to_path_buf(), &link.to_path_buf()).map_err(|e| {
+fn copy_by_reflink(src: &FcPath, dest: &FcPath) -> io::Result<()> {
+    reflink::reflink(&src.to_path_buf(), &dest.to_path_buf()).map_err(|e| {
         io::Error::new(
             e.kind(),
-            format!("Failed to deduplicate {} -> {}: {}", link, target, e),
+            format!("Failed to deduplicate {} -> {}: {}", dest, src, e),
         )
     })
 }
 
-fn reflink_keep_some_metadata(
-    target: &FileMetadata,
-    link: &FileMetadata,
-    log: &Log,
-) -> io::Result<()> {
-    let link_path = &link.path.to_path_buf();
-
-    FsCommand::safe_remove(&link.path, |link| safe_reflink(&target.path, link), log)?;
-
-    if let Err(err) = restore_some_metadata(link_path, &link.metadata) {
-        log.warn(format!("Failed keep metadata for {}: {:?}", link, err))
-    }
-
+// Create a reflink by removing the file and making a reflink copy of the original.
+fn safe_reflink(src: &FileMetadata, dest: &FileMetadata, log: &Log) -> io::Result<()> {
+    FsCommand::safe_remove(&dest.path, |link| copy_by_reflink(&src.path, link), log)?;
     Ok(())
 }
 
