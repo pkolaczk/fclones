@@ -576,8 +576,6 @@ fn update_file_locations(ctx: &AppCtx<'_>, groups: &mut Vec<FileGroup<FileInfo>>
         let progress = ctx.log.progress_bar("Fetching extents", count as u64);
 
         let err_counters = atomic_counter_vec(ctx.devices.len());
-        const MAX_ERR_COUNT_TO_LOG: u32 = 10;
-
         groups
             .par_iter_mut()
             .flat_map(|g| &mut g.files)
@@ -585,24 +583,55 @@ fn update_file_locations(ctx: &AppCtx<'_>, groups: &mut Vec<FileGroup<FileInfo>>
                 let device: &DiskDevice = &ctx.devices[fi.get_device_index()];
                 if device.disk_type != DiskType::SSD {
                     if let Err(e) = fi.fetch_physical_location() {
-                        let counter = &err_counters[device.index];
-                        if counter.load(Ordering::Relaxed) < MAX_ERR_COUNT_TO_LOG {
-                            let err_count = counter.fetch_add(1, Ordering::Relaxed);
-                            ctx.log.warn(format!(
-                                "Failed to fetch extents for file {}: {}",
-                                fi.path, e
-                            ));
-                            if err_count == MAX_ERR_COUNT_TO_LOG {
-                                ctx.log.warn(
-                                    "Too many fetch extents errors. More errors will be ignored. \
-                                 Random access performance might be affected on spinning drives.",
-                                )
-                            }
-                        }
+                        handle_fetch_physical_location_err(ctx, &err_counters, fi, e)
                     }
                 }
             })
             .for_each(|_| progress.tick());
+    }
+}
+
+/// Displays a warning message after fiemap ioctl fails and we don't know where the
+/// file data are located.
+/// The `err_counters` array is used to keep track of the number of errors recorded so far for
+/// given device - this array must contain the same number of entries as there are devices.
+/// If there are too many errors, subsequent warnings for the device are suppressed.
+#[cfg(target_os = "linux")]
+fn handle_fetch_physical_location_err(
+    ctx: &AppCtx<'_>,
+    err_counters: &[AtomicU32],
+    file_info: &FileInfo,
+    error: io::Error,
+) {
+    const MAX_ERR_COUNT_TO_LOG: u32 = 10;
+    let device = &ctx.devices[file_info.get_device_index()];
+    let counter = &err_counters[device.index];
+    if error.kind() == io::ErrorKind::Unsupported || error.raw_os_error() == Some(libc::EOPNOTSUPP)
+    {
+        if counter.swap(MAX_ERR_COUNT_TO_LOG, Ordering::Release) < MAX_ERR_COUNT_TO_LOG {
+            ctx.log.warn(format!(
+                "File system {} on device {} doesn't support FIEMAP ioctl API. \
+                This is generally harmless, but random access performance might be decreased \
+                because fclones can't determine physical on-disk location of file data needed \
+                for reading files in the optimal order.",
+                device.file_system,
+                device.name.to_string_lossy()
+            ));
+        }
+    } else if counter.load(Ordering::Acquire) < MAX_ERR_COUNT_TO_LOG {
+        ctx.log.warn(format!(
+            "Failed to fetch file extents mapping for file {}: {}. \
+            This is generally harmless, but it might decrease random access performance.",
+            file_info.path, error
+        ));
+        let err_count = counter.fetch_add(1, Ordering::AcqRel);
+        if err_count == MAX_ERR_COUNT_TO_LOG {
+            ctx.log.warn(format!(
+                "Too many errors trying to fetch file extent mappings on device {}. \
+                Subsequent errors for this device will be ignored.",
+                device.name.to_string_lossy()
+            ))
+        }
     }
 }
 
