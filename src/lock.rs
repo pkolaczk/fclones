@@ -23,18 +23,19 @@ impl FileLock {
         }
     }
 
+    /// Creates a libc::flock initialized to zeros.
+    /// Should be safe, because flock contains primitive fields only, no references.
+    fn new_flock() -> libc::flock {
+        unsafe { std::mem::zeroed() }
+    }
+
     #[cfg(unix)]
     fn fcntl_lock(file: &File) -> io::Result<()> {
         use nix::fcntl::*;
         use std::os::unix::io::AsRawFd;
-
-        let f = libc::flock {
-            l_type: libc::F_WRLCK as i16,
-            l_whence: libc::SEEK_SET as i16,
-            l_start: 0,
-            l_len: 0,
-            l_pid: 0,
-        };
+        let mut f = Self::new_flock();
+        f.l_type = libc::F_WRLCK as i16;
+        f.l_whence = libc::SEEK_SET as i16;
         let result = nix::fcntl::fcntl(file.as_raw_fd(), FcntlArg::F_SETLK(&f));
         Self::nix_as_io_error(result).map(|_| {})
     }
@@ -43,14 +44,9 @@ impl FileLock {
     fn fcntl_unlock(file: &File) -> io::Result<()> {
         use nix::fcntl::*;
         use std::os::unix::io::AsRawFd;
-
-        let f = libc::flock {
-            l_type: libc::F_UNLCK as i16,
-            l_whence: libc::SEEK_SET as i16,
-            l_start: 0,
-            l_len: 0,
-            l_pid: 0,
-        };
+        let mut f = Self::new_flock();
+        f.l_type = libc::F_UNLCK as i16;
+        f.l_whence = libc::SEEK_SET as i16;
         let result = nix::fcntl::fcntl(file.as_raw_fd(), FcntlArg::F_SETLK(&f));
         Self::nix_as_io_error(result).map(|_| {})
     }
