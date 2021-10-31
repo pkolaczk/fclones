@@ -51,6 +51,7 @@ pub struct DiskDevice {
     pub index: usize,
     pub name: OsString,
     pub disk_type: DiskType,
+    pub file_system: String,
     pub parallelism: Parallelism,
     seq_thread_pool: Lazy<ThreadPool>,
     rand_thread_pool: Lazy<ThreadPool>,
@@ -61,12 +62,14 @@ impl DiskDevice {
         index: usize,
         name: OsString,
         disk_type: DiskType,
+        file_system: String,
         parallelism: Parallelism,
     ) -> DiskDevice {
         DiskDevice {
             index,
             name,
             disk_type,
+            file_system,
             parallelism,
             seq_thread_pool: Lazy::new(),
             rand_thread_pool: Lazy::new(),
@@ -144,6 +147,7 @@ impl DiskDevices {
             0,
             OsString::from("/"),
             disk_type,
+            String::from("unknown"),
             Parallelism {
                 random: parallelism,
                 sequential: parallelism,
@@ -194,6 +198,7 @@ impl DiskDevices {
         &mut self,
         name: OsString,
         disk_type: DiskType,
+        file_system: String,
         pool_sizes: &HashMap<OsString, Parallelism>,
     ) -> usize {
         if let Some((index, _)) = self.devices.iter().find_position(|d| d.name == name) {
@@ -201,8 +206,13 @@ impl DiskDevices {
         } else {
             let index = self.devices.len();
             let parallelism = Self::get_parallelism(&name, disk_type, pool_sizes);
-            self.devices
-                .push(DiskDevice::new(index, name, disk_type, parallelism));
+            self.devices.push(DiskDevice::new(
+                index,
+                name,
+                disk_type,
+                file_system,
+                parallelism,
+            ));
             index
         }
     }
@@ -238,11 +248,20 @@ impl DiskDevices {
         };
 
         // Default device used when we don't find any real device
-        result.add_device(OsString::from("default"), DiskType::Unknown(-1), pool_sizes);
-
+        result.add_device(
+            OsString::from("default"),
+            DiskType::Unknown(-1),
+            String::from("unknown"),
+            pool_sizes,
+        );
         for d in sys.get_disks() {
             let device_name = Self::physical_device_name(d.get_name());
-            let index = result.add_device(device_name, d.get_type(), pool_sizes);
+            let index = result.add_device(
+                device_name,
+                d.get_type(),
+                String::from_utf8_lossy(d.get_file_system()).to_string(),
+                pool_sizes,
+            );
             result
                 .mount_points
                 .push((Path::from(d.get_mount_point()), index));
