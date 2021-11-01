@@ -25,6 +25,7 @@ impl FileLock {
 
     /// Creates a libc::flock initialized to zeros.
     /// Should be safe, because flock contains primitive fields only, no references.
+    #[cfg(unix)]
     fn new_flock() -> libc::flock {
         unsafe { std::mem::zeroed() }
     }

@@ -30,8 +30,8 @@ rm -f $PKG_DIR/*
 cargo deb
 mv target/debian/*.deb $PKG_DIR
 
-fakeroot alien --to-rpm -c $PKG_DIR/*.deb
-mv *.rpm $PKG_DIR
+#fakeroot alien --to-rpm -c $PKG_DIR/*.deb
+#mv *.rpm $PKG_DIR
 fakeroot alien --to-tgz -c $PKG_DIR/*.deb
 mv *.tgz $PKG_DIR
 
