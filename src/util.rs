@@ -1,3 +1,4 @@
+use itertools::Itertools;
 use serde::{Serialize, Serializer};
 use std::cell::Cell;
 
@@ -17,13 +18,49 @@ where
 /// Sorts an array using a key generation function that can fail.
 /// Items for which the key could not be obtained are sorted last.
 /// Returns vector of errors encountered when obtaining the keys.
-pub fn fallible_sort_by_key<T, K, E>(v: &mut Vec<T>, f: impl Fn(&T) -> Result<K, E>) -> Vec<E>
+pub fn try_sort_by_key<T, K, E>(v: &mut Vec<T>, f: impl Fn(&T) -> Result<K, E>) -> Vec<E>
 where
     K: Ord,
 {
     let mut errors: Vec<E> = Vec::new();
     v.sort_by_key(|t| f(t).map_err(|e| errors.push(e)).ok());
     errors
+}
+
+/// Reduces the elements to a single one, by repeatedly applying a reducing operation.
+/// If the iterator is empty, returns `Ok(None)`; otherwise, returns the result of the reduction.
+/// If any of the elements is `Err`, returns the first `Err`.
+pub fn reduce_results<I, T, E, F>(mut iter: I, f: F) -> Result<Option<T>, E>
+where
+    I: Iterator<Item = Result<T, E>>,
+    F: Fn(T, T) -> T,
+{
+    iter.fold_results(None, |res, item| match res {
+        Some(res) => Some(f(res, item)),
+        None => Some(item),
+    })
+}
+
+/// Finds the minimum value.
+/// If any of the values is `Err`, returns the first `Err`.
+/// If the input iterator is empty, returns `Ok(None)`.
+pub fn min_result<I, T, E>(iter: I) -> Result<Option<T>, E>
+where
+    I: Iterator<Item = Result<T, E>>,
+    T: Ord,
+{
+    reduce_results(iter, T::min)
+}
+
+/// Finds the maximum value.
+/// If any of the values is `Err`, returns the first `Err`.
+/// If the input iterator is empty, returns `Ok(None)`.
+pub fn max_result<I, T, E>(iter: I) -> Result<Option<T>, E>
+where
+    I: Iterator<Item = Result<T, E>>,
+    T: Ord,
+{
+    reduce_results(iter, T::max)
 }
 
 /// Utility functions intended for testing.
@@ -37,6 +74,7 @@ pub mod test {
     use std::time::SystemTime;
     use std::{fs, thread};
 
+    use super::*;
     use lazy_static::lazy_static;
 
     #[derive(Debug, PartialEq, Eq)]
@@ -142,5 +180,29 @@ pub mod test {
             }
             FsSupportsReflink::Supported(val) => val,
         }
+    }
+
+    #[test]
+    fn min_result_should_return_none_if_no_elements() {
+        let elements: Vec<Result<i64, &str>> = vec![];
+        assert_eq!(min_result(elements.into_iter()), Ok(None));
+    }
+
+    #[test]
+    fn min_result_should_return_min_if_all_ok() {
+        let elements: Vec<Result<i64, &str>> = vec![Ok(1), Ok(3), Ok(2)];
+        assert_eq!(min_result(elements.into_iter()), Ok(Some(1)));
+    }
+
+    #[test]
+    fn min_result_should_return_err_if_at_least_one_err() {
+        let elements: Vec<Result<i64, &str>> = vec![Ok(1), Ok(3), Err("error"), Ok(2)];
+        assert_eq!(min_result(elements.into_iter()), Err("error"));
+    }
+
+    #[test]
+    fn max_result_should_return_max_if_all_ok() {
+        let elements: Vec<Result<i64, &str>> = vec![Ok(1), Ok(3), Ok(2)];
+        assert_eq!(max_result(elements.into_iter()), Ok(Some(3)));
     }
 }

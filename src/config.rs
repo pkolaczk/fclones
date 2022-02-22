@@ -501,6 +501,16 @@ pub struct DedupeConfig {
     /// Keeps files with paths matching any given patterns untouched.
     #[structopt(long = "keep-path", value_name = "pattern")]
     pub keep_path_patterns: Vec<Pattern>,
+
+    /// Specifies a list of path prefixes.
+    /// If non-empty, all duplicates having the same path prefix (root) are treated as one.
+    /// This also means that the files sharing the same root can be either all
+    /// dropped or all retained.
+    ///
+    /// By default, it is set to the input paths given as arguments to the earlier
+    /// `fclones group` command, if `--isolate` option was present.
+    #[structopt(long = "isolate", value_name = "path", parse(from_os_str))]
+    pub isolated_roots: Vec<Path>,
 }
 
 #[derive(Debug, StructOpt)]
