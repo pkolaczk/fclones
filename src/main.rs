@@ -134,17 +134,25 @@ pub fn run_dedupe(op: DedupeOp, config: DedupeConfig, log: &mut Log) -> Result<(
         format!("Unrecognized earlier fclones configuration: {}", message)
     })?;
 
-    let rf_over = match find_config.command {
-        Command::Group(c) => c.rf_over(),
-        _ if dedupe_config.rf_over.is_some() => dedupe_config.rf_over.unwrap(),
-        _ => {
-            return Err(Error::from(
-                "Could not extract --rf-over setting from the earlier fclones configuration.",
-            ))
+    if dedupe_config.rf_over.is_none() {
+        match &find_config.command {
+            Command::Group(c) => dedupe_config.rf_over = Some(c.rf_over()),
+            _ => {
+                return Err(Error::from(
+                    "Could not extract --rf-over setting from the earlier fclones configuration.",
+                ))
+            }
         }
     };
 
-    dedupe_config.rf_over = Some(rf_over);
+    if dedupe_config.isolated_roots.is_empty() {
+        if let Command::Group(c) = &find_config.command {
+            if c.isolate {
+                dedupe_config.isolated_roots = c.paths.clone()
+            }
+        }
+    }
+
     if dedupe_config.modified_before.is_none() {
         dedupe_config.modified_before = Some(header.timestamp);
     }

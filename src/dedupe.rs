@@ -21,9 +21,11 @@ use crate::files::FileLen;
 use crate::lock::FileLock;
 use crate::log::Log;
 use crate::path::Path;
-use crate::util::fallible_sort_by_key;
-use crate::{Error, FileGroup, TIMESTAMP_FMT};
+use crate::util::{max_result, min_result, try_sort_by_key};
+use crate::{root_of, Error, FileGroup, TIMESTAMP_FMT};
+use itertools::Itertools;
 use std::collections::HashMap;
+use std::time::SystemTime;
 
 /// Defines what to do with redundant files
 #[derive(Clone, PartialEq, Eq)]
@@ -470,57 +472,6 @@ fn was_modified(files: &[FileMetadata], after: DateTime<FixedOffset>, log: &Log)
     result
 }
 
-/// Sort files so that files with highest priority (newest, most recently updated,
-/// recently accessed, etc) are sorted last.
-/// In cases when metadata of a file cannot be accessed, an error message is pushed
-/// in the result vector and such file is placed at the beginning of the list.
-fn sort_by_priority(files: &mut Vec<FileMetadata>, priority: &Priority) -> Vec<Error> {
-    let errors = match priority {
-        Priority::Newest => fallible_sort_by_key(files, |m| {
-            m.metadata
-                .created()
-                .map_err(|e| format!("Failed to read creation time of file {}: {}", m.path, e))
-        }),
-        Priority::Oldest => fallible_sort_by_key(files, |m| {
-            m.metadata
-                .created()
-                .map(Reverse)
-                .map_err(|e| format!("Failed to read creation time of file {}: {}", m.path, e))
-        }),
-        Priority::MostRecentlyModified => fallible_sort_by_key(files, |m| {
-            m.metadata
-                .modified()
-                .map_err(|e| format!("Failed to read modification time of file {}: {}", m.path, e))
-        }),
-        Priority::LeastRecentlyModified => fallible_sort_by_key(files, |m| {
-            m.metadata
-                .modified()
-                .map(Reverse)
-                .map_err(|e| format!("Failed to read modification time of file {}: {}", m.path, e))
-        }),
-        Priority::MostRecentlyAccessed => fallible_sort_by_key(files, |m| {
-            m.metadata
-                .accessed()
-                .map_err(|e| format!("Failed to read access time of file {}: {}", m.path, e))
-        }),
-        Priority::LeastRecentlyAccessed => fallible_sort_by_key(files, |m| {
-            m.metadata
-                .accessed()
-                .map(Reverse)
-                .map_err(|e| format!("Failed to read access time of file {}: {}", m.path, e))
-        }),
-        Priority::MostNested => {
-            files.sort_by_key(|m| m.path.component_count());
-            vec![]
-        }
-        Priority::LeastNested => {
-            files.sort_by_key(|m| Reverse(m.path.component_count()));
-            vec![]
-        }
-    };
-    errors.into_iter().map(Error::from).collect()
-}
-
 /// Returns true if given path matches any of the `keep` patterns
 fn should_keep(path: &Path, config: &DedupeConfig) -> bool {
     let matches_any_name = config
@@ -562,6 +513,108 @@ fn may_drop(path: &Path, config: &DedupeConfig) -> bool {
     (config.name_patterns.is_empty() && config.path_patterns.is_empty())
         || matches_any_name()
         || matches_any_path()
+}
+
+/// A sub-group of files. A sub-group is treated as one entity.
+/// All files in a subgroup must be either dropped or kept.
+struct FileSubGroup {
+    files: Vec<FileMetadata>,
+}
+
+impl FileSubGroup {
+    /// Splits a group of files into subgroups.
+    /// Files sharing the same prefix found in the roots array are placed in the same subgroup.
+    pub fn group(files: Vec<FileMetadata>, roots: &[Path]) -> Vec<FileSubGroup> {
+        assert!(!files.is_empty());
+        files
+            .into_iter()
+            .map(|f| (root_of(&f.path, roots).clone(), f))
+            .into_group_map()
+            .into_values()
+            .map(|files| FileSubGroup { files })
+            .collect()
+    }
+
+    /// Returns the time of the earliest creation of a file in the subgroup
+    pub fn created(&self) -> Result<SystemTime, Error> {
+        Ok(min_result(self.files.iter().map(|f| {
+            f.metadata
+                .created()
+                .map_err(|e| format!("Failed to read creation time of file {}: {}", f.path, e))
+        }))?
+        .unwrap())
+    }
+
+    /// Returns the time of the latest modification of a file in the subgroup
+    pub fn modified(&self) -> Result<SystemTime, Error> {
+        Ok(max_result(self.files.iter().map(|f| {
+            f.metadata
+                .modified()
+                .map_err(|e| format!("Failed to read modification time of file {}: {}", f.path, e))
+        }))?
+        .unwrap())
+    }
+
+    /// Returns the time of the latest access of a file in the subgroup
+    pub fn accessed(&self) -> Result<SystemTime, Error> {
+        Ok(max_result(self.files.iter().map(|f| {
+            f.metadata
+                .accessed()
+                .map_err(|e| format!("Failed to read access time of file {}: {}", f.path, e))
+        }))?
+        .unwrap())
+    }
+
+    /// Returns true if any of the files in the subgroup must be kept
+    pub fn should_keep(&self, config: &DedupeConfig) -> bool {
+        self.files.iter().any(|f| should_keep(&f.path, config))
+    }
+
+    /// Returns true if all files in the subgroup can be dropped
+    pub fn may_drop(&self, config: &DedupeConfig) -> bool {
+        self.files.iter().all(|f| may_drop(&f.path, config))
+    }
+
+    /// Returns the number of components of the least nested path
+    pub fn min_nesting(&self) -> usize {
+        self.files
+            .iter()
+            .map(|f| f.path.component_count())
+            .min()
+            .unwrap()
+    }
+
+    /// Returns the number of components of the most nested path
+    pub fn max_nesting(&self) -> usize {
+        self.files
+            .iter()
+            .map(|f| f.path.component_count())
+            .max()
+            .unwrap()
+    }
+}
+
+/// Sort files so that files with highest priority (newest, most recently updated,
+/// recently accessed, etc) are sorted last.
+/// In cases when metadata of a file cannot be accessed, an error message is pushed
+/// in the result vector and such file is placed at the beginning of the list.
+fn sort_by_priority(files: &mut Vec<FileSubGroup>, priority: &Priority) -> Vec<Error> {
+    match priority {
+        Priority::Newest => try_sort_by_key(files, |m| m.created()),
+        Priority::Oldest => try_sort_by_key(files, |m| m.created().map(Reverse)),
+        Priority::MostRecentlyModified => try_sort_by_key(files, |m| m.modified()),
+        Priority::LeastRecentlyModified => try_sort_by_key(files, |m| m.modified().map(Reverse)),
+        Priority::MostRecentlyAccessed => try_sort_by_key(files, |m| m.accessed()),
+        Priority::LeastRecentlyAccessed => try_sort_by_key(files, |m| m.accessed().map(Reverse)),
+        Priority::MostNested => {
+            files.sort_by_key(|m| m.max_nesting());
+            vec![]
+        }
+        Priority::LeastNested => {
+            files.sort_by_key(|m| Reverse(m.min_nesting()));
+            vec![]
+        }
+    }
 }
 
 struct PartitionedFileGroup {
@@ -683,7 +736,7 @@ fn partition(
 
     let mut files = match files_metadata(group, log) {
         Some(files) => files,
-        None => return error("Metadata of some files could not be obtained")
+        None => return error("Metadata of some files could not be obtained"),
     };
 
     // We don't want to remove dirs or symlinks
@@ -718,13 +771,15 @@ fn partition(
         }
     }
 
+    let mut file_sub_groups = FileSubGroup::group(files, &config.isolated_roots);
+
     // Sort files to remove in user selected order.
     // The priorities at the beginning of the argument list have precedence over
     // the priorities given at the end of the argument list, therefore we're applying
     // them in reversed order.
     let mut sort_errors = Vec::new();
     for priority in config.priority.iter().rev() {
-        sort_errors.extend(sort_by_priority(&mut files, priority));
+        sort_errors.extend(sort_by_priority(&mut file_sub_groups, priority));
     }
 
     if !sort_errors.is_empty() {
@@ -734,11 +789,11 @@ fn partition(
         return error("Metadata of some files could not be read.");
     }
 
-    // Split the set of files into two sets - a set that we want to keep intact and a set
+    // Split the set of file subgroups into two sets - a set that we want to keep intact and a set
     // that we can remove or replace with links:
-    let (mut to_retain, mut to_drop): (Vec<_>, Vec<_>) = files
+    let (mut to_retain, mut to_drop): (Vec<_>, Vec<_>) = file_sub_groups
         .into_iter()
-        .partition(|m| should_keep(&m.path, config) || !may_drop(&m.path, config));
+        .partition(|m| m.should_keep(config) || !m.may_drop(config));
 
     // If the set to retain is smaller than the number of files we must keep (rf), then
     // move some higher priority files from `to_drop` and append them to `to_retain`.
@@ -748,8 +803,8 @@ fn partition(
 
     assert!(to_retain.len() >= n || to_drop.is_empty());
     Ok(PartitionedFileGroup {
-        to_keep: to_retain,
-        to_drop,
+        to_keep: to_retain.into_iter().flat_map(|g| g.files).collect(),
+        to_drop: to_drop.into_iter().flat_map(|g| g.files).collect(),
     })
 }
 
@@ -857,6 +912,7 @@ pub fn log_script(
 #[cfg(test)]
 mod test {
     use std::collections::HashSet;
+    use std::fs::create_dir;
     use std::path::PathBuf;
     use std::{thread, time};
 
@@ -1158,6 +1214,40 @@ mod test {
             let p = partition(group.clone(), &config, &Log::new()).unwrap();
             assert_eq!(p.to_drop.len(), 1);
             assert_eq!(&p.to_drop[0].path, &group.files[2]);
+        })
+    }
+
+    #[test]
+    fn test_partition_respects_isolated_roots() {
+        with_dir("dedupe/partition/isolated_roots", |root| {
+            let root1 = root.join("root1");
+            let root2 = root.join("root2");
+            create_dir(&root1).unwrap();
+            create_dir(&root2).unwrap();
+
+            let group1 = make_group(&root1);
+            let group2 = make_group(&root2);
+            let group = FileGroup {
+                file_len: group1.file_len,
+                file_hash: group1.file_hash,
+                files: group1.files.into_iter().chain(group2.files).collect(),
+            };
+
+            let mut config = DedupeConfig::default();
+            config.priority = vec![Priority::Oldest];
+            config.isolated_roots = vec![Path::from(&root1), Path::from(&root2)];
+
+            let p = partition(group.clone(), &config, &Log::new()).unwrap();
+            assert_eq!(p.to_drop.len(), 3);
+            assert!(p
+                .to_drop
+                .iter()
+                .all(|f| f.path.to_path_buf().starts_with(&root1)));
+            assert_eq!(p.to_keep.len(), 3);
+            assert!(p
+                .to_keep
+                .iter()
+                .all(|f| f.path.to_path_buf().starts_with(&root2)));
         })
     }
 
