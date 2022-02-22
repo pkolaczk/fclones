@@ -48,6 +48,7 @@ impl FromStr for Pattern {
     }
 }
 
+#[derive(Default)]
 pub struct PatternOpts {
     case_insensitive: bool,
 }
@@ -56,14 +57,6 @@ impl PatternOpts {
     pub fn case_insensitive() -> PatternOpts {
         PatternOpts {
             case_insensitive: true,
-        }
-    }
-}
-
-impl Default for PatternOpts {
-    fn default() -> PatternOpts {
-        PatternOpts {
-            case_insensitive: false,
         }
     }
 }
@@ -207,19 +200,19 @@ impl Pattern {
             |(_, list, _)| list,
         );
 
-        let p_ext_optional = map(tuple((tag("?"), |i| p_ext_glob(i))), |(_, g)| {
+        let p_ext_optional = map(tuple((tag("?"), &p_ext_glob)), |(_, g)| {
             mk_string(g, "(", "|", ")?")
         });
-        let p_ext_many = map(tuple((tag("*"), |i| p_ext_glob(i))), |(_, g)| {
+        let p_ext_many = map(tuple((tag("*"), &p_ext_glob)), |(_, g)| {
             mk_string(g, "(", "|", ")*")
         });
-        let p_ext_at_least_once = map(tuple((tag("+"), |i| p_ext_glob(i))), |(_, g)| {
+        let p_ext_at_least_once = map(tuple((tag("+"), &p_ext_glob)), |(_, g)| {
             mk_string(g, "(", "|", ")+")
         });
-        let p_ext_exactly_once = map(tuple((tag("@"), |i| p_ext_glob(i))), |(_, g)| {
+        let p_ext_exactly_once = map(tuple((tag("@"), &p_ext_glob)), |(_, g)| {
             mk_string(g, "(", "|", ")")
         });
-        let p_ext_never = map(tuple((tag("!"), |i| p_ext_glob(i))), |(_, g)| {
+        let p_ext_never = map(tuple((tag("!"), &p_ext_glob)), |(_, g)| {
             mk_string(g, "(?!", "|", ")")
         });
 

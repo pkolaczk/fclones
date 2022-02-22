@@ -71,7 +71,7 @@ fn parse_date_time(s: &str) -> Result<DateTime<FixedOffset>, String> {
             let local_offset = *Local::now().offset();
             Ok(DateTime::from_utc(dt, local_offset))
         }
-        Err(e) => Err(format!("Failed to parse {} as date: {}", s, e.to_string())),
+        Err(e) => Err(format!("Failed to parse {} as date: {}", s, e)),
     }
 }
 
