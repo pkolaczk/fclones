@@ -641,6 +641,30 @@ impl PartitionedFileGroup {
     }
 }
 
+/// Attempts to retrieve the metadata of all the files in the file group.
+/// If metadata is inaccessible for a file, a warning is emitted to the log, and None gets returned.
+fn files_metadata(group: FileGroup<Path>, log: &Log) -> Option<Vec<FileMetadata>> {
+    let mut last_error: Option<io::Error> = None;
+    let files: Vec<_> = group
+        .files
+        .into_iter()
+        .map(|p| {
+            FileMetadata::new(p)
+                .map_err(|e| {
+                    log.warn(&e);
+                    last_error = Some(e);
+                })
+                .ok()
+        })
+        .flatten()
+        .collect();
+
+    match last_error {
+        Some(_) => None,
+        None => Some(files),
+    }
+}
+
 /// Partitions a group of files into files to keep and files that can be safely dropped
 /// (or linked).
 fn partition(
@@ -657,30 +681,10 @@ fn partition(
         )))
     };
 
-    // Fetch metadata of the files
-    let mut metadata_err = false;
-    let mut files: Vec<_> = group
-        .files
-        .into_iter()
-        .map(|p| {
-            FileMetadata::new(p)
-                .map_err(|e| {
-                    log.warn(e);
-                    metadata_err = true;
-                })
-                .ok()
-        })
-        .flatten()
-        .collect();
-
-    // On metadata errors, we're just ignoring the group.
-    // We must not attempt removing any files from the group
-    // because we can't reliably determine which files to remove.
-    // What if the files we couldn't access should be removed and the ones we access
-    // should remain untouched?
-    if metadata_err {
-        return error("Metadata of some files could not be obtained");
-    }
+    let mut files = match files_metadata(group, log) {
+        Some(files) => files,
+        None => return error("Metadata of some files could not be obtained")
+    };
 
     // We don't want to remove dirs or symlinks
     files.retain(|m| {
