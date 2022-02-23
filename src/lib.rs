@@ -976,6 +976,7 @@ pub fn write_report(config: &GroupConfig, log: &Log, groups: &[FileGroup<Path>])
         timestamp: DateTime::from_utc(now.naive_utc(), *now.offset()),
         version: env!("CARGO_PKG_VERSION").to_owned(),
         command: args().collect(),
+        base_dir: config.base_dir.to_string_lossy().to_string(),
         stats: Some(FileStats {
             group_count: groups.len(),
             redundant_file_count: groups.selected_count(rf_over, usize::MAX),

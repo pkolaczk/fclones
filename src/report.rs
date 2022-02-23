@@ -39,6 +39,8 @@ pub struct ReportHeader {
     pub timestamp: DateTime<FixedOffset>,
     /// Full shell command containing arguments of the search run that produced the report
     pub command: Vec<String>,
+    /// Working directory where the fclones command was executed
+    pub base_dir: String,
     /// Information on the number of duplicate files reported.
     /// This is optional to allow streaming the report out before finding all files in the future.
     pub stats: Option<FileStats>,
@@ -96,6 +98,7 @@ impl<W: Write> ReportWriter<W> {
     /// # Report by fclones 0.12.0
     /// # Timestamp: Mon, 03 May 2021 13:22:51 +0000
     /// # Command: target/debug/fclones find . -o report.txt
+    /// # Base dir: /home/pkolaczk/Projekty/fclones
     /// # Found 553 file groups
     /// # 271.8 MB in 4266 redundant files can be removed
     /// 5649a555c131508c4a757d9e14c4aea6, 6626689 B (6.6 MB) * 5:
@@ -124,6 +127,7 @@ impl<W: Write> ReportWriter<W> {
             header.timestamp.format(TIMESTAMP_FMT)
         ))?;
         self.write_header_line(&format!("Command: {}", command))?;
+        self.write_header_line(&format!("Base dir: {}", header.base_dir))?;
         if let Some(stats) = &header.stats {
             self.write_header_line(&format!("Found {} file groups", stats.group_count))?;
             self.write_header_line(&format!(
@@ -463,6 +467,7 @@ impl<R: BufRead + Send + 'static> ReportReader for TextReportReader<R> {
                 Regex::new(r"^# Report by fclones ([0-9]+\.[0-9]+\.[0-9]+)").unwrap();
             static ref TIMESTAMP_RE: Regex = Regex::new(r"^# Timestamp: (.*)").unwrap();
             static ref COMMAND_RE: Regex = Regex::new(r"^# Command: (.*)").unwrap();
+            static ref BASE_DIR_RE: Regex = Regex::new(r"^# Base dir: (.*)").unwrap();
             static ref GROUP_COUNT_RE: Regex =
                 Regex::new(r"^# Found ([0-9]+) file groups").unwrap();
             static ref STATS_RE: Regex =
@@ -491,6 +496,9 @@ impl<R: BufRead + Send + 'static> ReportReader for TextReportReader<R> {
                 format!("Malformed header: Failed to parse command arguments: {}", e),
             )
         })?;
+        let base_dir = self
+            .read_extract(&BASE_DIR_RE, "Malformed header: Missing base dir")?
+            .swap_remove(0);
         let group_count = self
             .read_extract(&GROUP_COUNT_RE, "Malformed header: Missing group count")?
             .swap_remove(0);
@@ -525,6 +533,7 @@ impl<R: BufRead + Send + 'static> ReportReader for TextReportReader<R> {
             version,
             timestamp,
             command,
+            base_dir,
             stats: Some(FileStats {
                 group_count,
                 redundant_file_count,
@@ -601,6 +610,8 @@ pub fn open_report(r: impl Read + Send + 'static) -> io::Result<Box<dyn ReportRe
 
 #[cfg(test)]
 mod test {
+    use std::env::current_dir;
+
     use tempfile::NamedTempFile;
 
     use crate::files::{FileHash, FileLen};
@@ -611,6 +622,7 @@ mod test {
     fn dummy_report_header() -> ReportHeader {
         ReportHeader {
             command: vec!["fclones".to_owned(), "find".to_owned(), ".".to_owned()],
+            base_dir: current_dir().unwrap().to_string_lossy().to_string(),
             version: env!("CARGO_PKG_VERSION").to_owned(),
             timestamp: DateTime::parse_from_str("2021-08-27 12:11:23.456 +0000", TIMESTAMP_FMT)
                 .unwrap(),

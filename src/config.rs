@@ -4,9 +4,10 @@ use std::collections::HashMap;
 use std::ffi::OsString;
 use std::fmt::{Display, Formatter};
 use std::io;
-use std::io::{stdin, BufRead, BufReader};
+use std::io::{stdin, BufRead, BufReader, ErrorKind};
 use std::path::PathBuf;
 use std::str::FromStr;
+use std::sync::Arc;
 
 use chrono::{DateTime, FixedOffset, Local};
 use clap::AppSettings;
@@ -263,6 +264,10 @@ pub struct GroupConfig {
       verbatim_doc_comment)]
     pub threads: Vec<(OsString, Parallelism)>,
 
+    /// Base directory to use when resolving relative input paths.
+    #[structopt(long, parse(from_os_str), default_value("."))]
+    pub base_dir: PathBuf,
+
     /// A list of input paths.
     ///
     /// Accepts files and directories.
@@ -367,17 +372,43 @@ impl GroupConfig {
         }
     }
 
-    /// Returns an iterator over the input paths.
+    /// Makes the base directory absolute.
+    /// Returns error if the base directory does not exist.
+    pub fn resolve_base_dir(&mut self) -> io::Result<&PathBuf> {
+        if self.base_dir.is_relative() {
+            self.base_dir = std::env::current_dir()?.join(&self.base_dir)
+        }
+        if !self.base_dir.is_dir() {
+            return Err(io::Error::new(
+                ErrorKind::NotFound,
+                format!("Directory not found: {}", self.base_dir.display()),
+            ));
+        }
+        self.base_dir = self.base_dir.canonicalize()?;
+        Ok(&self.base_dir)
+    }
+
+    /// Returns an iterator over the absolute input paths.
     /// Input paths may be provided as arguments or from standard input.
     pub fn input_paths(&self) -> Box<dyn Iterator<Item = Path> + Send> {
+        let base_dir = Arc::new(if self.base_dir.as_os_str().is_empty() {
+            Path::from(".")
+        } else {
+            Path::from(&self.base_dir)
+        });
         if self.stdin {
             Box::new(
                 BufReader::new(stdin())
                     .lines()
-                    .map(|s| Path::from(s.unwrap().as_str())),
+                    .map(move |s| base_dir.resolve(Path::from(s.unwrap().as_str()))),
             )
         } else {
-            Box::new(self.paths.clone().into_iter())
+            Box::new(
+                self.paths
+                    .clone()
+                    .into_iter()
+                    .map(move |p| base_dir.resolve(p)),
+            )
         }
     }
 
