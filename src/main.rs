@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::ffi::{OsStr, OsString};
 use std::fs::File;
 use std::io::{stdin, Write};
+use std::path::PathBuf;
 use std::process::exit;
 use std::sync::Arc;
 use std::{fs, io};
@@ -15,7 +16,7 @@ use structopt::StructOpt;
 use console::style;
 use fclones::config::{Command, Config, DedupeConfig, GroupConfig, Parallelism};
 use fclones::log::Log;
-use fclones::report::open_report;
+use fclones::report::{open_report, ReportHeader};
 use fclones::{dedupe, log_script, run_script, DedupeOp};
 use fclones::{group_files, write_report, Error};
 
@@ -33,6 +34,64 @@ fn extract_error_cause(message: &str) -> String {
         .map(|l| l.trim())
         .filter(|l| !l.is_empty())
         .join(" ")
+}
+
+/// Returns error if any of the input paths doesn't exist or if input paths list is empty.
+fn check_input_paths_exist(config: &GroupConfig, log: &mut Log) -> Result<(), Error> {
+    // Unfortunately we can't fail fast here when the list of files
+    // is streamed from the standard input, because we'd have to collect all paths into a vector
+    // list first, but we don't want to do this because there may be many.
+    // In that case, we just let the lower layers handle eventual
+    // problems and report as warnings.
+    if config.stdin {
+        return Ok(());
+    }
+
+    // If files aren't streamed on stdin, we can inspect all of them now
+    // and exit early on any access error. If depth is set to 0 (recursive scan disabled)
+    // we also want to filter out directories and terminate with an error if there are
+    // no files in the input.
+    let mut access_error = false;
+    let depth = config.depth;
+    let input_paths = config
+        .input_paths()
+        .filter(|p| match fs::metadata(&p.to_path_buf()) {
+            Ok(m) if m.is_dir() && depth == Some(0) => {
+                log.warn(format!(
+                    "Skipping directory {} because recursive scan is disabled.",
+                    p.display()
+                ));
+                false
+            }
+            Err(e) => {
+                log.err(format!("Can't access {}: {}", p.display(), e));
+                access_error = true;
+                false
+            }
+            Ok(_) => true,
+        })
+        .collect_vec();
+    if access_error {
+        return Err(Error::from("Some input paths could not be accessed."));
+    }
+    if input_paths.is_empty() {
+        return Err(Error::from("No input files."));
+    }
+    Ok(())
+}
+
+/// Attempts to create the output file and returns an error if it fails.
+fn check_can_create_output_file(config: &GroupConfig) -> Result<(), Error> {
+    if let Some(output) = &config.output {
+        if let Err(e) = File::create(output) {
+            return Err(Error::new(format!(
+                "Cannot create output file {}: {}",
+                output.display(),
+                e
+            )));
+        }
+    }
+    Ok(())
 }
 
 /// Configures global thread pool to use desired number of threads
@@ -53,56 +112,10 @@ fn configure_main_thread_pool(pool_sizes: &HashMap<OsString, Parallelism>) {
 }
 
 fn run_group(mut config: GroupConfig, log: &mut Log) -> Result<(), Error> {
-    if !config.stdin {
-        // If files aren't streamed on stdin, we can inspect all of them now
-        // and exit early on any access error. If depth is set to 0 (recursive scan disabled)
-        // we also want to filter out directories and terminate with an error if there are
-        // no files in the input.
-        // Unfortunately we can't fail fast here when the list of files
-        // is streamed from the standard input, because we'd have to collect all paths into a vector
-        // list first, but we don't want to do this because there may be many.
-        // In that case, we just let the lower layers handle eventual
-        // problems and report as warnings.
-        let mut access_error = false;
-        let depth = config.depth;
-        config
-            .paths
-            .retain(|p| match fs::metadata(&p.to_path_buf()) {
-                Ok(m) if m.is_dir() && depth == Some(0) => {
-                    log.warn(format!(
-                        "Skipping directory {} because recursive scan is disabled.",
-                        p.display()
-                    ));
-                    false
-                }
-                Err(e) => {
-                    log.err(format!("Can't access {}: {}", p.display(), e));
-                    access_error = true;
-                    false
-                }
-                Ok(_) => true,
-            });
-        if access_error {
-            return Err(Error::from("Some input paths could not be accessed."));
-        }
-        if config.paths.is_empty() {
-            return Err(Error::from("No input files."));
-        }
-    }
-
+    config.resolve_base_dir().map_err(|e| e.to_string())?;
+    check_input_paths_exist(&config, log)?;
+    check_can_create_output_file(&config)?;
     configure_main_thread_pool(&config.thread_pool_sizes());
-    if let Some(output) = &config.output {
-        // Try to create the output file now and fail early so that
-        // the user doesn't waste time to only find that the report cannot be written at the end:
-        if let Err(e) = File::create(output) {
-            return Err(Error::new(format!(
-                "Cannot create output file {}: {}",
-                output.display(),
-                e
-            )));
-        }
-    }
-
     log.info("Started grouping");
     let results = group_files(&config, log).map_err(|e| Error::new(e.message))?;
 
@@ -124,18 +137,31 @@ fn get_output_writer(config: &DedupeConfig) -> Result<Box<dyn Write + Send>, Err
     }
 }
 
+/// Returns the configuration of a previously executed fclones command,
+/// stored in the report header.
+fn get_command_config(header: &ReportHeader) -> Result<Config, Error> {
+    let mut command: Config = Config::from_iter_safe(&header.command).map_err(|e| {
+        let message: String = extract_error_cause(&e.message);
+        format!("Unrecognized earlier fclones configuration: {}", message)
+    })?;
+
+    // Configure the same base directory as set when running the previous command.
+    // This is important to get the correct input paths.
+    if let Command::Group(ref mut group_config) = command.command {
+        group_config.base_dir = PathBuf::from(&header.base_dir)
+    }
+    Ok(command)
+}
+
 pub fn run_dedupe(op: DedupeOp, config: DedupeConfig, log: &mut Log) -> Result<(), Error> {
     let input_error = |e: io::Error| format!("Input error: {}", e);
     let mut dedupe_config = config;
     let mut reader = open_report(stdin()).map_err(input_error)?;
     let header = reader.read_header().map_err(input_error)?;
-    let find_config: Config = Config::from_iter_safe(&header.command).map_err(|e| {
-        let message: String = extract_error_cause(&e.message);
-        format!("Unrecognized earlier fclones configuration: {}", message)
-    })?;
+    let prev_command_config = get_command_config(&header)?;
 
     if dedupe_config.rf_over.is_none() {
-        match &find_config.command {
+        match &prev_command_config.command {
             Command::Group(c) => dedupe_config.rf_over = Some(c.rf_over()),
             _ => {
                 return Err(Error::from(
@@ -146,9 +172,9 @@ pub fn run_dedupe(op: DedupeOp, config: DedupeConfig, log: &mut Log) -> Result<(
     };
 
     if dedupe_config.isolated_roots.is_empty() {
-        if let Command::Group(c) = &find_config.command {
+        if let Command::Group(c) = &prev_command_config.command {
             if c.isolate {
-                dedupe_config.isolated_roots = c.paths.clone()
+                dedupe_config.isolated_roots = c.input_paths().collect();
             }
         }
     }
