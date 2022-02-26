@@ -18,7 +18,7 @@ where
 /// Sorts an array using a key generation function that can fail.
 /// Items for which the key could not be obtained are sorted last.
 /// Returns vector of errors encountered when obtaining the keys.
-pub fn try_sort_by_key<T, K, E>(v: &mut Vec<T>, f: impl Fn(&T) -> Result<K, E>) -> Vec<E>
+pub fn try_sort_by_key<T, K, E>(v: &mut [T], f: impl Fn(&T) -> Result<K, E>) -> Vec<E>
 where
     K: Ord,
 {

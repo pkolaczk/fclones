@@ -107,7 +107,7 @@ impl PathSelector {
             pattern
         } else {
             let base_dir_pat = base_dir.to_string_lossy();
-            let base_dir_pat = base_dir_pat.replace("\u{FFFD}", "?");
+            let base_dir_pat = base_dir_pat.replace('\u{FFFD}', "?");
             let base_dir_pat = Pattern::literal(Self::append_sep(base_dir_pat).as_str());
             base_dir_pat + pattern
         }

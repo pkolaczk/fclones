@@ -598,7 +598,7 @@ impl FileSubGroup {
 /// recently accessed, etc) are sorted last.
 /// In cases when metadata of a file cannot be accessed, an error message is pushed
 /// in the result vector and such file is placed at the beginning of the list.
-fn sort_by_priority(files: &mut Vec<FileSubGroup>, priority: &Priority) -> Vec<Error> {
+fn sort_by_priority(files: &mut [FileSubGroup], priority: &Priority) -> Vec<Error> {
     match priority {
         Priority::Newest => try_sort_by_key(files, |m| m.created()),
         Priority::Oldest => try_sort_by_key(files, |m| m.created().map(Reverse)),
@@ -629,8 +629,8 @@ impl PartitionedFileGroup {
         let root = source_path
             .root()
             .to_string()
-            .replace("/", "")
-            .replace(":", "");
+            .replace('/', "")
+            .replace(':', "");
         let suffix = source_path.strip_root();
         if root.is_empty() {
             target_dir.join(suffix)
@@ -701,7 +701,7 @@ fn files_metadata(group: FileGroup<Path>, log: &Log) -> Option<Vec<FileMetadata>
     let files: Vec<_> = group
         .files
         .into_iter()
-        .map(|p| {
+        .filter_map(|p| {
             FileMetadata::new(p)
                 .map_err(|e| {
                     log.warn(&e);
@@ -709,7 +709,6 @@ fn files_metadata(group: FileGroup<Path>, log: &Log) -> Option<Vec<FileMetadata>
                 })
                 .ok()
         })
-        .flatten()
         .collect();
 
     match last_error {
