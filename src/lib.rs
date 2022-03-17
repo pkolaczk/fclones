@@ -1,13 +1,14 @@
 use core::fmt;
 use std::cell::RefCell;
-use std::cmp::{max, Reverse};
-use std::collections::{HashMap, HashSet};
+use std::cmp::{max, min, Reverse};
+use std::collections::HashMap;
 use std::env::{args, current_dir};
 use std::ffi::{OsStr, OsString};
 use std::fmt::{Display, Formatter};
 use std::fs::File;
 use std::io;
 use std::io::BufWriter;
+use std::iter::FromIterator;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::Arc;
@@ -94,7 +95,7 @@ impl From<&str> for Error {
 struct AppCtx<'a> {
     pub config: &'a GroupConfig,
     pub log: &'a Log,
-    input_paths: Vec<Path>,
+    group_filter: FileGroupFilter,
     devices: DiskDevices,
     transform: Option<Transform>,
     path_selector: PathSelector,
@@ -110,12 +111,7 @@ impl<'a> AppCtx<'a> {
             Some(Err(e)) => return Err(Error::new(format!("Invalid transform: {}", e))),
         };
         let base_dir = Path::from(current_dir().unwrap_or_default());
-        let base_dir_ref = Arc::new(base_dir.clone());
-        let root_paths = config
-            .paths
-            .iter()
-            .map(|p| base_dir_ref.resolve(p))
-            .collect();
+        let group_filter = config.group_filter();
         let selector = config
             .path_selector(&base_dir)
             .map_err(|e| format!("Invalid pattern: {}", e))?;
@@ -125,7 +121,7 @@ impl<'a> AppCtx<'a> {
         Ok(AppCtx {
             config,
             log,
-            input_paths: root_paths,
+            group_filter,
             devices,
             transform,
             path_selector: selector,
@@ -170,48 +166,169 @@ pub struct FileGroup<F> {
     pub files: Vec<F>,
 }
 
-/// Computes summaries of the results obtained from each grouping stage.
-pub trait StageMetrics {
-    /// Returns the total count of the files
-    fn total_count(self) -> usize;
-
-    /// Returns the sum of file lengths
-    fn total_size(self) -> FileLen;
-
-    /// Returns the total count of redundant files
-    fn selected_count(self, rf_over: usize, rf_under: usize) -> usize;
-
-    /// Returns the amount of data in redundant files
-    fn selected_size(self, rf_over: usize, rf_under: usize) -> FileLen;
+/// Controls the type of search by determining the number of replicas
+/// allowed in a group of identical files.
+pub enum Replication {
+    /// Looks for under-replicated files with replication factor lower than the specified number.
+    /// `Underreplicated(2)` means searching for unique files.
+    /// `Underreplicated(3)` means searching for file groups containing fewer than 3 replicas.
+    Underreplicated(usize),
+    /// Looks for over-replicated files with replication factor higher than the specified number.
+    /// `Overreplicated(1)` means searching for duplicates.
+    Overreplicated(usize),
 }
 
-impl<'a, I, F> StageMetrics for I
-where
-    I: IntoIterator<Item = &'a FileGroup<F>> + 'a,
-    F: 'a,
-{
-    fn total_count(self) -> usize {
-        self.into_iter().map(|g| g.files.len()).sum()
+/// Controls filtering of file groups between the search stages, as well as determines which file
+/// groups are reported in the final report.
+///
+/// For example, when searching for duplicates, groups containing only a single file can be safely
+/// discarded.
+///
+/// This is to be configured from the command line parameters set by the user.
+pub struct FileGroupFilter {
+    /// The allowed number of replicas in the group.
+    pub replication: Replication,
+    /// A list of path prefixes for grouping files into isolated sub-groups.
+    /// Files inside a single subgroup are treated like a single replica.
+    /// If empty - no subgrouping is performed.
+    /// See [`GroupConfig::isolate`].
+    pub root_paths: Vec<Path>,
+}
+
+impl<F> FileGroup<F> {
+    /// Returns the count of all files in the group
+    pub fn file_count(&self) -> usize {
+        self.files.len()
     }
 
-    fn total_size(self) -> FileLen {
-        self.into_iter()
-            .map(|g| g.file_len * g.files.len() as u64)
-            .sum()
+    /// Returns the total size of all files in the group
+    pub fn total_size(&self) -> FileLen {
+        self.file_len * self.file_count() as u64
+    }
+}
+
+impl<F: AsPath> FileGroup<F> {
+    /// Returns true if the file group should be forwarded to the next grouping stage,
+    /// because the number of duplicate files is higher than the `rf_over` threshold.
+    pub fn matches(&self, filter: &FileGroupFilter) -> bool {
+        match filter.replication {
+            Replication::Overreplicated(rf) => self.subgroup_count(filter) > rf,
+            Replication::Underreplicated(_) => true,
+        }
     }
 
-    fn selected_count(self, rf_over: usize, rf_under: usize) -> usize {
-        self.into_iter()
-            .filter(|&g| g.files.len() < rf_under)
-            .map(|g| g.files.len().saturating_sub(rf_over))
-            .sum()
+    /// Returns true if the file group should be included in the final report.
+    /// The number of duplicate files must be within both the lower (`rf_over`)
+    /// and the upper bound (`rf_under`) for the desired replication factor.
+    pub fn matches_strictly(&self, filter: &FileGroupFilter) -> bool {
+        let count = self.subgroup_count(filter);
+        match filter.replication {
+            Replication::Overreplicated(rf) => count > rf,
+            Replication::Underreplicated(rf) => count < rf,
+        }
     }
 
-    fn selected_size(self, rf_over: usize, rf_under: usize) -> FileLen {
-        self.into_iter()
-            .filter(|&g| g.files.len() < rf_under)
-            .map(|g| g.file_len * g.files.len().saturating_sub(rf_over) as u64)
-            .sum()
+    /// Returns the number of missing file replicas.
+    ///
+    /// This is the difference between the desired number of replicas set by `filter.rf_under`
+    /// and the number of files in the group. If the number of files is greater than `rf_under`,
+    /// 0 is returned.
+    pub fn missing_count(&self, filter: &FileGroupFilter) -> usize {
+        match filter.replication {
+            Replication::Overreplicated(_) => 0,
+            Replication::Underreplicated(rf) => rf.saturating_sub(self.subgroup_count(filter)),
+        }
+    }
+
+    /// Returns the highest number of redundant files that could be removed from the group.
+    ///
+    /// If `filter.roots` are empty, the difference between the total number of files
+    /// in the group and the desired maximum number of replicas `filter.rf_over` is returned.
+    ///
+    /// If `filter.roots` are not empty, then files in the group are split into subgroups first,
+    /// where each subgroup shares one of the roots. If the number of subgroups `N` is larger
+    /// than `filter.rf_over`, the largest `N - filter.rf_over` subgroups are considered redundant.
+    /// The total number of files in redundant subgroups is returned.
+    ///
+    /// If the result would be negative in any of the above cases, 0 is returned.
+    pub fn redundant_count(&self, filter: &FileGroupFilter) -> usize {
+        match filter.replication {
+            Replication::Underreplicated(_) => 0,
+            Replication::Overreplicated(rf) => {
+                let rf = max(rf, 1);
+                if filter.root_paths.is_empty() {
+                    // fast-path, equivalent to the code in the else branch, but way faster
+                    self.file_count().saturating_sub(rf)
+                } else {
+                    let sub_groups = FileSubGroup::group(&self.files, &filter.root_paths);
+                    let mut sub_group_lengths = sub_groups
+                        .into_iter()
+                        .map(|sg| sg.files.len())
+                        .collect_vec();
+                    sub_group_lengths.sort_unstable();
+                    let cutoff_index = min(rf, sub_group_lengths.len());
+                    sub_group_lengths[cutoff_index..].iter().sum()
+                }
+            }
+        }
+    }
+
+    /// Returns either the number of files redundant or missing, depending on the type of search.
+    pub fn reported_count(&self, filter: &FileGroupFilter) -> usize {
+        match filter.replication {
+            Replication::Overreplicated(_) => self.redundant_count(filter),
+            Replication::Underreplicated(_) => self.missing_count(filter),
+        }
+    }
+
+    /// The number of subgroups of paths with distinct root prefix.
+    fn subgroup_count(&self, filter: &FileGroupFilter) -> usize {
+        if filter.root_paths.is_empty() {
+            // optimisation: the else branch would compute the same number because each file would
+            // be placed in its own subgroup, but the else branch is more complex and likely slower
+            self.files.len()
+        } else {
+            FileSubGroup::group(&self.files, &filter.root_paths).len()
+        }
+    }
+}
+
+/// A subgroup of identical files, typically smaller than a `FileGroup`.
+/// A subgroup is formed by files sharing the same path prefix, e.g. files on the same volume.
+/// In terms of file deduplication activities, a subgroup is an atomic entity -
+/// all files in a subgroup must be either dropped or kept.
+#[derive(Debug, Eq, PartialEq)]
+struct FileSubGroup<F> {
+    files: Vec<F>,
+}
+
+impl<F> FileSubGroup<F> {
+    pub fn empty() -> FileSubGroup<F> {
+        FileSubGroup { files: vec![] }
+    }
+    pub fn single(f: F) -> FileSubGroup<F> {
+        FileSubGroup { files: vec![f] }
+    }
+}
+
+impl<F: AsPath> FileSubGroup<F> {
+    /// Splits a group of files into subgroups.
+    ///
+    /// Files that share the same prefix found in the roots array are placed in the same subgroup.
+    /// The result vector is ordered primarily by the roots, and files having the same root have
+    /// the same order as they came from the input iterator.
+    pub fn group(files: impl IntoIterator<Item = F>, roots: &[Path]) -> Vec<FileSubGroup<F>> {
+        let mut sub_groups = Vec::from_iter(roots.iter().map(|_| FileSubGroup::empty()));
+        for f in files {
+            let path = f.path();
+            let root_idx = roots.iter().position(|r| r.is_prefix_of(path));
+            match root_idx {
+                Some(idx) => sub_groups[idx].files.push(f),
+                None => sub_groups.push(FileSubGroup::single(f)),
+            }
+        }
+        sub_groups.retain(|sg| !sg.files.is_empty());
+        sub_groups
     }
 }
 
@@ -430,31 +547,27 @@ fn scan_files(ctx: &AppCtx<'_>) -> Vec<Vec<FileInfo>> {
     files
 }
 
-/// Finds the path root that is a prefix of the given path.
-/// If no match is found, returns the original path.
-fn root_of<'a>(path: &'a Path, roots: &'a [Path]) -> &'a Path {
-    for p in roots {
-        if p.is_prefix_of(path) {
-            return p;
-        }
-    }
-    path
+/// Returns the sum of number of files in all groups
+fn file_count<'a, T: 'a>(groups: impl IntoIterator<Item = &'a FileGroup<T>>) -> usize {
+    groups.into_iter().map(|g| g.file_count()).sum()
 }
 
-/// Returns `true` if a group of files is big enough to meet the desired grouping criteria.
-/// The number of distinct files in a group must be greater than `rf-over`.
-/// If `--isolate` flag is set, file paths that start with a common input path are counted as one.
-/// Called on each result group after each stage.
-fn should_forward<P: AsPath>(ctx: &AppCtx<'_>, group: &[P]) -> bool {
-    if !ctx.config.isolate {
-        group.len() > ctx.config.rf_over()
-    } else {
-        let s: HashSet<_> = group
-            .iter()
-            .map(|p| root_of(p.path(), &ctx.input_paths))
-            .collect();
-        s.len() > ctx.config.rf_over()
+/// Returns the sum of sizes of files in all groups, including duplicates
+fn total_size<'a, T: 'a>(groups: impl IntoIterator<Item = &'a FileGroup<T>>) -> FileLen {
+    groups.into_iter().map(|g| g.total_size()).sum()
+}
+
+/// Returns an estimation of the number of files matching the search criteria
+fn stage_stats(groups: &[FileGroup<FileInfo>], filter: &FileGroupFilter) -> (usize, FileLen) {
+    let mut total_count = 0;
+    let mut total_size = FileLen(0);
+    for g in groups {
+        let count = g.reported_count(filter);
+        let size = g.file_len * count as u64;
+        total_count += count;
+        total_size += size;
     }
+    (total_count, total_size)
 }
 
 fn group_by_size(ctx: &AppCtx<'_>, files: Vec<Vec<FileInfo>>) -> Vec<FileGroup<FileInfo>> {
@@ -468,24 +581,21 @@ fn group_by_size(ctx: &AppCtx<'_>, files: Vec<Vec<FileInfo>>) -> Vec<FileGroup<F
             groups.add(file);
         }
     }
-    let rf_over = ctx.config.rf_over();
-    let rf_under = ctx.config.rf_under();
 
     let groups: Vec<_> = groups
         .into_iter()
-        .filter(|(_, files)| should_forward(ctx, files.as_slice()))
         .map(|(l, files)| FileGroup {
             file_len: l,
             file_hash: FileHash(0),
             files: files.into_vec(),
         })
+        .filter(|g| g.matches(&ctx.group_filter))
         .collect();
 
-    let count: usize = groups.selected_count(rf_over, rf_under);
-    let bytes: FileLen = groups.selected_size(rf_over, rf_under);
+    let stats = stage_stats(&groups, &ctx.group_filter);
     ctx.log.info(format!(
         "Found {} ({}) candidates after grouping by size",
-        count, bytes
+        stats.0, stats.1
     ));
     groups
 }
@@ -532,26 +642,21 @@ fn remove_same_files(
     ctx: &AppCtx<'_>,
     groups: Vec<FileGroup<FileInfo>>,
 ) -> Vec<FileGroup<FileInfo>> {
-    let file_count: usize = groups.total_count();
     let progress = ctx
         .log
-        .progress_bar("Removing same files", file_count as u64);
-
-    let rf_over = ctx.config.rf_over();
-    let rf_under = ctx.config.rf_under();
+        .progress_bar("Removing same files", file_count(&groups) as u64);
 
     let groups: Vec<_> = groups
         .into_par_iter()
         .update(|g| deduplicate(ctx, &mut g.files, |_| progress.tick()))
-        .filter(|g| should_forward(ctx, g.files.as_slice()))
+        .filter(|g| g.matches(&ctx.group_filter))
         .collect();
 
-    let count: usize = groups.selected_count(rf_over, rf_under);
-    let bytes: FileLen = groups.selected_size(rf_over, rf_under);
+    let stats = stage_stats(&groups, &ctx.group_filter);
     ctx.log.info(format!(
         "Found {} ({}) candidates after grouping by paths {}",
-        count,
-        bytes,
+        stats.0,
+        stats.1,
         if ctx.config.hard_links {
             ""
         } else {
@@ -572,7 +677,7 @@ fn atomic_counter_vec(len: usize) -> Vec<AtomicU32> {
 fn update_file_locations(ctx: &AppCtx<'_>, groups: &mut Vec<FileGroup<FileInfo>>) {
     #[cfg(target_os = "linux")]
     {
-        let count = groups.total_count();
+        let count = file_count(groups.iter());
         let progress = ctx.log.progress_bar("Fetching extents", count as u64);
 
         let err_counters = atomic_counter_vec(ctx.devices.len());
@@ -641,18 +746,14 @@ fn group_transformed(
     transform: &Transform,
     groups: Vec<FileGroup<FileInfo>>,
 ) -> Vec<FileGroup<FileInfo>> {
-    let file_count: usize = groups.total_count();
     let progress = ctx
         .log
-        .progress_bar("Transforming & grouping", file_count as u64);
-
-    let rf_over = ctx.config.rf_over();
-    let rf_under = ctx.config.rf_under();
+        .progress_bar("Transforming & grouping", file_count(&groups) as u64);
 
     let groups = rehash(
         groups,
         |_| true,
-        |g| should_forward(ctx, g.files.as_slice()),
+        |g| g.matches(&ctx.group_filter),
         &ctx.devices,
         AccessType::Sequential,
         |(fi, _)| {
@@ -667,12 +768,11 @@ fn group_transformed(
         },
     );
 
-    let count = groups.selected_count(rf_over, rf_under);
-    let bytes = groups.selected_size(rf_over, rf_under);
+    let stats = stage_stats(&groups, &ctx.group_filter);
     ctx.log.info(format!(
         "Found {} ({}) {} files",
-        count,
-        bytes,
+        stats.0,
+        stats.1,
         ctx.config.search_type()
     ));
     groups
@@ -709,18 +809,15 @@ fn group_by_prefix(
     groups: Vec<FileGroup<FileInfo>>,
 ) -> Vec<FileGroup<FileInfo>> {
     let pre_filter = |g: &FileGroup<FileInfo>| g.files.len() > 1;
-    let remaining_files = groups.iter().filter(|&g| pre_filter(g)).total_count();
+    let file_count = file_count(groups.iter().filter(|&g| pre_filter(g)));
     let progress = ctx
         .log
-        .progress_bar("Grouping by prefix", remaining_files as u64);
-
-    let rf_over = ctx.config.rf_over();
-    let rf_under = ctx.config.rf_under();
+        .progress_bar("Grouping by prefix", file_count as u64);
 
     let groups = rehash(
         groups,
         pre_filter,
-        |g| should_forward(ctx, g.files.as_slice()),
+        |g| g.matches(&ctx.group_filter),
         &ctx.devices,
         AccessType::Random,
         |(fi, _)| {
@@ -745,11 +842,10 @@ fn group_by_prefix(
         },
     );
 
-    let count = groups.selected_count(rf_over, rf_under);
-    let bytes = groups.selected_size(rf_over, rf_under);
+    let stats = stage_stats(&groups, &ctx.group_filter);
     ctx.log.info(format!(
         "Found {} ({}) candidates after grouping by prefix",
-        count, bytes
+        stats.0, stats.1
     ));
     groups
 }
@@ -775,18 +871,15 @@ fn group_by_suffix(ctx: &AppCtx<'_>, groups: Vec<FileGroup<FileInfo>>) -> Vec<Fi
     let suffix_len = suffix_len(&ctx.devices, flat_iter(&groups));
     let suffix_threshold = suffix_threshold(&ctx.devices, flat_iter(&groups));
     let pre_filter = |g: &FileGroup<FileInfo>| g.file_len >= suffix_threshold && g.files.len() > 1;
-    let remaining_files = groups.iter().filter(|&g| pre_filter(g)).total_count();
+    let file_count = file_count(groups.iter().filter(|&g| pre_filter(g)));
     let progress = ctx
         .log
-        .progress_bar("Grouping by suffix", remaining_files as u64);
-
-    let rf_over = ctx.config.rf_over();
-    let rf_under = ctx.config.rf_under();
+        .progress_bar("Grouping by suffix", file_count as u64);
 
     let groups = rehash(
         groups,
         pre_filter,
-        |g| should_forward(ctx, g.files.as_slice()),
+        |g| g.matches(&ctx.group_filter),
         &ctx.devices,
         AccessType::Random,
         |(fi, old_hash)| {
@@ -806,11 +899,10 @@ fn group_by_suffix(ctx: &AppCtx<'_>, groups: Vec<FileGroup<FileInfo>>) -> Vec<Fi
         },
     );
 
-    let count = groups.selected_count(rf_over, rf_under);
-    let bytes = groups.selected_size(rf_over, rf_under);
+    let stats = stage_stats(&groups, &ctx.group_filter);
     ctx.log.info(format!(
         "Found {} ({}) candidates after grouping by suffix",
-        count, bytes
+        stats.0, stats.1
     ));
     groups
 }
@@ -821,18 +913,15 @@ fn group_by_contents(
     groups: Vec<FileGroup<FileInfo>>,
 ) -> Vec<FileGroup<FileInfo>> {
     let pre_filter = |g: &FileGroup<FileInfo>| g.files.len() > 1 && g.file_len >= min_file_len;
-    let bytes_to_scan = groups.iter().filter(|&g| pre_filter(g)).total_size();
+    let bytes_to_scan = total_size(groups.iter().filter(|&g| pre_filter(g)));
     let progress = &ctx
         .log
         .bytes_progress_bar("Grouping by contents", bytes_to_scan.0);
 
-    let rf_over = ctx.config.rf_over();
-    let rf_under = ctx.config.rf_under();
-
     let groups = rehash(
         groups,
         pre_filter,
-        |g| should_forward(ctx, g.files.as_slice()),
+        |g| g.matches_strictly(&ctx.group_filter),
         &ctx.devices,
         AccessType::Sequential,
         |(fi, _)| {
@@ -850,12 +939,11 @@ fn group_by_contents(
         },
     );
 
-    let count = groups.selected_count(rf_over, rf_under);
-    let bytes = groups.selected_size(rf_over, rf_under);
+    let stats = stage_stats(&groups, &ctx.group_filter);
     ctx.log.info(format!(
         "Found {} ({}) {} files",
-        count,
-        bytes,
+        stats.0,
+        stats.1,
         ctx.config.search_type()
     ));
     groups
@@ -971,7 +1059,11 @@ pub fn group_files(config: &GroupConfig, log: &Log) -> Result<Vec<FileGroup<Path
 /// Returns [`io::Error`] on I/O write error or if the output file cannot be created.
 pub fn write_report(config: &GroupConfig, log: &Log, groups: &[FileGroup<Path>]) -> io::Result<()> {
     let now = Local::now();
-    let rf_over = max(1, config.rf_over());
+    let (redundant_count, redundant_size) = groups.iter().fold((0, FileLen(0)), |res, g| {
+        let count = g.redundant_count(&config.group_filter());
+        (res.0 + count, res.1 + g.file_len * count as u64)
+    });
+
     let header = ReportHeader {
         timestamp: DateTime::from_utc(now.naive_utc(), *now.offset()),
         version: env!("CARGO_PKG_VERSION").to_owned(),
@@ -979,8 +1071,8 @@ pub fn write_report(config: &GroupConfig, log: &Log, groups: &[FileGroup<Path>])
         base_dir: config.base_dir.to_string_lossy().to_string(),
         stats: Some(FileStats {
             group_count: groups.len(),
-            redundant_file_count: groups.selected_count(rf_over, usize::MAX),
-            redundant_file_size: groups.selected_size(rf_over, usize::MAX),
+            redundant_file_count: redundant_count,
+            redundant_file_size: redundant_size,
         }),
     };
 
@@ -1437,6 +1529,43 @@ mod test {
                 .unwrap();
             assert!(report.contains("file1"))
         });
+    }
+
+    #[test]
+    fn split_to_subgroups() {
+        let roots = vec![Path::from("/r0"), Path::from("/r1"), Path::from("/r2")];
+        let files = vec![
+            Path::from("/r1/f1a"),
+            Path::from("/r2/f2a"),
+            Path::from("/r2/f2b"),
+            Path::from("/r1/f1b"),
+            Path::from("/r1/f1c"),
+            Path::from("/r3/f3a"),
+            Path::from("/r2/f2c"),
+        ];
+        let groups = FileSubGroup::group(files, &roots);
+        assert_eq!(
+            groups,
+            vec![
+                FileSubGroup {
+                    files: vec![
+                        Path::from("/r1/f1a"),
+                        Path::from("/r1/f1b"),
+                        Path::from("/r1/f1c"),
+                    ]
+                },
+                FileSubGroup {
+                    files: vec![
+                        Path::from("/r2/f2a"),
+                        Path::from("/r2/f2b"),
+                        Path::from("/r2/f2c")
+                    ]
+                },
+                FileSubGroup {
+                    files: vec![Path::from("/r3/f3a")]
+                }
+            ]
+        )
     }
 
     fn write_test_file(path: &PathBuf, prefix: &[u8], mid: &[u8], suffix: &[u8]) {

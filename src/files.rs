@@ -181,6 +181,18 @@ pub trait AsPath {
     fn path(&self) -> &Path;
 }
 
+impl AsPath for Path {
+    fn path(&self) -> &Path {
+        self
+    }
+}
+
+impl<T: AsPath> AsPath for &T {
+    fn path(&self) -> &Path {
+        (**self).path()
+    }
+}
+
 pub trait IntoPath {
     fn into_path(self) -> Path;
 }

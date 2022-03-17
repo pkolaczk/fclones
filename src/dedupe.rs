@@ -22,8 +22,7 @@ use crate::lock::FileLock;
 use crate::log::Log;
 use crate::path::Path;
 use crate::util::{max_result, min_result, try_sort_by_key};
-use crate::{root_of, Error, FileGroup, TIMESTAMP_FMT};
-use itertools::Itertools;
+use crate::{AsPath, Error, FileGroup, FileSubGroup, TIMESTAMP_FMT};
 use std::collections::HashMap;
 use std::time::SystemTime;
 
@@ -71,6 +70,12 @@ impl FileMetadata {
     pub fn device_id(&self) -> Option<u64> {
         use crate::files::FileId;
         FileId::new(&self.path).ok().map(|f| f.device)
+    }
+}
+
+impl AsPath for FileMetadata {
+    fn path(&self) -> &Path {
+        &self.path
     }
 }
 
@@ -515,26 +520,7 @@ fn may_drop(path: &Path, config: &DedupeConfig) -> bool {
         || matches_any_path()
 }
 
-/// A sub-group of files. A sub-group is treated as one entity.
-/// All files in a subgroup must be either dropped or kept.
-struct FileSubGroup {
-    files: Vec<FileMetadata>,
-}
-
-impl FileSubGroup {
-    /// Splits a group of files into subgroups.
-    /// Files sharing the same prefix found in the roots array are placed in the same subgroup.
-    pub fn group(files: Vec<FileMetadata>, roots: &[Path]) -> Vec<FileSubGroup> {
-        assert!(!files.is_empty());
-        files
-            .into_iter()
-            .map(|f| (root_of(&f.path, roots).clone(), f))
-            .into_group_map()
-            .into_values()
-            .map(|files| FileSubGroup { files })
-            .collect()
-    }
-
+impl FileSubGroup<FileMetadata> {
     /// Returns the time of the earliest creation of a file in the subgroup
     pub fn created(&self) -> Result<SystemTime, Error> {
         Ok(min_result(self.files.iter().map(|f| {
@@ -598,7 +584,7 @@ impl FileSubGroup {
 /// recently accessed, etc) are sorted last.
 /// In cases when metadata of a file cannot be accessed, an error message is pushed
 /// in the result vector and such file is placed at the beginning of the list.
-fn sort_by_priority(files: &mut [FileSubGroup], priority: &Priority) -> Vec<Error> {
+fn sort_by_priority(files: &mut [FileSubGroup<FileMetadata>], priority: &Priority) -> Vec<Error> {
     match priority {
         Priority::Newest => try_sort_by_key(files, |m| m.created()),
         Priority::Oldest => try_sort_by_key(files, |m| m.created().map(Reverse)),
