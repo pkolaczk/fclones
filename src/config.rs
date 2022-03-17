@@ -18,6 +18,8 @@ use crate::path::Path;
 use crate::pattern::{Pattern, PatternError, PatternOpts};
 use crate::selector::PathSelector;
 use crate::transform::Transform;
+use crate::FileGroupFilter;
+use crate::Replication::{Overreplicated, Underreplicated};
 
 #[derive(Debug, Clone, Copy)]
 pub enum OutputFormat {
@@ -339,6 +341,23 @@ impl GroupConfig {
             .include_names(include_names?)
             .include_paths(include_paths?)
             .exclude_paths(exclude_paths?))
+    }
+
+    pub fn group_filter(&self) -> FileGroupFilter {
+        FileGroupFilter {
+            replication: if self.unique {
+                Underreplicated(2)
+            } else if let Some(rf) = self.rf_under {
+                Underreplicated(rf)
+            } else {
+                Overreplicated(self.rf_over())
+            },
+            root_paths: if self.isolate {
+                self.input_paths().collect()
+            } else {
+                vec![]
+            },
+        }
     }
 
     pub fn rf_over(&self) -> usize {
