@@ -1059,8 +1059,16 @@ pub fn group_files(config: &GroupConfig, log: &Log) -> Result<Vec<FileGroup<Path
 /// Returns [`io::Error`] on I/O write error or if the output file cannot be created.
 pub fn write_report(config: &GroupConfig, log: &Log, groups: &[FileGroup<Path>]) -> io::Result<()> {
     let now = Local::now();
+
+    let total_count = file_count(groups.iter());
+    let total_size = total_size(groups.iter());
+
     let (redundant_count, redundant_size) = groups.iter().fold((0, FileLen(0)), |res, g| {
         let count = g.redundant_count(&config.group_filter());
+        (res.0 + count, res.1 + g.file_len * count as u64)
+    });
+    let (missing_count, missing_size) = groups.iter().fold((0, FileLen(0)), |res, g| {
+        let count = g.missing_count(&config.group_filter());
         (res.0 + count, res.1 + g.file_len * count as u64)
     });
 
@@ -1071,8 +1079,12 @@ pub fn write_report(config: &GroupConfig, log: &Log, groups: &[FileGroup<Path>])
         base_dir: config.base_dir.to_string_lossy().to_string(),
         stats: Some(FileStats {
             group_count: groups.len(),
+            total_file_count: total_count,
+            total_file_size: total_size,
             redundant_file_count: redundant_count,
             redundant_file_size: redundant_size,
+            missing_file_count: missing_count,
+            missing_file_size: missing_size,
         }),
     };
 
