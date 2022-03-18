@@ -26,8 +26,12 @@ use crate::{FileGroup, TIMESTAMP_FMT};
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct FileStats {
     pub group_count: usize,
+    pub total_file_count: usize,
+    pub total_file_size: FileLen,
     pub redundant_file_count: usize,
     pub redundant_file_size: FileLen,
+    pub missing_file_count: usize,
+    pub missing_file_size: FileLen,
 }
 
 /// Data in the header of the whole report.
@@ -95,24 +99,23 @@ impl<W: Write> ReportWriter<W> {
     ///
     /// # Example
     /// ```text
-    /// # Report by fclones 0.12.0
-    /// # Timestamp: Mon, 03 May 2021 13:22:51 +0000
-    /// # Command: target/debug/fclones find . -o report.txt
+    /// # Report by fclones 0.18.0
+    /// # Timestamp: 2022-03-18 08:22:00.844 +0100
+    /// # Command: fclones group .
     /// # Base dir: /home/pkolaczk/Projekty/fclones
-    /// # Found 553 file groups
-    /// # 271.8 MB in 4266 redundant files can be removed
-    /// 5649a555c131508c4a757d9e14c4aea6, 6626689 B (6.6 MB) * 5:
-    ///     /home/pkolaczk/Projekty/fclones/target/debug/deps/libregex_syntax-94c84f5600b85f6e.rmeta
-    ///     /home/pkolaczk/Projekty/fclones/target/package/fclones-0.10.0/target/debug/deps/libregex_syntax-94c84f5600b85f6e.rmeta
-    ///     /home/pkolaczk/Projekty/fclones/target/package/fclones-0.10.1/target/debug/deps/libregex_syntax-94c84f5600b85f6e.rmeta
-    ///     /home/pkolaczk/Projekty/fclones/target/package/fclones-0.10.2/target/debug/deps/libregex_syntax-94c84f5600b85f6e.rmeta
-    ///     /home/pkolaczk/Projekty/fclones/target/package/fclones-0.11.0/target/debug/deps/libregex_syntax-94c84f5600b85f6e.rmeta
-    /// f79ce189d76620fd921986943087dc3a, 5815999 B (5.8 MB) * 5:
-    ///     /home/pkolaczk/Projekty/fclones/target/debug/deps/libserde-af05e0212e5def7d.rmeta
-    ///     /home/pkolaczk/Projekty/fclones/target/package/fclones-0.10.0/target/debug/deps/libserde-af05e0212e5def7d.rmeta
-    ///     /home/pkolaczk/Projekty/fclones/target/package/fclones-0.10.1/target/debug/deps/libserde-af05e0212e5def7d.rmeta
-    ///     /home/pkolaczk/Projekty/fclones/target/package/fclones-0.10.2/target/debug/deps/libserde-af05e0212e5def7d.rmeta
-    ///     /home/pkolaczk/Projekty/fclones/target/package/fclones-0.11.0/target/debug/deps/libserde-af05e0212e5def7d.rmeta
+    /// # Total: 13589 B (13.6 KB) in 31 files in 14 groups
+    /// # Redundant: 6819 B (6.8 KB) in 17 files
+    /// # Missing: 0 B (0 B) in 0 files
+    /// 49165422e775f631cca3b09124f8ee89, 6274 B (6.3 KB) * 2:
+    ///     /home/pkolaczk/Projekty/fclones/src/semaphore.rs
+    ///     /home/pkolaczk/Projekty/fclones/.git/rr-cache/d5cde6e71942982e722d6dfe41936c9036ba9f4b/postimage
+    /// dcf2e11190ccc260f2388d9a5a2ed20e, 41 B (41 B) * 2:
+    ///     /home/pkolaczk/Projekty/fclones/.git/refs/heads/diff_roots
+    ///     /home/pkolaczk/Projekty/fclones/.git/refs/remotes/origin/diff_roots
+    /// d0521f268e17c28b10c48e5f5de48f21, 41 B (41 B) * 2:
+    ///     /home/pkolaczk/Projekty/fclones/.git/refs/heads/fix_flock_freebsd
+    ///     /home/pkolaczk/Projekty/fclones/.git/refs/remotes/origin/fix_flock_freebsd
+    /// ...
     /// ```
     pub fn write_as_text<I, G, P>(&mut self, header: &ReportHeader, groups: I) -> io::Result<()>
     where
@@ -129,10 +132,20 @@ impl<W: Write> ReportWriter<W> {
         self.write_header_line(&format!("Command: {}", command))?;
         self.write_header_line(&format!("Base dir: {}", header.base_dir))?;
         if let Some(stats) = &header.stats {
-            self.write_header_line(&format!("Found {} file groups", stats.group_count))?;
             self.write_header_line(&format!(
-                "{} B ({}) in {} redundant files can be removed",
+                "Total: {} B ({}) in {} files in {} groups",
+                stats.total_file_size.0,
+                stats.total_file_size,
+                stats.total_file_count,
+                stats.group_count
+            ))?;
+            self.write_header_line(&format!(
+                "Redundant: {} B ({}) in {} files",
                 stats.redundant_file_size.0, stats.redundant_file_size, stats.redundant_file_count
+            ))?;
+            self.write_header_line(&format!(
+                "Missing: {} B ({}) in {} files",
+                stats.missing_file_size.0, stats.missing_file_size, stats.missing_file_count
             ))?;
         }
 
@@ -214,49 +227,43 @@ impl<W: Write> ReportWriter<W> {
     /// ```json
     /// {
     ///   "header": {
-    ///     "version": "0.12.0",
-    ///     "timestamp": "2021-05-03T13:20:59.285409824+00:00",
+    ///     "version": "0.18.0",
+    ///     "timestamp": "2022-03-18T08:24:28.793228077+01:00",
     ///     "command": [
-    ///       "target/debug/fclones",
-    ///       "find",
+    ///       "fclones",
+    ///       "group",
     ///       ".",
     ///       "-f",
-    ///       "JSON",
-    ///       "-o",
-    ///       "report.json"
+    ///       "json"
     ///     ],
+    ///     "base_dir": "/home/pkolaczk/Projekty/fclones",
     ///     "stats": {
-    ///       "group_count": 553,
-    ///       "redundant_file_count": 4266,
-    ///       "redundant_file_size": 271838709
+    ///       "group_count": 14,
+    ///       "total_file_count": 31,
+    ///       "total_file_size": 13589,
+    ///       "redundant_file_count": 17,
+    ///       "redundant_file_size": 6819,
+    ///       "missing_file_count": 0,
+    ///       "missing_file_size": 0
     ///     }
     ///   },
     ///   "groups": [
     ///     {
-    ///       "file_len": 6626689,
-    ///       "file_hash": "5649a555c131508c4a757d9e14c4aea6",
+    ///       "file_len": 6274,
+    ///       "file_hash": "49165422e775f631cca3b09124f8ee89",
     ///       "files": [
-    ///         "/home/pkolaczk/Projekty/fclones/target/debug/deps/libregex_syntax-94c84f5600b85f6e.rmeta",
-    ///         "/home/pkolaczk/Projekty/fclones/target/package/fclones-0.10.0/target/debug/deps/libregex_syntax-94c84f5600b85f6e.rmeta",
-    ///         "/home/pkolaczk/Projekty/fclones/target/package/fclones-0.10.1/target/debug/deps/libregex_syntax-94c84f5600b85f6e.rmeta",
-    ///         "/home/pkolaczk/Projekty/fclones/target/package/fclones-0.10.2/target/debug/deps/libregex_syntax-94c84f5600b85f6e.rmeta",
-    ///         "/home/pkolaczk/Projekty/fclones/target/package/fclones-0.11.0/target/debug/deps/libregex_syntax-94c84f5600b85f6e.rmeta"
+    ///         "/home/pkolaczk/Projekty/fclones/src/semaphore.rs",
+    ///         "/home/pkolaczk/Projekty/fclones/.git/rr-cache/d5cde6e71942982e722d6dfe41936c9036ba9f4b/postimage"
     ///       ]
     ///     },
     ///     {
-    ///       "file_len": 5815999,
-    ///       "file_hash": "f79ce189d76620fd921986943087dc3a",
+    ///       "file_len": 41,
+    ///       "file_hash": "dcf2e11190ccc260f2388d9a5a2ed20e",
     ///       "files": [
-    ///         "/home/pkolaczk/Projekty/fclones/target/debug/deps/libserde-af05e0212e5def7d.rmeta",
-    ///         "/home/pkolaczk/Projekty/fclones/target/package/fclones-0.10.0/target/debug/deps/libserde-af05e0212e5def7d.rmeta",
-    ///         "/home/pkolaczk/Projekty/fclones/target/package/fclones-0.10.1/target/debug/deps/libserde-af05e0212e5def7d.rmeta",
-    ///         "/home/pkolaczk/Projekty/fclones/target/package/fclones-0.10.2/target/debug/deps/libserde-af05e0212e5def7d.rmeta",
-    ///         "/home/pkolaczk/Projekty/fclones/target/package/fclones-0.11.0/target/debug/deps/libserde-af05e0212e5def7d.rmeta"
+    ///         "/home/pkolaczk/Projekty/fclones/.git/refs/heads/diff_roots",
+    ///         "/home/pkolaczk/Projekty/fclones/.git/refs/remotes/origin/diff_roots"
     ///       ]
     ///     },
-    ///      ...
-    ///   ]
-    /// }
     /// ```
     pub fn write_as_json<I, P>(&mut self, header: &ReportHeader, groups: I) -> io::Result<()>
     where
@@ -448,15 +455,59 @@ impl<R: BufRead> TextReportReader<R> {
         Ok(line_buf)
     }
 
-    fn read_extract(&mut self, regex: &Regex, msg: &str) -> io::Result<Vec<String>> {
+    fn read_extract(&mut self, regex: &Regex, name: &str) -> io::Result<Vec<String>> {
         let line = self.read_line()?;
         Ok(regex
             .captures(line.trim())
-            .ok_or_else(|| Error::new(ErrorKind::InvalidData, msg.to_owned()))?
+            .ok_or_else(|| {
+                Error::new(
+                    ErrorKind::InvalidData,
+                    format!("Malformed header: Missing {}", name),
+                )
+            })?
             .iter()
             .skip(1)
             .map(|c| c.unwrap().as_str().to_owned())
             .collect())
+    }
+
+    fn parse_timestamp(value: &str, name: &str) -> io::Result<DateTime<FixedOffset>> {
+        DateTime::parse_from_str(value, TIMESTAMP_FMT).map_err(|e| {
+            Error::new(
+                ErrorKind::InvalidData,
+                format!(
+                    "Malformed header: Failed to parse {}: {}. Expected timestamp format: {}",
+                    name, e, TIMESTAMP_FMT
+                ),
+            )
+        })
+    }
+
+    fn parse_u64(value: Option<&String>, name: &str) -> io::Result<u64> {
+        match value {
+            Some(value) => value.parse().map_err(|e| {
+                Error::new(
+                    ErrorKind::InvalidData,
+                    format!(
+                        "Malformed header: Failed to parse {}: {}. Expected integer value.",
+                        name, e
+                    ),
+                )
+            }),
+            None => Err(Error::new(
+                ErrorKind::InvalidData,
+                format!("Malformed header: Missing {}", name),
+            )),
+        }
+    }
+
+    fn parse_usize(value: Option<&String>, name: &str) -> io::Result<usize> {
+        Ok(Self::parse_u64(value, name)? as usize)
+    }
+
+    fn parse_file_len(value: Option<&String>, name: &str) -> io::Result<FileLen> {
+        let value = Self::parse_u64(value, name)?;
+        Ok(FileLen(value))
     }
 }
 
@@ -468,66 +519,43 @@ impl<R: BufRead + Send + 'static> ReportReader for TextReportReader<R> {
             static ref TIMESTAMP_RE: Regex = Regex::new(r"^# Timestamp: (.*)").unwrap();
             static ref COMMAND_RE: Regex = Regex::new(r"^# Command: (.*)").unwrap();
             static ref BASE_DIR_RE: Regex = Regex::new(r"^# Base dir: (.*)").unwrap();
-            static ref GROUP_COUNT_RE: Regex =
-                Regex::new(r"^# Found ([0-9]+) file groups").unwrap();
-            static ref STATS_RE: Regex =
-                Regex::new(r"^# ([0-9]+) B \([^)]+\) in ([0-9]+) redundant files can be removed")
+            static ref TOTAL_RE: Regex =
+                Regex::new(r"^# Total: ([0-9]+) B \([^)]+\) in ([0-9]+) files in ([0-9]+) groups")
                     .unwrap();
+            static ref REDUNDANT_RE: Regex =
+                Regex::new(r"^# Redundant: ([0-9]+) B \([^)]+\) in ([0-9]+) files").unwrap();
+            static ref MISSING_RE: Regex =
+                Regex::new(r"^# Missing: ([0-9]+) B \([^)]+\) in ([0-9]+) files").unwrap();
         }
 
         let version = self
-            .read_extract(&VERSION_RE, "Malformed header: Missing fclones version")?
+            .read_extract(&VERSION_RE, "fclones version")?
             .swap_remove(0);
         let timestamp = self
-            .read_extract(&TIMESTAMP_RE, "Malformed header: Missing timestamp")?
+            .read_extract(&TIMESTAMP_RE, "timestamp")?
             .swap_remove(0);
-        let timestamp = DateTime::parse_from_str(&timestamp, TIMESTAMP_FMT).map_err(|e| {
-            Error::new(
-                ErrorKind::InvalidData,
-                format!("Malformed header: Failed to parse timestamp: {}", e),
-            )
-        })?;
-        let command = self
-            .read_extract(&COMMAND_RE, "Malformed header: Missing command")?
-            .swap_remove(0);
+        let timestamp = Self::parse_timestamp(&timestamp, "timestamp")?;
+        let command = self.read_extract(&COMMAND_RE, "command")?.swap_remove(0);
         let command = shell_words::split(&command).map_err(|e| {
             Error::new(
                 ErrorKind::InvalidData,
                 format!("Malformed header: Failed to parse command arguments: {}", e),
             )
         })?;
-        let base_dir = self
-            .read_extract(&BASE_DIR_RE, "Malformed header: Missing base dir")?
-            .swap_remove(0);
-        let group_count = self
-            .read_extract(&GROUP_COUNT_RE, "Malformed header: Missing group count")?
-            .swap_remove(0);
-        let group_count: usize = group_count.parse().map_err(|e| {
-            Error::new(
-                ErrorKind::InvalidData,
-                format!("Malformed header: Failed to parse group count: {}", e),
-            )
-        })?;
-        let stats_line =
-            self.read_extract(&STATS_RE, "Malformed header: Missing file statistics line")?;
-        let redundant_file_size = FileLen(stats_line[0].parse().map_err(|e| {
-            Error::new(
-                ErrorKind::InvalidData,
-                format!(
-                    "Malformed header: Failed to parse file size {}: {}",
-                    stats_line[0], e
-                ),
-            )
-        })?);
-        let redundant_file_count: usize = stats_line[1].parse().map_err(|e| {
-            Error::new(
-                ErrorKind::InvalidData,
-                format!(
-                    "Malformed header: Failed to parse file count {}: {}",
-                    stats_line[1], e
-                ),
-            )
-        })?;
+        let base_dir = self.read_extract(&BASE_DIR_RE, "base dir")?.swap_remove(0);
+
+        let stats = self.read_extract(&TOTAL_RE, "total file statistics")?;
+        let total_file_size = Self::parse_file_len(stats.get(0), "total file size")?;
+        let total_file_count = Self::parse_usize(stats.get(1), "total file count")?;
+        let group_count = Self::parse_usize(stats.get(2), "group count")?;
+
+        let stats = self.read_extract(&REDUNDANT_RE, "redundant file statistics")?;
+        let redundant_file_size = Self::parse_file_len(stats.get(0), "redundant file size")?;
+        let redundant_file_count = Self::parse_usize(stats.get(1), "redundant file count")?;
+
+        let stats = self.read_extract(&MISSING_RE, "missing file statistics")?;
+        let missing_file_size = Self::parse_file_len(stats.get(0), "missing file size")?;
+        let missing_file_count = Self::parse_usize(stats.get(1), "missing file count")?;
 
         Ok(ReportHeader {
             version,
@@ -536,8 +564,12 @@ impl<R: BufRead + Send + 'static> ReportReader for TextReportReader<R> {
             base_dir,
             stats: Some(FileStats {
                 group_count,
+                total_file_count,
+                total_file_size,
                 redundant_file_count,
                 redundant_file_size,
+                missing_file_count,
+                missing_file_size,
             }),
         })
     }
@@ -628,8 +660,12 @@ mod test {
                 .unwrap(),
             stats: Some(FileStats {
                 group_count: 4,
+                total_file_count: 1000,
+                total_file_size: FileLen(2500),
                 redundant_file_count: 234,
                 redundant_file_size: FileLen(1000),
+                missing_file_count: 93,
+                missing_file_size: FileLen(300),
             }),
         }
     }
