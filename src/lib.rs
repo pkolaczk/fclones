@@ -291,6 +291,18 @@ impl<F: AsPath> FileGroup<F> {
             FileSubGroup::group(&self.files, &filter.root_paths).len()
         }
     }
+
+    /// Sorts the files by their path names.
+    /// If filter requires grouping by roots, then groups are kept together.
+    pub fn sort(&mut self, root_paths: &[Path]) {
+        self.files.sort_by(|f1, f2| f1.path().cmp(f2.path()));
+        if !root_paths.is_empty() {
+            self.files = FileSubGroup::group(self.files.drain(..), root_paths)
+                .into_iter()
+                .flat_map(|g| g.files)
+                .collect()
+        }
+    }
 }
 
 /// A subgroup of identical files, typically smaller than a `FileGroup`.
@@ -1043,7 +1055,9 @@ pub fn group_files(config: &GroupConfig, log: &Log) -> Result<Vec<FileGroup<Path
         .collect();
     groups.retain(|g| g.files.len() < ctx.config.rf_under());
     groups.par_sort_by_key(|g| Reverse((g.file_len, g.file_hash)));
-    groups.par_iter_mut().for_each(|g| g.files.sort());
+    groups
+        .par_iter_mut()
+        .for_each(|g| g.sort(&ctx.group_filter.root_paths));
     Ok(groups)
 }
 
