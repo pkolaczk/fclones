@@ -456,15 +456,24 @@ impl GroupConfig {
     }
 }
 
+/// Controls which files in a group should be removed / moved / replaced by links.
 #[derive(Clone, Debug)]
 pub enum Priority {
+    /// Gives higher priority to the files with the most recent creation time.
     Newest,
+    /// Gives higher priority to the files with the least recent creation time.
     Oldest,
+    /// Gives higher priority to the files with the most recent modification time.
     MostRecentlyModified,
+    /// Gives higher priority to the files with the least recent modification time.
     LeastRecentlyModified,
+    /// Gives higher priority to the files with the most recent access time.
     MostRecentlyAccessed,
+    /// Gives higher priority to the files with the least recent access time.
     LeastRecentlyAccessed,
+    /// Gives higher priority to the files nested deeper in the directory tree.
     MostNested,
+    /// Gives higher priority to the files nested shallower in the directory tree.
     LeastNested,
 }
 

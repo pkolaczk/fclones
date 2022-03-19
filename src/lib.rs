@@ -188,9 +188,9 @@ pub enum Replication {
 pub struct FileGroupFilter {
     /// The allowed number of replicas in the group.
     pub replication: Replication,
-    /// A list of path prefixes for grouping files into isolated sub-groups.
+    /// A list of path prefixes for grouping files into isolated subgroups.
     /// Files inside a single subgroup are treated like a single replica.
-    /// If empty - no subgrouping is performed.
+    /// If empty - no additional grouping is performed.
     /// See [`GroupConfig::isolate`].
     pub root_paths: Vec<Path>,
 }
@@ -209,7 +209,12 @@ impl<F> FileGroup<F> {
 
 impl<F: AsPath> FileGroup<F> {
     /// Returns true if the file group should be forwarded to the next grouping stage,
-    /// because the number of duplicate files is higher than the `rf_over` threshold.
+    /// because the number of duplicate files is higher than the maximum allowed number of replicas.
+    ///
+    /// This method returns always true if the user searches for underreplicated files
+    /// (`filter.replication` is `Replication::Underreplicated`). This is because even if
+    /// the number of replicas is currently higher than the maximum number of allowed replicas,
+    /// the group can be split in later stages and the number of replicas in the group may drop.
     pub fn matches(&self, filter: &FileGroupFilter) -> bool {
         match filter.replication {
             Replication::Overreplicated(rf) => self.subgroup_count(filter) > rf,
@@ -218,8 +223,8 @@ impl<F: AsPath> FileGroup<F> {
     }
 
     /// Returns true if the file group should be included in the final report.
-    /// The number of duplicate files must be within both the lower (`rf_over`)
-    /// and the upper bound (`rf_under`) for the desired replication factor.
+    /// The number of replicas in the group must be appropriate for the condition
+    /// specified in `filter.replication`.
     pub fn matches_strictly(&self, filter: &FileGroupFilter) -> bool {
         let count = self.subgroup_count(filter);
         match filter.replication {
@@ -230,9 +235,11 @@ impl<F: AsPath> FileGroup<F> {
 
     /// Returns the number of missing file replicas.
     ///
-    /// This is the difference between the desired number of replicas set by `filter.rf_under`
-    /// and the number of files in the group. If the number of files is greater than `rf_under`,
-    /// 0 is returned.
+    /// This is the difference between the desired minimum number of replicas
+    /// given by `filter.replication` and the number of files in the group.
+    ///
+    /// If the number of files is greater than the minimum number of replicas, or
+    /// if `filter.replication` is set to `Replication::Overreplicated` 0 is returned.
     pub fn missing_count(&self, filter: &FileGroupFilter) -> usize {
         match filter.replication {
             Replication::Overreplicated(_) => 0,
@@ -243,14 +250,16 @@ impl<F: AsPath> FileGroup<F> {
     /// Returns the highest number of redundant files that could be removed from the group.
     ///
     /// If `filter.roots` are empty, the difference between the total number of files
-    /// in the group and the desired maximum number of replicas `filter.rf_over` is returned.
+    /// in the group and the desired maximum number of replicas controlled by `filter.replication`
+    /// is returned.
     ///
     /// If `filter.roots` are not empty, then files in the group are split into subgroups first,
     /// where each subgroup shares one of the roots. If the number of subgroups `N` is larger
-    /// than `filter.rf_over`, the largest `N - filter.rf_over` subgroups are considered redundant.
-    /// The total number of files in redundant subgroups is returned.
+    /// than the allowed number of replicas r, the last N - r subgroups are considered
+    /// redundant. The total number of files in redundant subgroups is returned.
     ///
-    /// If the result would be negative in any of the above cases, 0 is returned.
+    /// If the result would be negative in any of the above cases or if `filter.replication`
+    /// is set to `Replication::Underreplicated`, 0 is returned.
     pub fn redundant_count(&self, filter: &FileGroupFilter) -> usize {
         match filter.replication {
             Replication::Underreplicated(_) => 0,
@@ -261,11 +270,10 @@ impl<F: AsPath> FileGroup<F> {
                     self.file_count().saturating_sub(rf)
                 } else {
                     let sub_groups = FileSubGroup::group(&self.files, &filter.root_paths);
-                    let mut sub_group_lengths = sub_groups
+                    let sub_group_lengths = sub_groups
                         .into_iter()
                         .map(|sg| sg.files.len())
                         .collect_vec();
-                    sub_group_lengths.sort_unstable();
                     let cutoff_index = min(rf, sub_group_lengths.len());
                     sub_group_lengths[cutoff_index..].iter().sum()
                 }
