@@ -1219,7 +1219,6 @@ mod test {
             };
 
             let mut config = DedupeConfig::default();
-            config.priority = vec![Priority::Oldest];
             config.isolated_roots = vec![Path::from(&root1), Path::from(&root2)];
 
             let p = partition(group.clone(), &config, &Log::new()).unwrap();
@@ -1227,12 +1226,12 @@ mod test {
             assert!(p
                 .to_drop
                 .iter()
-                .all(|f| f.path.to_path_buf().starts_with(&root1)));
+                .all(|f| f.path.to_path_buf().starts_with(&root2)));
             assert_eq!(p.to_keep.len(), 3);
             assert!(p
                 .to_keep
                 .iter()
-                .all(|f| f.path.to_path_buf().starts_with(&root2)));
+                .all(|f| f.path.to_path_buf().starts_with(&root1)));
         })
     }
 
