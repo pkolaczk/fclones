@@ -14,6 +14,12 @@ use crate::Path as FcPath;
 /// The destination file is allowed to exist.
 pub fn reflink(src: &FileMetadata, dest: &FileMetadata, log: &Log) -> io::Result<()> {
     let _ = FileLock::new(&dest.path)?; // don't touch a locked file
+
+    // Remember the original metadata of the parent directory of the destination file:
+    let dest_parent = dest.path.parent();
+    let dest_parent_metadata = dest_parent.map(|p| p.to_path_buf().metadata());
+
+    // Call reflink:
     let result = {
         if cfg!(any(target_os = "linux", target_os = "android")) && !test::cfg::crosstest() {
             linux_reflink(src, dest, log).map_err(|e| {
@@ -26,9 +32,23 @@ pub fn reflink(src: &FileMetadata, dest: &FileMetadata, log: &Log) -> io::Result
             safe_reflink(src, dest, log)
         }
     };
-    if let Err(err) = restore_some_metadata(&dest.path.to_path_buf(), &dest.metadata) {
-        log.warn(format!("Failed keep metadata for {}: {:?}", dest, err))
+
+    // Restore the original metadata of the deduplicated file:
+    if let Err(e) = restore_some_metadata(&dest.path.to_path_buf(), &dest.metadata) {
+        log.warn(format!("Failed keep metadata for {}: {}", dest, e))
     }
+
+    // Restore the original metadata of the deduplicated files's parent directory:
+    if let Some(parent) = dest_parent {
+        if let Some(metadata) = dest_parent_metadata {
+            let result = metadata
+                .and_then(|metadata| restore_some_metadata(&parent.to_path_buf(), &metadata));
+            if let Err(e) = result {
+                log.warn(format!("Failed keep metadata for {}: {}", parent, e))
+            }
+        }
+    }
+
     result
 }
 
