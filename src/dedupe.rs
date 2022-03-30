@@ -54,7 +54,7 @@ impl FileMetadata {
         let metadata = fs::symlink_metadata(&path_buf).map_err(|e| {
             io::Error::new(
                 e.kind(),
-                format!("Failed to read metadata of {}: {}", path, e),
+                format!("Failed to read metadata of {}: {}", path.display(), e),
             )
         })?;
         Ok(FileMetadata { path, metadata })
@@ -81,7 +81,7 @@ impl AsPath for FileMetadata {
 
 impl Display for FileMetadata {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        f.pad(format!("{}", self.path).as_str())
+        f.pad(self.path.display().as_str())
     }
 }
 
@@ -112,8 +112,12 @@ pub enum FsCommand {
 impl FsCommand {
     pub fn remove(path: &Path) -> io::Result<()> {
         let _ = FileLock::new(path)?;
-        fs::remove_file(path.to_path_buf())
-            .map_err(|e| io::Error::new(e.kind(), format!("Failed to remove file {}: {}", path, e)))
+        fs::remove_file(path.to_path_buf()).map_err(|e| {
+            io::Error::new(
+                e.kind(),
+                format!("Failed to remove file {}: {}", path.display(), e),
+            )
+        })
     }
 
     #[cfg(unix)]
@@ -132,7 +136,9 @@ impl FsCommand {
                 e.kind(),
                 format!(
                     "Failed to create symbolic link {} -> {}: {}",
-                    link, target, e
+                    link.display(),
+                    target.display(),
+                    e
                 ),
             )
         })
@@ -142,7 +148,12 @@ impl FsCommand {
         fs::hard_link(&target.to_path_buf(), &link.to_path_buf()).map_err(|e| {
             io::Error::new(
                 e.kind(),
-                format!("Failed to create hard link {} -> {}: {}", link, target, e),
+                format!(
+                    "Failed to create hard link {} -> {}: {}",
+                    link.display(),
+                    target.display(),
+                    e
+                ),
             )
         })
     }
@@ -165,7 +176,7 @@ impl FsCommand {
         fs::create_dir_all(path.to_path_buf()).map_err(|e| {
             io::Error::new(
                 e.kind(),
-                format!("Failed to create directory {}: {}", path, e),
+                format!("Failed to create directory {}: {}", path.display(), e),
             )
         })
     }
@@ -178,7 +189,7 @@ impl FsCommand {
                 e.kind(),
                 format!(
                     "Failed to rename file from {} to {}: {}",
-                    source,
+                    source.display(),
                     target.display(),
                     e
                 ),
@@ -194,7 +205,7 @@ impl FsCommand {
                 e.kind(),
                 format!(
                     "Failed to copy file from {} to {}: {}",
-                    source,
+                    source.display(),
                     target.display(),
                     e
                 ),
@@ -260,7 +271,9 @@ impl FsCommand {
                 if let Err(remove_err) = Self::unsafe_rename(&tmp, path) {
                     log.warn(format!(
                         "Failed to undo move from {} to {}: {}",
-                        &path, &tmp, remove_err
+                        &path.display(),
+                        &tmp.display(),
+                        remove_err
                     ))
                 }
                 return Err(e);
@@ -268,7 +281,11 @@ impl FsCommand {
         };
         // Cleanup the temp file.
         if let Err(e) = Self::remove(&tmp) {
-            log.warn(format!("Failed to remove temporary {}: {}", &tmp, e))
+            log.warn(format!(
+                "Failed to remove temporary {}: {}",
+                &tmp.display(),
+                e
+            ))
         }
         Ok(result)
     }
@@ -324,41 +341,41 @@ impl FsCommand {
         let mut result = Vec::new();
         match self {
             FsCommand::Remove { file, .. } => {
-                let path = file.path.shell_quote();
+                let path = file.path.quote();
                 result.push(format!("rm {}", path));
             }
             FsCommand::SoftLink { target, link, .. } => {
                 let tmp = Self::temp_file(&link.path);
-                let target = target.path.shell_quote();
-                let link = link.path.shell_quote();
-                result.push(format!("mv {} {}", link, tmp));
+                let target = target.path.quote();
+                let link = link.path.quote();
+                result.push(format!("mv {} {}", link, tmp.quote()));
                 result.push(format!("ln -s {} {}", target, link));
-                result.push(format!("rm {}", tmp));
+                result.push(format!("rm {}", tmp.quote()));
             }
             FsCommand::HardLink { target, link, .. } => {
                 let tmp = Self::temp_file(&link.path);
-                let target = target.path.shell_quote();
-                let link = link.path.shell_quote();
-                result.push(format!("mv {} {}", link, tmp));
+                let target = target.path.quote();
+                let link = link.path.quote();
+                result.push(format!("mv {} {}", link, tmp.quote()));
                 result.push(format!("ln {} {}", target, link));
-                result.push(format!("rm {}", tmp));
+                result.push(format!("rm {}", tmp.quote()));
             }
             FsCommand::RefLink { target, link, .. } => {
                 let tmp = Self::temp_file(&link.path);
-                let target = target.path.shell_quote();
-                let link = link.path.shell_quote();
+                let target = target.path.quote();
+                let link = link.path.quote();
                 // Not really what happens on Linux, there the `mv` is also a reflink.
-                result.push(format!("mv {} {}", link, tmp));
+                result.push(format!("mv {} {}", link, tmp.quote()));
                 result.push(format!("cp --reflink=always {} {}", target, link));
-                result.push(format!("rm {}", tmp));
+                result.push(format!("rm {}", tmp.quote()));
             }
             FsCommand::Move {
                 source,
                 target,
                 use_rename,
             } => {
-                let source = source.path.shell_quote();
-                let target = target.shell_quote();
+                let source = source.path.quote();
+                let target = target.quote();
                 if *use_rename {
                     result.push(format!("mv {} {}", &source, &target));
                 } else {
@@ -375,24 +392,24 @@ impl FsCommand {
         let mut result = Vec::new();
         match self {
             FsCommand::Remove { file, .. } => {
-                let path = file.path.shell_quote();
+                let path = file.path.quote();
                 result.push(format!("del {}", path));
             }
             FsCommand::SoftLink { target, link, .. } => {
                 let tmp = Self::temp_file(&link.path);
-                let target = target.path.shell_quote();
-                let link = link.path.shell_quote();
-                result.push(format!("move {} {}", link, tmp));
+                let target = target.path.quote();
+                let link = link.path.quote();
+                result.push(format!("move {} {}", link, tmp.quote()));
                 result.push(format!("mklink {} {}", target, link));
-                result.push(format!("del {}", tmp));
+                result.push(format!("del {}", tmp.quote()));
             }
             FsCommand::HardLink { target, link, .. } => {
                 let tmp = Self::temp_file(&link.path);
-                let target = target.path.shell_quote();
-                let link = link.path.shell_quote();
-                result.push(format!("move {} {}", link, tmp));
+                let target = target.path.quote();
+                let link = link.path.quote();
+                result.push(format!("move {} {}", link, tmp.quote()));
                 result.push(format!("mklink /H {} {}", target, link));
-                result.push(format!("del {}", tmp));
+                result.push(format!("del {}", tmp.quote()));
             }
             FsCommand::RefLink { target, link, .. } => {
                 result.push(format!(":: deduplicate {} {}", link, target));
@@ -402,8 +419,8 @@ impl FsCommand {
                 target,
                 use_rename,
             } => {
-                let source = source.path.shell_quote();
-                let target = target.shell_quote();
+                let source = source.path.quote();
+                let target = target.quote();
                 if *use_rename {
                     result.push(format!("move {} {}", &source, &target));
                 } else {
@@ -458,7 +475,7 @@ fn was_modified(files: &[FileMetadata], after: DateTime<FixedOffset>, log: &Log)
                 if file_timestamp > after {
                     log.warn(format!(
                         "File {} was updated after {} (at {})",
-                        p,
+                        p.display(),
                         after.format(TIMESTAMP_FMT),
                         file_timestamp.format(TIMESTAMP_FMT)
                     ));
@@ -468,7 +485,8 @@ fn was_modified(files: &[FileMetadata], after: DateTime<FixedOffset>, log: &Log)
             Err(e) => {
                 log.warn(format!(
                     "Failed to read modification time of file {}: {}",
-                    p, e
+                    p.display(),
+                    e
                 ));
                 result = true;
             }
@@ -524,9 +542,13 @@ impl FileSubGroup<FileMetadata> {
     /// Returns the time of the earliest creation of a file in the subgroup
     pub fn created(&self) -> Result<SystemTime, Error> {
         Ok(min_result(self.files.iter().map(|f| {
-            f.metadata
-                .created()
-                .map_err(|e| format!("Failed to read creation time of file {}: {}", f.path, e))
+            f.metadata.created().map_err(|e| {
+                format!(
+                    "Failed to read creation time of file {}: {}",
+                    f.path.display(),
+                    e
+                )
+            })
         }))?
         .unwrap())
     }
@@ -534,9 +556,13 @@ impl FileSubGroup<FileMetadata> {
     /// Returns the time of the latest modification of a file in the subgroup
     pub fn modified(&self) -> Result<SystemTime, Error> {
         Ok(max_result(self.files.iter().map(|f| {
-            f.metadata
-                .modified()
-                .map_err(|e| format!("Failed to read modification time of file {}: {}", f.path, e))
+            f.metadata.modified().map_err(|e| {
+                format!(
+                    "Failed to read modification time of file {}: {}",
+                    f.path.display(),
+                    e
+                )
+            })
         }))?
         .unwrap())
     }
@@ -544,9 +570,13 @@ impl FileSubGroup<FileMetadata> {
     /// Returns the time of the latest access of a file in the subgroup
     pub fn accessed(&self) -> Result<SystemTime, Error> {
         Ok(max_result(self.files.iter().map(|f| {
-            f.metadata
-                .accessed()
-                .map_err(|e| format!("Failed to read access time of file {}: {}", f.path, e))
+            f.metadata.accessed().map_err(|e| {
+                format!(
+                    "Failed to read access time of file {}: {}",
+                    f.path.display(),
+                    e
+                )
+            })
         }))?
         .unwrap())
     }
@@ -614,8 +644,9 @@ impl PartitionedFileGroup {
     fn move_target(target_dir: &Arc<Path>, source_path: &Path) -> Path {
         let root = source_path
             .root()
-            .to_string()
+            .to_string_lossy()
             .replace('/', "")
+            .replace('\\', "")
             .replace(':', "");
         let suffix = source_path.strip_root();
         if root.is_empty() {
@@ -728,7 +759,10 @@ fn partition(
     files.retain(|m| {
         let is_file = m.metadata.is_file();
         if !is_file {
-            log.warn(format!("Skipping file {}: Not a regular file", m.path));
+            log.warn(format!(
+                "Skipping file {}: Not a regular file",
+                m.path.display()
+            ));
         }
         is_file
     });
@@ -740,7 +774,7 @@ fn partition(
         if !len_ok {
             log.warn(format!(
                 "Skipping file {} with length {} different than the group length {}",
-                m.path,
+                m.path.display(),
                 m.metadata.len(),
                 file_len.0,
             ));

@@ -44,7 +44,11 @@ pub fn reflink(src: &FileMetadata, dest: &FileMetadata, log: &Log) -> io::Result
             let result = metadata
                 .and_then(|metadata| restore_some_metadata(&parent.to_path_buf(), &metadata));
             if let Err(e) = result {
-                log.warn(format!("Failed keep metadata for {}: {}", parent, e))
+                log.warn(format!(
+                    "Failed keep metadata for {}: {}",
+                    parent.display(),
+                    e
+                ))
             }
         }
     }
@@ -70,7 +74,11 @@ fn linux_reflink(src: &FileMetadata, dest: &FileMetadata, log: &Log) -> io::Resu
 
     let remove_temporary = |temporary| {
         if let Err(e) = FsCommand::remove(&temporary) {
-            log.warn(format!("Failed to remove temporary {}: {}", &temporary, e))
+            log.warn(format!(
+                "Failed to remove temporary {}: {}",
+                temporary.display(),
+                e
+            ))
         }
     };
 
@@ -85,7 +93,9 @@ fn linux_reflink(src: &FileMetadata, dest: &FileMetadata, log: &Log) -> io::Resu
             if let Err(remove_err) = FsCommand::unsafe_rename(&tmp, &dest.path) {
                 log.warn(format!(
                     "Failed to undo deduplication from {} to {}: {}",
-                    &dest, &tmp, remove_err
+                    &dest,
+                    tmp.display(),
+                    remove_err
                 ))
             }
             Err(e)
@@ -159,7 +169,12 @@ fn copy_by_reflink(src: &FcPath, dest: &FcPath) -> io::Result<()> {
     reflink::reflink(&src.to_path_buf(), &dest.to_path_buf()).map_err(|e| {
         io::Error::new(
             e.kind(),
-            format!("Failed to deduplicate {} -> {}: {}", dest, src, e),
+            format!(
+                "Failed to deduplicate {} -> {}: {}",
+                dest.display(),
+                src.display(),
+                e
+            ),
         )
     })
 }

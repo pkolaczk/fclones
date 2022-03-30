@@ -62,14 +62,17 @@ impl FileLock {
             .create(false)
             .open(&path_buf)
             .map_err(|e| {
-                io::Error::new(e.kind(), format!("Failed to open file {}: {}", path, e))
+                io::Error::new(
+                    e.kind(),
+                    format!("Failed to open file {}: {}", path.display(), e),
+                )
             })?;
 
         #[cfg(unix)]
         if let Err(e) = Self::fcntl_lock(&file) {
             return Err(io::Error::new(
                 e.kind(),
-                format!("Failed to lock file {}: {}", path, e),
+                format!("Failed to lock file {}: {}", path.display(), e),
             ));
         };
 
