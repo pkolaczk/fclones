@@ -18,55 +18,55 @@ exclude = [
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-atomic-counter = "1.0.1"
-bytesize = "1.0.0"
-byte-unit = "3.1.3"
-chrono = { version = "0.4.19", features = ["serde", "clock"] }
-clap = "2.33"
-console = "0.11.2"
+atomic-counter = "1.0"
+bytesize = "1.1"
+byte-unit = "4.0"
+chrono = { version = "0.4", features = ["serde", "clock"] }
+clap = "2.34"
+console = "0.15"
 crossbeam-utils = "0.8"
-csv = "1.1.3"
-dashmap = "3.11.1"
-dtparse = "1.2.0"
-dunce = "1.0.1"
-fallible-iterator = "0.2.0"
+csv = "1.1"
+dashmap = "5.2"
+dtparse = "1.2"
+dunce = "1.0"
+fallible-iterator = "0.2"
 filetime = "0.2"
-indicatif = { version = "0.14.0", features = ["with_rayon"] }
-indoc = "0.3.5"
-itertools = "0.9.0"
-lazy-init = "0.5.0"
-lazy_static = "1.4.0"
-maplit = "1.0.2"
-metrohash = "1.0.6"
-nom = { version = "5.1.2", features = ["regexp"] }
-num_cpus = "1.13.0"
-rand = "0.8.3"
+indicatif = { version = "0.14", features = ["with_rayon"] }
+indoc = "1.0"
+itertools = "0.10"
+lazy-init = "0.5"
+lazy_static = "1.4"
+maplit = "1.0"
+metrohash = "1.0"
+nom = { version = "5.1", features = ["regexp"] }
+num_cpus = "1.13"
+rand = "0.8"
 rayon = "1.5"
-reflink = "0.1.3"
-regex = "1.4.5"
+reflink = "0.1"
+regex = "1.5"
 serde_json = "1.0"
-serde = { version = "1", features = ["derive"] }
-smallvec = "1.6.1"
+serde = { version = "1.0", features = ["derive"] }
+smallvec = "1.8"
 stfu8 = "0.2"
-structopt = "0.3.21"
-sysinfo = "0.15.0"
-thread_local = "1.0.1"
-uuid = { version = "0.8.1", features = ["v4"] }
+structopt = "0.3"
+sysinfo = "0.16"
+thread_local = "1.1"
+uuid = { version = "0.8", features = ["v4"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
-fiemap = "0.1.1"
+fiemap = "0.1"
 
 [target.'cfg(unix)'.dependencies]
-nix = "0.20"
-libc = "0.2.95"
+nix = "0.21"
+libc = "0.2"
 
 [target.'cfg(windows)'.dependencies]
-winapi = "0.3.8"
-winapi-util = "0.1.5"
+winapi = "0.3"
+winapi-util = "0.1"
 
 [dev-dependencies]
 serde_test = "1.0"
-tempfile = "3.2.0"
+tempfile = "3.3"
 
 [profile.release]
 panic = "abort"

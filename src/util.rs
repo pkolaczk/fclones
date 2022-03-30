@@ -35,7 +35,7 @@ where
     I: Iterator<Item = Result<T, E>>,
     F: Fn(T, T) -> T,
 {
-    iter.fold_results(None, |res, item| match res {
+    iter.fold_ok(None, |res, item| match res {
         Some(res) => Some(f(res, item)),
         None => Some(item),
     })
