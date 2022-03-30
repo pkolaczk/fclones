@@ -2,18 +2,17 @@ use std::collections::HashMap;
 use std::ffi::{OsStr, OsString};
 use std::fs::File;
 use std::io::{stdin, Write};
-use std::path::PathBuf;
 use std::process::exit;
 use std::sync::Arc;
 use std::{fs, io};
 
+use console::style;
 use fallible_iterator::FallibleIterator;
 use itertools::Itertools;
 use rayon::iter::ParallelBridge;
 use regex::Regex;
 use structopt::StructOpt;
 
-use console::style;
 use fclones::config::{Command, Config, DedupeConfig, GroupConfig, Parallelism};
 use fclones::log::Log;
 use fclones::report::{open_report, ReportHeader};
@@ -148,7 +147,7 @@ fn get_command_config(header: &ReportHeader) -> Result<Config, Error> {
     // Configure the same base directory as set when running the previous command.
     // This is important to get the correct input paths.
     if let Command::Group(ref mut group_config) = command.command {
-        group_config.base_dir = PathBuf::from(&header.base_dir)
+        group_config.base_dir = header.base_dir.to_path_buf();
     }
     Ok(command)
 }

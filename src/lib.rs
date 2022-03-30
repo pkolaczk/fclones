@@ -2,7 +2,7 @@ use core::fmt;
 use std::cell::RefCell;
 use std::cmp::{max, min, Reverse};
 use std::collections::HashMap;
-use std::env::{args, current_dir};
+use std::env::{args_os, current_dir};
 use std::ffi::{OsStr, OsString};
 use std::fmt::{Display, Formatter};
 use std::fs::File;
@@ -22,6 +22,7 @@ use serde::*;
 use sysinfo::DiskType;
 use thread_local::ThreadLocal;
 
+use crate::arg::Arg;
 pub use dedupe::{dedupe, log_script, run_script, DedupeOp, DedupeResult};
 
 use crate::config::*;
@@ -44,6 +45,7 @@ pub mod path;
 pub mod progress;
 pub mod report;
 
+mod arg;
 mod dedupe;
 mod device;
 mod group;
@@ -747,7 +749,8 @@ fn handle_fetch_physical_location_err(
         ctx.log.warn(format!(
             "Failed to fetch file extents mapping for file {}: {}. \
             This is generally harmless, but it might decrease random access performance.",
-            file_info.path, error
+            file_info.path.display(),
+            error
         ));
         let err_count = counter.fetch_add(1, Ordering::AcqRel);
         if err_count == MAX_ERR_COUNT_TO_LOG {
@@ -1097,8 +1100,8 @@ pub fn write_report(config: &GroupConfig, log: &Log, groups: &[FileGroup<Path>])
     let header = ReportHeader {
         timestamp: DateTime::from_utc(now.naive_utc(), *now.offset()),
         version: env!("CARGO_PKG_VERSION").to_owned(),
-        command: args().collect(),
-        base_dir: config.base_dir.to_string_lossy().to_string(),
+        command: args_os().map(Arg::from).collect(),
+        base_dir: Path::from(&config.base_dir),
         stats: Some(FileStats {
             group_count: groups.len(),
             total_file_count: total_count,

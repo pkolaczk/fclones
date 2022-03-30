@@ -214,7 +214,7 @@ impl Transform {
             Ok(result) if !result.status.success() => {
                 log.err(format!(
                     "Failed to transform {}: {} returned non-zero status code: {}{}",
-                    input,
+                    input.display(),
                     self.program,
                     result.status.code().unwrap(),
                     Self::format_output_stream(result.stderr.as_str(), "STDERR")

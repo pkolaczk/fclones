@@ -2,16 +2,19 @@
 
 use std::ffi::{CStr, CString, OsString};
 use std::fmt;
-use std::fmt::Display;
 use std::hash::Hash;
 use std::path::{Component, PathBuf};
 use std::sync::Arc;
 
 use metrohash::MetroHash128;
 use nom::lib::std::fmt::Formatter;
-use serde::{Serialize, Serializer};
+use serde::de::{Error, Visitor};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use smallvec::SmallVec;
+use stfu8::DecodeError;
 
+use crate::arg;
+use crate::arg::{from_stfu8, to_stfu8};
 use crate::path::string::{c_to_os_str, os_to_c_str};
 
 #[cfg(unix)]
@@ -180,8 +183,29 @@ impl Path {
         self.to_path_buf().to_string_lossy().to_string()
     }
 
-    pub fn display(&self) -> &Self {
-        self
+    /// Returns a lossless string representation in [STFU8 format](https://crates.io/crates/stfu8).
+    pub fn to_escaped_string(&self) -> String {
+        to_stfu8(self.to_path_buf().into_os_string())
+    }
+
+    /// Decodes the path from the string encoded with [`to_escaped_string`](Path::to_escaped_string).
+    pub fn from_escaped_string(encoded: &str) -> Result<Path, DecodeError> {
+        Ok(Path::from(from_stfu8(encoded)?))
+    }
+
+    /// Formats the path in a way that Posix-shell can decode it.
+    /// If the path doesn't contain any special characters, returns it as-is.
+    /// If the path contains special shell characters like '\\' or '*', it is single-quoted.
+    /// This function also takes care of the characters that cannot be represented in UTF-8
+    /// by escaping them with `$'\xXX'` or `$'\uXXXX'` syntax.
+    pub fn quote(&self) -> String {
+        arg::quote(self.to_path_buf().into_os_string())
+    }
+
+    /// Returns a representation suitable for display in the console.
+    /// Control characters like newline or linefeed are escaped.
+    pub fn display(&self) -> String {
+        self.quote()
     }
 
     /// Returns a hash of the full path. Useful for deduplicating paths without making path clones.
@@ -269,25 +293,6 @@ impl Path {
         }
         result
     }
-
-    #[cfg(unix)]
-    pub fn shell_quote(&self) -> String {
-        shell_words::quote(self.to_string().as_str()).into()
-    }
-
-    #[cfg(windows)]
-    pub fn shell_quote(&self) -> String {
-        let s = self.to_string();
-        const SPECIAL_CHARS: [char; 14] = [
-            ' ', '"', '(', ')', '^', '%', '$', '~', '=', '+', '*', '?', '|', '/',
-        ];
-        let needs_quote = s.chars().into_iter().any(|c| SPECIAL_CHARS.contains(&c));
-        if needs_quote {
-            format!("\"{}\"", s)
-        } else {
-            s
-        }
-    }
 }
 
 impl AsRef<Path> for Path {
@@ -309,7 +314,7 @@ where
         let p = p.as_ref();
         let mut components = p.components();
         let mut result = Path::new(component_to_c_string(
-            &components.next().expect("Empty path not supported"),
+            &components.next().unwrap_or(Component::CurDir),
         ));
         for c in components {
             result = Arc::new(result).push(component_to_c_string(&c))
@@ -318,24 +323,44 @@ where
     }
 }
 
-impl Display for Path {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        f.pad(format!("{}", self.to_path_buf().display()).as_str())
-    }
-}
-
 impl Serialize for Path {
     fn serialize<S>(&self, serializer: S) -> Result<<S as Serializer>::Ok, <S as Serializer>::Error>
     where
         S: Serializer,
     {
-        serializer.collect_str(self)
+        serializer.collect_str(self.to_escaped_string().as_str())
+    }
+}
+
+struct PathVisitor;
+
+impl Visitor<'_> for PathVisitor {
+    type Value = Path;
+
+    fn expecting(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
+        formatter.write_str("path string")
+    }
+
+    fn visit_str<E>(self, v: &str) -> Result<Self::Value, E>
+    where
+        E: Error,
+    {
+        Path::from_escaped_string(v).map_err(|e| E::custom(format!("Invalid path: {}", e)))
+    }
+}
+
+impl<'de> Deserialize<'de> for Path {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        deserializer.deserialize_str(PathVisitor)
     }
 }
 
 impl fmt::Debug for Path {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.to_path_buf().display())
+        write!(f, "{:?}", self.to_path_buf())
     }
 }
 
@@ -368,6 +393,7 @@ mod string {
 #[cfg(test)]
 mod test {
     use super::*;
+    use serde_test::{assert_ser_tokens, Token};
 
     fn test_convert(s: &str) {
         assert_eq!(PathBuf::from(s), Path::from(s).to_path_buf());
@@ -461,5 +487,22 @@ mod test {
         assert!(Path::from("/foo/bar").is_prefix_of(&Path::from("/foo/bar")));
         assert!(Path::from("/foo/bar").is_prefix_of(&Path::from("/foo/bar/baz")));
         assert!(!Path::from("/foo/bar").is_prefix_of(&Path::from("/foo")))
+    }
+
+    #[test]
+    fn encode_decode_stfu8() {
+        fn roundtrip(s: &str) {
+            assert_eq!(Path::from_escaped_string(s).unwrap().to_escaped_string(), s)
+        }
+        roundtrip("a/b/c");
+        roundtrip("ą/ś/ć");
+        roundtrip("a \\n b");
+        roundtrip("a \\t b");
+        roundtrip("a \\x7F b");
+    }
+
+    #[test]
+    fn serialize() {
+        assert_ser_tokens(&Path::from("a \n b"), &[Token::String("a \\n b")])
     }
 }

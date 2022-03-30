@@ -116,7 +116,7 @@ impl<'a> Walk<'a> {
                 match fs::metadata(&p.to_path_buf()) {
                     Ok(metadata) if metadata.is_dir() && self.depth == 0 => self.log_warn(format!(
                         "Skipping directory {} because recursive scan is disabled.",
-                        p
+                        p.display()
                     )),
                     _ => scope.spawn(|scope| self.visit_path(p, scope, 0, &state)),
                 }

@@ -3,7 +3,6 @@
 use std::borrow::Borrow;
 use std::cell::Cell;
 use std::cmp::min;
-use std::fmt::Display;
 use std::io;
 use std::io::{BufRead, BufReader, Error, ErrorKind, Read, Write};
 
@@ -15,11 +14,12 @@ use lazy_static::lazy_static;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 
+use crate::arg::Arg;
 use crate::config::OutputFormat;
 use crate::files::{FileHash, FileLen};
 use crate::path::Path;
 use crate::util::IteratorWrapper;
-use crate::{FileGroup, TIMESTAMP_FMT};
+use crate::{arg, FileGroup, TIMESTAMP_FMT};
 
 /// Describes how many redundant files were found, in how many groups,
 /// how much space can be reclaimed, etc.
@@ -42,9 +42,9 @@ pub struct ReportHeader {
     /// The date and time when the report was produced
     pub timestamp: DateTime<FixedOffset>,
     /// Full shell command containing arguments of the search run that produced the report
-    pub command: Vec<String>,
+    pub command: Vec<Arg>,
     /// Working directory where the fclones command was executed
-    pub base_dir: String,
+    pub base_dir: Path,
     /// Information on the number of duplicate files reported.
     /// This is optional to allow streaming the report out before finding all files in the future.
     pub stats: Option<FileStats>,
@@ -117,20 +117,22 @@ impl<W: Write> ReportWriter<W> {
     ///     /home/pkolaczk/Projekty/fclones/.git/refs/remotes/origin/fix_flock_freebsd
     /// ...
     /// ```
-    pub fn write_as_text<I, G, P>(&mut self, header: &ReportHeader, groups: I) -> io::Result<()>
+    pub fn write_as_text<I, G>(&mut self, header: &ReportHeader, groups: I) -> io::Result<()>
     where
         I: IntoIterator<Item = G>,
-        G: Borrow<FileGroup<P>>,
-        P: Display,
+        G: Borrow<FileGroup<Path>>,
     {
-        let command = shell_words::join(header.command.iter());
+        let command = arg::join(&header.command);
         self.write_header_line(&format!("Report by fclones {}", header.version))?;
         self.write_header_line(&format!(
             "Timestamp: {}",
             header.timestamp.format(TIMESTAMP_FMT)
         ))?;
         self.write_header_line(&format!("Command: {}", command))?;
-        self.write_header_line(&format!("Base dir: {}", header.base_dir))?;
+        self.write_header_line(&format!(
+            "Base dir: {}",
+            header.base_dir.to_escaped_string()
+        ))?;
         if let Some(stats) = &header.stats {
             self.write_header_line(&format!(
                 "Total: {} B ({}) in {} files in {} groups",
@@ -161,7 +163,7 @@ impl<W: Write> ReportWriter<W> {
             let group_header = style(group_header).yellow();
             writeln!(self.out, "{}", group_header.force_styling(self.color),)?;
             for f in g.files.iter() {
-                writeln!(self.out, "    {}", f)?;
+                writeln!(self.out, "    {}", f.to_escaped_string())?;
             }
         }
         Ok(())
@@ -170,16 +172,15 @@ impl<W: Write> ReportWriter<W> {
     /// Writes the report in `fdupes` compatible format.
     /// This is very similar to the TEXT format, but there are no headers
     /// for each group, and groups are separated with empty lines.
-    pub fn write_as_fdupes<I, G, P>(&mut self, _header: &ReportHeader, groups: I) -> io::Result<()>
+    pub fn write_as_fdupes<I, G>(&mut self, _header: &ReportHeader, groups: I) -> io::Result<()>
     where
         I: IntoIterator<Item = G>,
-        G: Borrow<FileGroup<P>>,
-        P: Display,
+        G: Borrow<FileGroup<Path>>,
     {
         for g in groups {
             let g = g.borrow();
             for f in g.files.iter() {
-                writeln!(self.out, "{}", f)?;
+                writeln!(self.out, "{}", f.to_escaped_string())?;
             }
             writeln!(self.out)?;
         }
@@ -195,11 +196,10 @@ impl<W: Write> ReportWriter<W> {
     /// - file hash (may be empty)
     /// - number of files in the group
     /// - file paths - each file in a separate column
-    pub fn write_as_csv<I, G, P>(&mut self, _header: &ReportHeader, groups: I) -> io::Result<()>
+    pub fn write_as_csv<I, G>(&mut self, _header: &ReportHeader, groups: I) -> io::Result<()>
     where
         I: IntoIterator<Item = G>,
-        G: Borrow<FileGroup<P>>,
-        P: Display,
+        G: Borrow<FileGroup<Path>>,
     {
         let mut wtr = csv::WriterBuilder::new()
             .delimiter(b',')
@@ -215,7 +215,7 @@ impl<W: Write> ReportWriter<W> {
             record.push_field(g.file_hash.to_string().as_str());
             record.push_field(g.files.len().to_string().as_str());
             for f in g.files.iter() {
-                record.push_field(format!("{}", f).as_ref());
+                record.push_field(f.to_escaped_string().as_ref());
             }
             wtr.write_record(&record)?;
         }
@@ -280,7 +280,7 @@ impl<W: Write> ReportWriter<W> {
     }
 
     /// Writes the report in the format given by `format` parameter.
-    pub fn write<I, G, P>(
+    pub fn write<I, G>(
         &mut self,
         format: OutputFormat,
         header: &ReportHeader,
@@ -288,8 +288,7 @@ impl<W: Write> ReportWriter<W> {
     ) -> io::Result<()>
     where
         I: IntoIterator<Item = G>,
-        G: Borrow<FileGroup<P>> + Serialize,
-        P: Display + Serialize,
+        G: Borrow<FileGroup<Path>> + Serialize,
     {
         match format {
             OutputFormat::Default => self.write_as_text(header, groups),
@@ -402,7 +401,13 @@ where
                     format!("Path expected: {}", path_str),
                 ));
             }
-            paths.push(Path::from(path_str.trim()));
+            let path = Path::from_escaped_string(path_str.trim()).map_err(|e| {
+                Error::new(
+                    ErrorKind::InvalidData,
+                    format!("Invalid path {}: {}", path_str, e),
+                )
+            })?;
+            paths.push(path);
         }
         Ok(paths)
     }
@@ -536,13 +541,14 @@ impl<R: BufRead + Send + 'static> ReportReader for TextReportReader<R> {
             .swap_remove(0);
         let timestamp = Self::parse_timestamp(&timestamp, "timestamp")?;
         let command = self.read_extract(&COMMAND_RE, "command")?.swap_remove(0);
-        let command = shell_words::split(&command).map_err(|e| {
+        let command = arg::split(&command).map_err(|e| {
             Error::new(
                 ErrorKind::InvalidData,
                 format!("Malformed header: Failed to parse command arguments: {}", e),
             )
         })?;
         let base_dir = self.read_extract(&BASE_DIR_RE, "base dir")?.swap_remove(0);
+        let base_dir = Path::from(base_dir);
 
         let stats = self.read_extract(&TOTAL_RE, "total file statistics")?;
         let total_file_size = Self::parse_file_len(stats.get(0), "total file size")?;
@@ -610,7 +616,18 @@ impl ReportReader for JsonReportReader {
             Ok(FileGroup {
                 file_len: g.file_len,
                 file_hash: g.file_hash,
-                files: g.files.iter().map(|s| Path::from(s.as_str())).collect_vec(),
+                files: g
+                    .files
+                    .iter()
+                    .map(|s| {
+                        Path::from_escaped_string(s.as_str()).map_err(|e| {
+                            io::Error::new(
+                                io::ErrorKind::InvalidData,
+                                format!("Invalid path {}: {}", s, e),
+                            )
+                        })
+                    })
+                    .try_collect()?,
             })
         });
         let iter = fallible_iterator::convert(iter);
@@ -643,6 +660,7 @@ pub fn open_report(r: impl Read + Send + 'static) -> io::Result<Box<dyn ReportRe
 #[cfg(test)]
 mod test {
     use std::env::current_dir;
+    use std::ffi::OsString;
 
     use tempfile::NamedTempFile;
 
@@ -653,8 +671,8 @@ mod test {
 
     fn dummy_report_header() -> ReportHeader {
         ReportHeader {
-            command: vec!["fclones".to_owned(), "find".to_owned(), ".".to_owned()],
-            base_dir: current_dir().unwrap().to_string_lossy().to_string(),
+            command: vec![Arg::from("fclones"), Arg::from("find"), Arg::from(".")],
+            base_dir: Path::from(current_dir().unwrap()),
             version: env!("CARGO_PKG_VERSION").to_owned(),
             timestamp: DateTime::parse_from_str("2021-08-27 12:11:23.456 +0000", TIMESTAMP_FMT)
                 .unwrap(),
@@ -689,6 +707,19 @@ mod test {
         assert_eq!(header2.stats, header1.stats);
     }
 
+    fn roundtrip_groups_text(header: &ReportHeader, groups: Vec<FileGroup<Path>>) {
+        let output = NamedTempFile::new().unwrap();
+        let input = output.reopen().unwrap();
+
+        let mut writer = ReportWriter::new(output, false);
+        writer.write_as_text(&header, groups.iter()).unwrap();
+        let mut reader = Box::new(TextReportReader::new(BufReader::new(input)));
+        reader.read_header().unwrap();
+
+        let groups2: Vec<_> = reader.read_groups().unwrap().collect().unwrap();
+        assert_eq!(groups, groups2);
+    }
+
     #[test]
     fn test_text_report_reader_reads_files() {
         let header = dummy_report_header();
@@ -705,16 +736,42 @@ mod test {
             },
         ];
 
-        let output = NamedTempFile::new().unwrap();
-        let input = output.reopen().unwrap();
+        roundtrip_groups_text(&header, groups);
+    }
 
-        let mut writer = ReportWriter::new(output, false);
-        writer.write_as_text(&header, groups.iter()).unwrap();
-        let mut reader = Box::new(TextReportReader::new(BufReader::new(input)));
-        reader.read_header().unwrap();
+    #[test]
+    fn test_text_report_reader_reads_files_with_control_chars_in_names() {
+        let header = dummy_report_header();
+        let groups = vec![
+            FileGroup {
+                file_len: FileLen(100),
+                file_hash: FileHash(0x00112233445566778899aabbccddeeff),
+                files: vec![Path::from("\t\r\n/foo"), Path::from("ąę/ść/żź/óń/")],
+            },
+            FileGroup {
+                file_len: FileLen(40),
+                file_hash: FileHash(0x0000000000000555555555ffffffffff),
+                files: vec![Path::from("c\u{7f}"), Path::from("😀/😋")],
+            },
+        ];
 
-        let groups2: Vec<_> = reader.read_groups().unwrap().collect().unwrap();
-        assert_eq!(groups, groups2);
+        roundtrip_groups_text(&header, groups);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_text_report_reader_reads_files_with_non_utf8_chars_in_names() {
+        use std::os::unix::ffi::OsStringExt;
+        let header = dummy_report_header();
+        let groups = vec![FileGroup {
+            file_len: FileLen(100),
+            file_hash: FileHash(0x00112233445566778899aabbccddeeff),
+            files: vec![Path::from(OsString::from_vec(vec![
+                0xED, 0xA0, 0xBD, 0xED, 0xB8, 0x8D,
+            ]))],
+        }];
+
+        roundtrip_groups_text(&header, groups);
     }
 
     #[test]
@@ -783,6 +840,19 @@ mod test {
         assert_eq!(header2.stats, header1.stats);
     }
 
+    fn roundtrip_groups_json(header: &ReportHeader, groups: Vec<FileGroup<Path>>) {
+        let output = NamedTempFile::new().unwrap();
+        let input = output.reopen().unwrap();
+
+        let mut writer = ReportWriter::new(output, false);
+        writer.write_as_json(&header, groups.iter()).unwrap();
+        let mut reader = Box::new(JsonReportReader::new(input).unwrap());
+        reader.read_header().unwrap();
+
+        let groups2: Vec<_> = reader.read_groups().unwrap().collect().unwrap();
+        assert_eq!(groups, groups2);
+    }
+
     #[test]
     fn test_json_report_reader_reads_files() {
         let header = dummy_report_header();
@@ -799,19 +869,45 @@ mod test {
             },
         ];
 
-        let output = NamedTempFile::new().unwrap();
-        let input = output.reopen().unwrap();
-
-        let mut writer = ReportWriter::new(output, false);
-        writer.write_as_json(&header, groups.iter()).unwrap();
-        let mut reader = Box::new(JsonReportReader::new(input).unwrap());
-        reader.read_header().unwrap();
-
-        let groups2: Vec<_> = reader.read_groups().unwrap().collect().unwrap();
-        assert_eq!(groups, groups2);
+        roundtrip_groups_json(&header, groups);
     }
 
-    fn write_read_header(header: &ReportHeader, format: OutputFormat) -> ReportHeader {
+    #[test]
+    fn test_json_report_reader_reads_files_with_control_chars_in_names() {
+        let header = dummy_report_header();
+        let groups = vec![
+            FileGroup {
+                file_len: FileLen(100),
+                file_hash: FileHash(0x00112233445566778899aabbccddeeff),
+                files: vec![Path::from("\t\r\n/foo"), Path::from("ąę/ść/żź/óń/")],
+            },
+            FileGroup {
+                file_len: FileLen(40),
+                file_hash: FileHash(0x0000000000000555555555ffffffffff),
+                files: vec![Path::from("c\u{7f}"), Path::from("😀/😋")],
+            },
+        ];
+
+        roundtrip_groups_json(&header, groups);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_json_report_reader_reads_files_with_non_utf8_chars_in_names() {
+        use std::os::unix::ffi::OsStringExt;
+        let header = dummy_report_header();
+        let groups = vec![FileGroup {
+            file_len: FileLen(100),
+            file_hash: FileHash(0x00112233445566778899aabbccddeeff),
+            files: vec![Path::from(OsString::from_vec(vec![
+                0xED, 0xA0, 0xBD, 0xED, 0xB8, 0x8D,
+            ]))],
+        }];
+
+        roundtrip_groups_json(&header, groups);
+    }
+
+    fn roundtrip_header(header: &ReportHeader, format: OutputFormat) -> ReportHeader {
         let groups: Vec<FileGroup<Path>> = vec![];
         let output = NamedTempFile::new().unwrap();
         let input = output.reopen().unwrap();
@@ -824,8 +920,8 @@ mod test {
     #[test]
     fn test_format_autodetection() {
         let header = dummy_report_header();
-        let reread_header_1 = write_read_header(&header, OutputFormat::Default);
-        let reread_header_2 = write_read_header(&header, OutputFormat::Json);
+        let reread_header_1 = roundtrip_header(&header, OutputFormat::Default);
+        let reread_header_2 = roundtrip_header(&header, OutputFormat::Json);
         assert_eq!(header, reread_header_1);
         assert_eq!(header, reread_header_2);
     }
