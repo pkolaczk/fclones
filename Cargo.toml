@@ -42,7 +42,6 @@ nom = { version = "5.1", features = ["regexp"] }
 num_cpus = "1.13"
 rand = "0.8"
 rayon = "1.5"
-reflink = "0.1"
 regex = "1.5"
 serde_json = "1.0"
 serde = { version = "1.0", features = ["derive"] }
@@ -64,7 +63,11 @@ libc = "0.2"
 winapi = "0.3"
 winapi-util = "0.1"
 
+[target.'cfg(not(any(target_os = "linux", target_os = "android")))'.dependencies]
+reflink = "0.1"
+
 [dev-dependencies]
+reflink = "0.1"
 serde_test = "1.0"
 tempfile = "3.3"
 
