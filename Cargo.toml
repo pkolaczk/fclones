@@ -73,7 +73,6 @@ tempfile = "3.3"
 
 [profile.release]
 panic = "abort"
-lto = "thin"
 
 [package.metadata.deb]
 maintainer = "Piotr Kołaczkowski <pkolaczk@gmail.com>"
