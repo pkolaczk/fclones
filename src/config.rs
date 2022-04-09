@@ -13,7 +13,7 @@ use chrono::{DateTime, FixedOffset, Local};
 use clap::AppSettings;
 use structopt::StructOpt;
 
-use crate::files::FileLen;
+use crate::file::FileLen;
 use crate::path::Path;
 use crate::pattern::{Pattern, PatternError, PatternOpts};
 use crate::selector::PathSelector;
@@ -235,13 +235,22 @@ pub struct GroupConfig {
     #[structopt(long = "exclude", value_name("pattern"))]
     pub exclude_patterns: Vec<String>,
 
-    /// Makes pattern matching case-insensitive
+    /// Makes pattern matching case-insensitive.
     #[structopt(short = "i", long)]
     pub caseless: bool,
 
-    /// Expects patterns as Perl compatible regular expressions instead of Unix globs
+    /// Expects patterns as Perl compatible regular expressions instead of Unix globs.
     #[structopt(short = "g", long)]
     pub regex: bool,
+
+    /// Enables caching of file hashes.
+    ///
+    /// Caching can significantly speed up subsequent runs of `fclones group` by avoiding
+    /// recomputations of hashes of the files that haven't changed since the last scan.
+    /// Beware though, that this option relies on file modification times recorded by the
+    /// file system. It also increases memory and storage space consumption.
+    #[structopt(long)]
+    pub cache: bool,
 
     /// Sets the sizes of thread-pools
     ///

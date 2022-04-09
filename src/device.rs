@@ -10,7 +10,7 @@ use regex::Regex;
 use sysinfo::{DiskExt, DiskType, System, SystemExt};
 
 use crate::config::Parallelism;
-use crate::files::FileLen;
+use crate::file::FileLen;
 use crate::path::Path;
 
 impl Parallelism {
@@ -91,15 +91,6 @@ impl DiskDevice {
     pub fn rand_thread_pool(&self) -> &ThreadPool {
         self.rand_thread_pool
             .get_or_create(|| Self::build_thread_pool(self.parallelism.random))
-    }
-
-    pub fn buf_len(&self) -> usize {
-        match self.disk_type {
-            DiskType::SSD => 64 * 1024,
-            DiskType::HDD => 256 * 1024,
-            DiskType::Removable => 256 * 1024,
-            DiskType::Unknown(_) => 256 * 1024,
-        }
     }
 
     pub fn min_prefix_len(&self) -> FileLen {

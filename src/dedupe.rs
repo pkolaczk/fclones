@@ -1,12 +1,12 @@
 //! Removing redundant files
 
 use std::cmp::{max, min, Reverse};
-use std::fmt::{Display, Formatter};
-use std::fs::Metadata;
+use std::collections::HashMap;
 use std::io::{BufWriter, ErrorKind, Write};
 use std::ops::{Add, AddAssign};
 use std::sync::{Arc, Mutex};
-use std::{fmt, fs, io};
+use std::time::SystemTime;
+use std::{fs, io};
 
 use chrono::{DateTime, FixedOffset, Local};
 use crossbeam_utils::atomic::AtomicCell;
@@ -17,14 +17,12 @@ use rayon::iter::ParallelIterator;
 
 use crate::config::{DedupeConfig, Priority};
 use crate::device::DiskDevices;
-use crate::files::FileLen;
+use crate::file::FileLen;
 use crate::lock::FileLock;
 use crate::log::Log;
 use crate::path::Path;
 use crate::util::{max_result, min_result, try_sort_by_key};
-use crate::{AsPath, Error, FileGroup, FileSubGroup, TIMESTAMP_FMT};
-use std::collections::HashMap;
-use std::time::SystemTime;
+use crate::{Error, FileGroup, FileSubGroup, PathAndMetadata, TIMESTAMP_FMT};
 
 /// Defines what to do with redundant files
 #[derive(Clone, PartialEq, Eq)]
@@ -41,71 +39,27 @@ pub enum DedupeOp {
     RefLink,
 }
 
-/// Convenience struct for holding a path to a file and its metadata together
-#[derive(Debug)]
-pub struct FileMetadata {
-    pub path: Path,
-    pub metadata: Metadata,
-}
-
-impl FileMetadata {
-    pub fn new(path: Path) -> io::Result<FileMetadata> {
-        let path_buf = path.to_path_buf();
-        let metadata = fs::symlink_metadata(&path_buf).map_err(|e| {
-            io::Error::new(
-                e.kind(),
-                format!("Failed to read metadata of {}: {}", path.display(), e),
-            )
-        })?;
-        Ok(FileMetadata { path, metadata })
-    }
-
-    #[cfg(unix)]
-    pub fn device_id(&self) -> Option<u64> {
-        use std::os::unix::fs::MetadataExt;
-        Some(self.metadata.dev())
-    }
-
-    #[cfg(windows)]
-    pub fn device_id(&self) -> Option<u64> {
-        use crate::files::FileId;
-        FileId::new(&self.path).ok().map(|f| f.device)
-    }
-}
-
-impl AsPath for FileMetadata {
-    fn path(&self) -> &Path {
-        &self.path
-    }
-}
-
-impl Display for FileMetadata {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        f.pad(self.path.display().as_str())
-    }
-}
-
 /// Portable abstraction for commands used to remove duplicates
 pub enum FsCommand {
     Remove {
-        file: FileMetadata,
+        file: PathAndMetadata,
     },
     Move {
-        source: FileMetadata,
+        source: PathAndMetadata,
         target: Path,
         use_rename: bool, // try to move the file directly by issuing fs rename command
     },
     SoftLink {
-        target: Arc<FileMetadata>,
-        link: FileMetadata,
+        target: Arc<PathAndMetadata>,
+        link: PathAndMetadata,
     },
     HardLink {
-        target: Arc<FileMetadata>,
-        link: FileMetadata,
+        target: Arc<PathAndMetadata>,
+        link: PathAndMetadata,
     },
     RefLink {
-        target: Arc<FileMetadata>,
-        link: FileMetadata,
+        target: Arc<PathAndMetadata>,
+        link: PathAndMetadata,
     },
 }
 
@@ -295,26 +249,26 @@ impl FsCommand {
         match self {
             FsCommand::Remove { file } => {
                 Self::remove(&file.path)?;
-                Ok(FileLen(file.metadata.len()))
+                Ok(file.metadata.len())
             }
             FsCommand::SoftLink { target, link } => {
                 Self::safe_remove(&link.path, |link| Self::symlink(&target.path, link), log)?;
-                Ok(FileLen(link.metadata.len()))
+                Ok(link.metadata.len())
             }
             FsCommand::HardLink { target, link } => {
                 Self::safe_remove(&link.path, |link| Self::hardlink(&target.path, link), log)?;
-                Ok(FileLen(link.metadata.len()))
+                Ok(link.metadata.len())
             }
             FsCommand::RefLink { target, link } => {
                 crate::reflink::reflink(target, link, log)?;
-                Ok(FileLen(link.metadata.len()))
+                Ok(link.metadata.len())
             }
             FsCommand::Move {
                 source,
                 target,
                 use_rename,
             } => {
-                let len = FileLen(source.metadata.len());
+                let len = source.metadata.len();
                 if *use_rename && Self::move_rename(&source.path, target).is_ok() {
                     return Ok(len);
                 }
@@ -331,7 +285,7 @@ impl FsCommand {
             | FsCommand::SoftLink { link: file, .. }
             | FsCommand::HardLink { link: file, .. }
             | FsCommand::RefLink { link: file, .. }
-            | FsCommand::Move { source: file, .. } => FileLen(file.metadata.len()),
+            | FsCommand::Move { source: file, .. } => file.metadata.len(),
         }
     }
 
@@ -460,10 +414,10 @@ impl AddAssign for DedupeResult {
 
 /// Returns true if any of the files have been modified after the given timestamp.
 /// Also returns true if file timestamp could not be read.
-fn was_modified(files: &[FileMetadata], after: DateTime<FixedOffset>, log: &Log) -> bool {
+fn was_modified(files: &[PathAndMetadata], after: DateTime<FixedOffset>, log: &Log) -> bool {
     let mut result = false;
     let after: DateTime<Local> = after.into();
-    for FileMetadata {
+    for PathAndMetadata {
         path: p,
         metadata: m,
         ..
@@ -538,7 +492,7 @@ fn may_drop(path: &Path, config: &DedupeConfig) -> bool {
         || matches_any_path()
 }
 
-impl FileSubGroup<FileMetadata> {
+impl FileSubGroup<PathAndMetadata> {
     /// Returns the time of the earliest creation of a file in the subgroup
     pub fn created(&self) -> Result<SystemTime, Error> {
         Ok(min_result(self.files.iter().map(|f| {
@@ -614,7 +568,10 @@ impl FileSubGroup<FileMetadata> {
 /// recently accessed, etc) are sorted last.
 /// In cases when metadata of a file cannot be accessed, an error message is pushed
 /// in the result vector and such file is placed at the beginning of the list.
-fn sort_by_priority(files: &mut [FileSubGroup<FileMetadata>], priority: &Priority) -> Vec<Error> {
+fn sort_by_priority(
+    files: &mut [FileSubGroup<PathAndMetadata>],
+    priority: &Priority,
+) -> Vec<Error> {
     match priority {
         Priority::Newest => try_sort_by_key(files, |m| m.created()),
         Priority::Oldest => try_sort_by_key(files, |m| m.created().map(Reverse)),
@@ -634,8 +591,8 @@ fn sort_by_priority(files: &mut [FileSubGroup<FileMetadata>], priority: &Priorit
 }
 
 struct PartitionedFileGroup {
-    to_keep: Vec<FileMetadata>,
-    to_drop: Vec<FileMetadata>,
+    to_keep: Vec<PathAndMetadata>,
+    to_drop: Vec<PathAndMetadata>,
 }
 
 impl PartitionedFileGroup {
@@ -674,7 +631,8 @@ impl PartitionedFileGroup {
         let mut commands = Vec::new();
         let retained_file = Arc::new(self.to_keep.swap_remove(0));
         for dropped_file in self.to_drop {
-            let devices_differ = retained_file.device_id() != dropped_file.device_id();
+            let devices_differ =
+                retained_file.metadata.device_id().ok() != dropped_file.metadata.device_id().ok();
             match strategy {
                 DedupeOp::SoftLink => commands.push(FsCommand::SoftLink {
                     target: retained_file.clone(),
@@ -713,13 +671,13 @@ impl PartitionedFileGroup {
 
 /// Attempts to retrieve the metadata of all the files in the file group.
 /// If metadata is inaccessible for a file, a warning is emitted to the log, and None gets returned.
-fn files_metadata(group: FileGroup<Path>, log: &Log) -> Option<Vec<FileMetadata>> {
+fn files_metadata(group: FileGroup<Path>, log: &Log) -> Option<Vec<PathAndMetadata>> {
     let mut last_error: Option<io::Error> = None;
     let files: Vec<_> = group
         .files
         .into_iter()
         .filter_map(|p| {
-            FileMetadata::new(p)
+            PathAndMetadata::new(p)
                 .map_err(|e| {
                     log.warn(&e);
                     last_error = Some(e);
@@ -770,7 +728,7 @@ fn partition(
     // If file has a different length, then we really know it has been modified.
     // Therefore, it does not belong to the group and we can safely skip it.
     files.retain(|m| {
-        let len_ok = FileLen(m.metadata.len()) == file_len;
+        let len_ok = m.metadata.len() == file_len;
         if !len_ok {
             log.warn(format!(
                 "Skipping file {} with length {} different than the group length {}",
@@ -937,7 +895,7 @@ mod test {
 
     use chrono::Duration;
 
-    use crate::files::FileHash;
+    use crate::file::FileHash;
     use crate::pattern::Pattern;
     use crate::util::test::{create_file, create_file_newer_than, read_file, with_dir, write_file};
 
@@ -961,7 +919,7 @@ mod test {
             let log = Log::new();
             let file_path = root.join("file");
             create_file(&file_path);
-            let file = FileMetadata::new(Path::from(&file_path)).unwrap();
+            let file = PathAndMetadata::new(Path::from(&file_path)).unwrap();
             let cmd = FsCommand::Remove { file };
             cmd.execute(&log).unwrap();
             assert!(!file_path.exists())
@@ -975,7 +933,7 @@ mod test {
             let file_path = root.join("file");
             let target = Path::from(root.join("target"));
             create_file(&file_path);
-            let file = FileMetadata::new(Path::from(&file_path)).unwrap();
+            let file = PathAndMetadata::new(Path::from(&file_path)).unwrap();
             let cmd = FsCommand::Move {
                 source: file,
                 target: target.clone(),
@@ -994,7 +952,7 @@ mod test {
             let file_path = root.join("file");
             let target = Path::from(root.join("target"));
             create_file(&file_path);
-            let file = FileMetadata::new(Path::from(&file_path)).unwrap();
+            let file = PathAndMetadata::new(Path::from(&file_path)).unwrap();
             let cmd = FsCommand::Move {
                 source: file,
                 target: target.clone(),
@@ -1014,7 +972,7 @@ mod test {
             let target = root.join("target");
             create_file(&file_path);
             create_file(&target);
-            let file = FileMetadata::new(Path::from(&file_path)).unwrap();
+            let file = PathAndMetadata::new(Path::from(&file_path)).unwrap();
             let cmd = FsCommand::Move {
                 source: file,
                 target: Path::from(&target),
@@ -1033,8 +991,8 @@ mod test {
             write_file(&file_path_1, "foo");
             write_file(&file_path_2, "");
 
-            let file_1 = FileMetadata::new(Path::from(&file_path_1)).unwrap();
-            let file_2 = FileMetadata::new(Path::from(&file_path_2)).unwrap();
+            let file_1 = PathAndMetadata::new(Path::from(&file_path_1)).unwrap();
+            let file_2 = PathAndMetadata::new(Path::from(&file_path_2)).unwrap();
             let cmd = FsCommand::SoftLink {
                 target: Arc::new(file_1),
                 link: file_2,
@@ -1061,8 +1019,8 @@ mod test {
             write_file(&file_path_1, "foo");
             write_file(&file_path_2, "");
 
-            let file_1 = FileMetadata::new(Path::from(&file_path_1)).unwrap();
-            let file_2 = FileMetadata::new(Path::from(&file_path_2)).unwrap();
+            let file_1 = PathAndMetadata::new(Path::from(&file_path_1)).unwrap();
+            let file_2 = PathAndMetadata::new(Path::from(&file_path_2)).unwrap();
             let cmd = FsCommand::HardLink {
                 target: Arc::new(file_1),
                 link: file_2,
@@ -1142,7 +1100,7 @@ mod test {
         })
     }
 
-    fn path_set(v: &Vec<FileMetadata>) -> HashSet<&Path> {
+    fn path_set(v: &Vec<PathAndMetadata>) -> HashSet<&Path> {
         v.iter().map(|f| &f.path).collect()
     }
 
