@@ -16,7 +16,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::arg::Arg;
 use crate::config::OutputFormat;
-use crate::files::{FileHash, FileLen};
+use crate::file::{FileHash, FileLen};
 use crate::path::Path;
 use crate::util::IteratorWrapper;
 use crate::{arg, FileGroup, TIMESTAMP_FMT};
@@ -664,7 +664,7 @@ mod test {
 
     use tempfile::NamedTempFile;
 
-    use crate::files::{FileHash, FileLen};
+    use crate::file::{FileHash, FileLen};
     use crate::path::Path;
 
     use super::*;

@@ -31,6 +31,7 @@ on either SSD or HDD storage.
 - [Installation](#installation)
 - [Usage](#usage)
 - [Algorithm](#the-algorithm)
+- [Tuning](#tuning)
 - [Benchmarks](#benchmarks)
 
 ## Features
@@ -59,6 +60,7 @@ on either SSD or HDD storage.
   - low memory footprint thanks to heavily optimized path representation
   - fast, non-cryptographic 128-bit hashing function
   - doesn't push data out of the page-cache (Linux-only)
+  - optional persistent caching of file hashes
   - accurate progress reporting   
 * Variety of output formats for easy further processing of results  
   - standard text format
@@ -347,9 +349,45 @@ Note that there is no byte-by-byte comparison of files anywhere. A fast and good
 [MetroHash](http://www.jandrewrogers.com/2015/05/27/metrohash/) hash function
 is used and you don't need to worry about hash collisions. At 10<sup>15</sup> files, the probability of collision is
 0.000000001, without taking into account the requirement for the files to also match by size.
-    
+
 ## Tuning
-At the moment, tuning is possible only for desired parallelism level. 
+This section provides hints on getting the best performance from `fclones`.
+
+### Incremental Mode
+If you expect to run `fclones group` more than once on the same set of files, 
+you might benefit from turning on the hash cache by adding the `--cache` flag:
+
+```
+fclones group --cache <dir>
+```
+
+Caching can dramatically improve grouping speed on subsequent runs of `fclones` at the expense of some additional
+storage space needed for the cache. Caching also allows for resuming work quickly after interruption, so it is
+recommended if you plan to run `fclones` on huge data sets.
+
+The cache works as follows:
+- Each newly computed file hash is persisted in the cache together with some metadata of the file such as 
+  its modification timestamp and length.
+- Whenever a file hash needs to be computed, it is first looked up in the cache. 
+  The cached hash is used if the current metadata of the file strictly matches the metadata stored in the cache.  
+
+Cached hashes are not invalidated by file moves because files are identified 
+by their internal identifiers (inode identifiers on Unix), not by path names, and moves/renames typically preserve 
+those.   
+
+Beware that caching relies on file metadata to detect changes in file contents.
+This might introduce some inaccuracies to the grouping process if a file modification timestamp and file length
+is not updated immediately whenever a file gets modified. 
+Most file systems update the timestamps automatically on closing the file. Therefore, changed files that are held 
+open for a long time (e.g. by database systems) might be not noticed by `fclones group` and might use stale 
+cached values.
+
+The cache database is located in the standard cache directory of the user account. Typically, those are: 
+* Linux: `$HOME/.cache/fclones`
+* macOS: `$HOME/Library/Caches/fclones`
+* Windows: `$HOME/AppData/Local/fclones`
+
+### Configuring Parallelism
 The `--threads` parameter controls the sizes of the internal thread-pool(s). 
 This can be used to reduce parallelism level when you don't want `fclones` to 
 impact performance of your system too much, e.g. when you need to do some other work

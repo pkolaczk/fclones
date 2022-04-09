@@ -23,13 +23,15 @@ use sysinfo::DiskType;
 use thread_local::ThreadLocal;
 
 use crate::arg::Arg;
+use crate::cache::HashCache;
 pub use dedupe::{dedupe, log_script, run_script, DedupeOp, DedupeResult};
 
 use crate::config::*;
 use crate::device::{DiskDevice, DiskDevices};
-use crate::files::FileInfo;
-use crate::files::*;
+use crate::file::FileInfo;
+use crate::file::*;
 use crate::group::*;
+use crate::hasher::{FileHasher, HashAlgorithm};
 use crate::log::Log;
 use crate::path::Path;
 use crate::report::{FileStats, ReportHeader, ReportWriter};
@@ -39,16 +41,18 @@ use crate::transform::Transform;
 use crate::walk::Walk;
 
 pub mod config;
-pub mod files;
+pub mod file;
 pub mod log;
 pub mod path;
 pub mod progress;
 pub mod report;
 
 mod arg;
+mod cache;
 mod dedupe;
 mod device;
 mod group;
+mod hasher;
 mod lock;
 mod pattern;
 mod reflink;
@@ -101,6 +105,7 @@ struct AppCtx<'a> {
     devices: DiskDevices,
     transform: Option<Transform>,
     path_selector: PathSelector,
+    hasher: FileHasher<'a>,
 }
 
 impl<'a> AppCtx<'a> {
@@ -114,9 +119,21 @@ impl<'a> AppCtx<'a> {
         };
         let base_dir = Path::from(current_dir().unwrap_or_default());
         let group_filter = config.group_filter();
-        let selector = config
+        let path_selector = config
             .path_selector(&base_dir)
             .map_err(|e| format!("Invalid pattern: {}", e))?;
+
+        let cache: Option<HashCache> = if config.cache {
+            Some(HashCache::open_default()?)
+        } else {
+            None
+        };
+        let hasher = FileHasher {
+            cache,
+            algorithm: HashAlgorithm::MetroHash128,
+            buf_len: 65536,
+            log,
+        };
 
         Self::check_pool_config(thread_pool_sizes, &devices)?;
 
@@ -126,7 +143,8 @@ impl<'a> AppCtx<'a> {
             group_filter,
             devices,
             transform,
-            path_selector: selector,
+            path_selector,
+            hasher,
         })
     }
 
@@ -389,12 +407,6 @@ fn flat_iter(files: &[FileGroup<FileInfo>]) -> impl ParallelIterator<Item = &Fil
     files.par_iter().flat_map(|g| &g.files)
 }
 
-#[derive(Copy, Clone, Debug)]
-enum AccessType {
-    Sequential,
-    Random,
-}
-
 /// Groups files by length and hash computed by given `hash_fn`.
 /// Runs in parallel on dedicated thread pools.
 /// Files on different devices are hashed separately from each other.
@@ -410,7 +422,7 @@ fn rehash<'a, F1, F2, H>(
     group_pre_filter: F1,
     group_post_filter: F2,
     devices: &DiskDevices,
-    access_type: AccessType,
+    access_type: FileAccess,
     hash_fn: H,
 ) -> Vec<FileGroup<FileInfo>>
 where
@@ -459,8 +471,8 @@ where
                 // depending on the access type. Therefore we chose a thread pool appropriate
                 // for the access type
                 let thread_pool = match access_type {
-                    AccessType::Sequential => device.seq_thread_pool(),
-                    AccessType::Random => device.rand_thread_pool(),
+                    FileAccess::Sequential => device.seq_thread_pool(),
+                    FileAccess::Random => device.rand_thread_pool(),
                 };
 
                 let thread_count = thread_pool.current_num_threads() as isize;
@@ -778,7 +790,7 @@ fn group_transformed(
         |_| true,
         |g| g.matches(&ctx.group_filter),
         &ctx.devices,
-        AccessType::Sequential,
+        FileAccess::Sequential,
         |(fi, _)| {
             let result = transform
                 .run_or_log_err(&fi.path, ctx.log)
@@ -842,26 +854,16 @@ fn group_by_prefix(
         pre_filter,
         |g| g.matches(&ctx.group_filter),
         &ctx.devices,
-        AccessType::Random,
+        FileAccess::Random,
         |(fi, _)| {
             progress.tick();
-            let device = &ctx.devices[fi.get_device_index()];
-            let buf_len = device.buf_len();
-            let (caching, prefix_len) = if fi.len <= prefix_len {
-                (Caching::Default, prefix_len)
+            let prefix_len = if fi.len <= prefix_len {
+                prefix_len
             } else {
-                (Caching::Random, device.min_prefix_len())
+                ctx.devices[fi.get_device_index()].min_prefix_len()
             };
-
-            file_hash_or_log_err(
-                &fi.path,
-                FilePos(0),
-                prefix_len,
-                buf_len,
-                caching,
-                |_| {},
-                ctx.log,
-            )
+            let chunk = FileChunk::new(&fi.path, FilePos(0), prefix_len);
+            ctx.hasher.hash(&chunk, |_| {})
         },
     );
 
@@ -904,21 +906,13 @@ fn group_by_suffix(ctx: &AppCtx<'_>, groups: Vec<FileGroup<FileInfo>>) -> Vec<Fi
         pre_filter,
         |g| g.matches(&ctx.group_filter),
         &ctx.devices,
-        AccessType::Random,
+        FileAccess::Random,
         |(fi, old_hash)| {
             progress.tick();
-            let device = &ctx.devices[fi.get_device_index()];
-            let buf_len = device.buf_len();
-            file_hash_or_log_err(
-                &fi.path,
-                fi.len.as_pos() - suffix_len,
-                suffix_len,
-                buf_len,
-                Caching::Default,
-                |_| {},
-                ctx.log,
-            )
-            .map(|new_hash| old_hash ^ new_hash)
+            let chunk = FileChunk::new(&fi.path, fi.len.as_pos() - suffix_len, suffix_len);
+            ctx.hasher
+                .hash(&chunk, |_| {})
+                .map(|new_hash| old_hash ^ new_hash)
         },
     );
 
@@ -946,19 +940,11 @@ fn group_by_contents(
         pre_filter,
         |g| g.matches_strictly(&ctx.group_filter),
         &ctx.devices,
-        AccessType::Sequential,
+        FileAccess::Sequential,
         |(fi, _)| {
-            let device = &ctx.devices[fi.get_device_index()];
-            let buf_len = device.buf_len();
-            file_hash_or_log_err(
-                &fi.path,
-                FilePos(0),
-                fi.len,
-                buf_len,
-                Caching::Sequential,
-                |delta| progress.inc(delta),
-                ctx.log,
-            )
+            let chunk = FileChunk::new(&fi.path, FilePos(0), fi.len);
+            ctx.hasher
+                .hash(&chunk, |bytes_read| progress.inc(bytes_read))
         },
     );
 
@@ -1174,7 +1160,7 @@ mod test {
             |_| true,
             |_| true,
             &devices,
-            AccessType::Random,
+            FileAccess::Random,
             |(fi, _)| Some(FileHash(fi.location as u128)),
         );
 
@@ -1214,7 +1200,7 @@ mod test {
             |_| true,
             |_| true,
             &devices,
-            AccessType::Random,
+            FileAccess::Random,
             |(_, _)| Some(FileHash(123456)),
         );
 
@@ -1241,7 +1227,7 @@ mod test {
             |_| false,
             |_| true,
             &devices,
-            AccessType::Random,
+            FileAccess::Random,
             |(fi, _)| {
                 called.store(true, Ordering::Release);
                 Some(FileHash(fi.location as u128))
@@ -1277,7 +1263,7 @@ mod test {
             |_| true,
             |g| g.files.len() >= 2,
             &devices,
-            AccessType::Random,
+            FileAccess::Random,
             |(fi, _)| Some(FileHash(fi.location as u128)),
         );
 
@@ -1309,7 +1295,7 @@ mod test {
             |_| true,
             |_| true,
             &devices,
-            AccessType::Random,
+            FileAccess::Random,
             |(fi, _)| {
                 processing_order.lock().unwrap().push(fi.location as i32);
                 Some(FileHash(fi.location as u128))

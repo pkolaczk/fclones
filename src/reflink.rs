@@ -4,14 +4,15 @@ use std::io;
 
 use filetime::FileTime;
 
-use crate::dedupe::{FileMetadata, FsCommand};
+use crate::dedupe::FsCommand;
 use crate::lock::FileLock;
 use crate::log::Log;
+use crate::PathAndMetadata;
 
 /// Calls OS-specific reflink implementations with an option to call the more generic
 /// one during testing one on Linux ("crosstesting").
 /// The destination file is allowed to exist.
-pub fn reflink(src: &FileMetadata, dest: &FileMetadata, log: &Log) -> io::Result<()> {
+pub fn reflink(src: &PathAndMetadata, dest: &PathAndMetadata, log: &Log) -> io::Result<()> {
     let _ = FileLock::new(&dest.path)?; // don't touch a locked file
 
     // Remember the original metadata of the parent directory of the destination file:
@@ -33,7 +34,7 @@ pub fn reflink(src: &FileMetadata, dest: &FileMetadata, log: &Log) -> io::Result
     };
 
     // Restore the original metadata of the deduplicated file:
-    if let Err(e) = restore_some_metadata(&dest.path.to_path_buf(), &dest.metadata) {
+    if let Err(e) = restore_some_metadata(&dest.path.to_path_buf(), &dest.metadata.0) {
         log.warn(format!("Failed keep metadata for {}: {}", dest, e))
     }
 
@@ -57,14 +58,14 @@ pub fn reflink(src: &FileMetadata, dest: &FileMetadata, log: &Log) -> io::Result
 
 // Dummy function so tests compile
 #[cfg(not(any(target_os = "linux", target_os = "android")))]
-fn linux_reflink(_target: &FileMetadata, _link: &FileMetadata, _log: &Log) -> io::Result<()> {
+fn linux_reflink(_target: &PathAndMetadata, _link: &PathAndMetadata, _log: &Log) -> io::Result<()> {
     unreachable!()
 }
 
 // First reflink (not move) the target file out of the way (this also checks for
 // reflink support), then overwrite the existing file to preserve metadata.
 #[cfg(any(target_os = "linux", target_os = "android"))]
-fn linux_reflink(src: &FileMetadata, dest: &FileMetadata, log: &Log) -> io::Result<()> {
+fn linux_reflink(src: &PathAndMetadata, dest: &PathAndMetadata, log: &Log) -> io::Result<()> {
     let tmp = FsCommand::temp_file(&dest.path);
     let std_tmp = tmp.to_path_buf();
 
@@ -181,14 +182,14 @@ fn copy_by_reflink(src: &crate::Path, dest: &crate::Path) -> io::Result<()> {
 
 // Create a reflink by removing the file and making a reflink copy of the original.
 #[cfg(any(not(any(target_os = "linux", target_os = "android")), test))]
-fn safe_reflink(src: &FileMetadata, dest: &FileMetadata, log: &Log) -> io::Result<()> {
+fn safe_reflink(src: &PathAndMetadata, dest: &PathAndMetadata, log: &Log) -> io::Result<()> {
     FsCommand::safe_remove(&dest.path, |link| copy_by_reflink(&src.path, link), log)?;
     Ok(())
 }
 
 // Dummy function so non-test cfg compiles
 #[cfg(not(any(not(any(target_os = "linux", target_os = "android")), test)))]
-fn safe_reflink(_src: &FileMetadata, _dest: &FileMetadata, _log: &Log) -> io::Result<()> {
+fn safe_reflink(_src: &PathAndMetadata, _dest: &PathAndMetadata, _log: &Log) -> io::Result<()> {
     unreachable!()
 }
 
@@ -207,8 +208,7 @@ pub mod test {
         // Helpers to switch reflink implementations when running tests
         // and to ensure only one reflink test runs at a time.
 
-        use std::sync::Mutex;
-        use std::sync::MutexGuard;
+        use std::sync::{Mutex, MutexGuard};
 
         use lazy_static::lazy_static;
 
@@ -242,7 +242,7 @@ pub mod test {
     use crate::util::test::{cached_reflink_supported, read_file, with_dir, write_file};
 
     use super::*;
-    use crate::Path as FcPath;
+    use crate::{Path as FcPath, PathAndMetadata};
 
     // Usually /dev/shm only exists on Linux.
     #[cfg(any(target_os = "linux"))]
@@ -274,8 +274,8 @@ pub mod test {
             write_file(&file_path_1, "foo");
             write_file(&file_path_2, "foo");
 
-            let file_1 = FileMetadata::new(FcPath::from(&file_path_1)).unwrap();
-            let file_2 = FileMetadata::new(FcPath::from(&file_path_2)).unwrap();
+            let file_1 = PathAndMetadata::new(FcPath::from(&file_path_1)).unwrap();
+            let file_2 = PathAndMetadata::new(FcPath::from(&file_path_2)).unwrap();
             let cmd = FsCommand::RefLink {
                 target: Arc::new(file_1),
                 link: file_2,
@@ -320,8 +320,8 @@ pub mod test {
             write_file(&file_path_1, "foo");
             write_file(&file_path_2, "too large");
 
-            let file_1 = FileMetadata::new(FcPath::from(&file_path_1)).unwrap();
-            let file_2 = FileMetadata::new(FcPath::from(&file_path_2)).unwrap();
+            let file_1 = PathAndMetadata::new(FcPath::from(&file_path_1)).unwrap();
+            let file_2 = PathAndMetadata::new(FcPath::from(&file_path_2)).unwrap();
             let cmd = FsCommand::RefLink {
                 target: Arc::new(file_1),
                 link: file_2,
@@ -373,8 +373,8 @@ pub mod test {
             write_file(&file_path_1, "foo");
             write_file(&file_path_2, "f");
 
-            let file_1 = FileMetadata::new(FcPath::from(&file_path_1)).unwrap();
-            let file_2 = FileMetadata::new(FcPath::from(&file_path_2)).unwrap();
+            let file_1 = PathAndMetadata::new(FcPath::from(&file_path_1)).unwrap();
+            let file_2 = PathAndMetadata::new(FcPath::from(&file_path_2)).unwrap();
             let cmd = FsCommand::RefLink {
                 target: Arc::new(file_1),
                 link: file_2,

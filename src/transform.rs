@@ -17,7 +17,8 @@ use nom::IResult;
 use regex::Regex;
 use uuid::Uuid;
 
-use crate::files::{stream_hash, FileHash, FileLen};
+use crate::file::{FileHash, FileLen};
+use crate::hasher::stream_hash;
 use crate::log::Log;
 use crate::path::Path;
 
@@ -434,9 +435,11 @@ impl Drop for Transform {
 
 #[cfg(test)]
 mod test {
+    use crate::FileChunk;
     use std::io::Write;
 
-    use crate::files::{file_hash, Caching, FilePos};
+    use crate::file::FilePos;
+    use crate::hasher::file_hash;
     use crate::util::test::with_dir;
 
     use super::*;
@@ -458,15 +461,8 @@ mod test {
             drop(input);
 
             let input_path = Path::from(input_path);
-            let good_file_hash = file_hash(
-                &input_path,
-                FilePos(0),
-                FileLen::MAX,
-                4096,
-                Caching::Default,
-                |_| {},
-            )
-            .unwrap();
+            let chunk = FileChunk::new(&input_path, FilePos(0), FileLen::MAX);
+            let good_file_hash = file_hash(&chunk, 4096, |_| {}).unwrap();
 
             let result = p.run(&input_path).unwrap();
             assert_eq!(result.status.code(), Some(0));
@@ -488,15 +484,9 @@ mod test {
 
             let input_path = Path::from(input_path);
             let result = p.run(&input_path).unwrap();
-            let good_file_hash = file_hash(
-                &input_path,
-                FilePos(0),
-                FileLen::MAX,
-                4096,
-                Caching::Default,
-                |_| {},
-            )
-            .unwrap();
+
+            let chunk = FileChunk::new(&input_path, FilePos(0), FileLen::MAX);
+            let good_file_hash = file_hash(&chunk, 4096, |_| {}).unwrap();
 
             assert_eq!(result.status.code(), Some(0));
             assert_eq!(result.output_len.0, content.len() as u64);
