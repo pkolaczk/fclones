@@ -147,7 +147,7 @@ fn get_command_config(header: &ReportHeader) -> Result<Config, Error> {
     // Configure the same base directory as set when running the previous command.
     // This is important to get the correct input paths.
     if let Command::Group(ref mut group_config) = command.command {
-        group_config.base_dir = header.base_dir.to_path_buf();
+        group_config.base_dir = header.base_dir.clone();
     }
     Ok(command)
 }
