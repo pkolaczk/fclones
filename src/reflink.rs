@@ -5,9 +5,9 @@ use std::io;
 use filetime::FileTime;
 
 use crate::dedupe::FsCommand;
+use crate::file::PathAndMetadata;
 use crate::lock::FileLock;
 use crate::log::Log;
-use crate::PathAndMetadata;
 
 /// Calls OS-specific reflink implementations with an option to call the more generic
 /// one during testing one on Linux ("crosstesting").
@@ -166,7 +166,7 @@ fn restore_some_metadata(path: &std::path::Path, metadata: &Metadata) -> io::Res
 
 // Reflink which expects the destination to not exist.
 #[cfg(any(not(any(target_os = "linux", target_os = "android")), test))]
-fn copy_by_reflink(src: &crate::Path, dest: &crate::Path) -> io::Result<()> {
+fn copy_by_reflink(src: &crate::path::Path, dest: &crate::path::Path) -> io::Result<()> {
     reflink::reflink(&src.to_path_buf(), &dest.to_path_buf()).map_err(|e| {
         io::Error::new(
             e.kind(),
@@ -242,7 +242,8 @@ pub mod test {
     use crate::util::test::{cached_reflink_supported, read_file, with_dir, write_file};
 
     use super::*;
-    use crate::{Path as FcPath, PathAndMetadata};
+    use crate::file::PathAndMetadata;
+    use crate::path::Path as FcPath;
 
     // Usually /dev/shm only exists on Linux.
     #[cfg(any(target_os = "linux"))]

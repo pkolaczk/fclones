@@ -14,12 +14,12 @@ use clap::AppSettings;
 use structopt::StructOpt;
 
 use crate::file::FileLen;
+use crate::group::FileGroupFilter;
+use crate::group::Replication::{Overreplicated, Underreplicated};
 use crate::path::Path;
 use crate::pattern::{Pattern, PatternError, PatternOpts};
 use crate::selector::PathSelector;
 use crate::transform::Transform;
-use crate::FileGroupFilter;
-use crate::Replication::{Overreplicated, Underreplicated};
 
 #[derive(Debug, Clone, Copy)]
 pub enum OutputFormat {

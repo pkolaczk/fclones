@@ -1,4 +1,4 @@
-//! Removing redundant files
+//! Removing redundant files.
 
 use std::cmp::{max, min, Reverse};
 use std::collections::HashMap;
@@ -17,12 +17,13 @@ use rayon::iter::ParallelIterator;
 
 use crate::config::{DedupeConfig, Priority};
 use crate::device::DiskDevices;
-use crate::file::FileLen;
+use crate::file::{FileLen, PathAndMetadata};
+use crate::group::{FileGroup, FileSubGroup};
 use crate::lock::FileLock;
 use crate::log::Log;
 use crate::path::Path;
 use crate::util::{max_result, min_result, try_sort_by_key};
-use crate::{Error, FileGroup, FileSubGroup, PathAndMetadata, TIMESTAMP_FMT};
+use crate::{Error, TIMESTAMP_FMT};
 
 /// Defines what to do with redundant files
 #[derive(Clone, PartialEq, Eq)]

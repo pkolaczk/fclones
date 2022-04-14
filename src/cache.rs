@@ -7,8 +7,10 @@ use std::time::{Duration, UNIX_EPOCH};
 use serde::{Deserialize, Serialize};
 use sled::IVec;
 
+use crate::error::Error;
+use crate::file::{FileChunk, FileHash, FileLen, FileMetadata, FilePos};
 use crate::hasher::HashAlgorithm;
-use crate::{Error, FileChunk, FileHash, FileLen, FileMetadata, FilePos, Path};
+use crate::path::Path;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Key {
@@ -152,11 +154,13 @@ impl HashCache {
 
 #[cfg(test)]
 mod test {
-    use crate::util::test::{create_file, with_dir};
-    use crate::{
-        FileChunk, FileHash, FileLen, FileMetadata, FilePos, HashAlgorithm, HashCache, Path,
-    };
     use std::fs::OpenOptions;
+
+    use crate::cache::HashCache;
+    use crate::file::{FileChunk, FileHash, FileLen, FileMetadata, FilePos};
+    use crate::hasher::HashAlgorithm;
+    use crate::path::Path;
+    use crate::util::test::{create_file, with_dir};
 
     #[test]
     fn return_cached_hash_if_file_hasnt_changed() {

@@ -14,12 +14,14 @@ use lazy_static::lazy_static;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 
+use crate::arg;
 use crate::arg::Arg;
 use crate::config::OutputFormat;
 use crate::file::{FileHash, FileLen};
+use crate::group::FileGroup;
 use crate::path::Path;
 use crate::util::IteratorWrapper;
-use crate::{arg, FileGroup, TIMESTAMP_FMT};
+use crate::TIMESTAMP_FMT;
 
 /// Describes how many redundant files were found, in how many groups,
 /// how much space can be reclaimed, etc.
