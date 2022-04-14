@@ -4,22 +4,20 @@ use std::fs::{File, OpenOptions};
 use std::hash::Hasher;
 use std::io;
 use std::io::{ErrorKind, Read, Seek};
-
 #[cfg(unix)]
 use std::os::unix::fs::OpenOptionsExt;
 #[cfg(unix)]
 use std::os::unix::io::*;
 
-use serde::{Deserialize, Serialize};
-
 use metrohash::MetroHash128;
+use serde::{Deserialize, Serialize};
 #[cfg(unix)]
 use sysinfo::{System, SystemExt};
 
-use crate::cache::Key;
-use crate::{
-    FileAccess, FileChunk, FileHash, FileLen, FileMetadata, FilePos, HashCache, Log, Path,
-};
+use crate::cache::{HashCache, Key};
+use crate::file::{FileAccess, FileChunk, FileHash, FileLen, FileMetadata, FilePos};
+use crate::log::Log;
+use crate::path::Path;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum HashAlgorithm {
@@ -285,11 +283,13 @@ pub(crate) fn file_hash(
 
 #[cfg(test)]
 mod test {
-    use crate::hasher::file_hash;
-    use crate::{FileChunk, FileLen, FilePos, Path};
     use std::fs::{create_dir_all, File};
     use std::io::Write;
     use std::path::PathBuf;
+
+    use crate::file::{FileChunk, FileLen, FilePos};
+    use crate::hasher::file_hash;
+    use crate::path::Path;
 
     #[test]
     fn test_file_hash() {

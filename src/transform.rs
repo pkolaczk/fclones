@@ -435,10 +435,9 @@ impl Drop for Transform {
 
 #[cfg(test)]
 mod test {
-    use crate::FileChunk;
     use std::io::Write;
 
-    use crate::file::FilePos;
+    use crate::file::{FileChunk, FilePos};
     use crate::hasher::file_hash;
     use crate::util::test::with_dir;
 
