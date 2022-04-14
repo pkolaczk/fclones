@@ -301,6 +301,12 @@ impl AsRef<Path> for Path {
     }
 }
 
+impl Default for Path {
+    fn default() -> Self {
+        Path::from(".")
+    }
+}
+
 /// Converts std path Component to a new CString
 fn component_to_c_string(c: &Component<'_>) -> CString {
     os_to_c_str(c.as_os_str())

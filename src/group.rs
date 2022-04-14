@@ -1092,7 +1092,7 @@ pub fn write_report(config: &GroupConfig, log: &Log, groups: &[FileGroup<Path>])
         timestamp: DateTime::from_utc(now.naive_utc(), *now.offset()),
         version: env!("CARGO_PKG_VERSION").to_owned(),
         command: args_os().map(Arg::from).collect(),
-        base_dir: Path::from(&config.base_dir),
+        base_dir: config.base_dir.clone(),
         stats: Some(FileStats {
             group_count: groups.len(),
             total_file_count: total_count,

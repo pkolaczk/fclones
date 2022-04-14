@@ -277,7 +277,7 @@ pub struct GroupConfig {
 
     /// Base directory to use when resolving relative input paths.
     #[structopt(long, parse(from_os_str), default_value("."))]
-    pub base_dir: PathBuf,
+    pub base_dir: Path,
 
     /// A list of input paths.
     ///
@@ -402,28 +402,25 @@ impl GroupConfig {
 
     /// Makes the base directory absolute.
     /// Returns error if the base directory does not exist.
-    pub fn resolve_base_dir(&mut self) -> io::Result<&PathBuf> {
+    pub fn resolve_base_dir(&mut self) -> io::Result<&Path> {
         if self.base_dir.is_relative() {
-            self.base_dir = std::env::current_dir()?.join(&self.base_dir)
+            let curr_dir = Arc::from(Path::from(std::env::current_dir()?));
+            self.base_dir = curr_dir.join(&self.base_dir)
         }
-        if !self.base_dir.is_dir() {
+        if !self.base_dir.to_path_buf().is_dir() {
             return Err(io::Error::new(
                 ErrorKind::NotFound,
-                format!("Directory not found: {}", self.base_dir.display()),
+                format!("Directory not found: {}", self.base_dir.to_escaped_string()),
             ));
         }
-        self.base_dir = self.base_dir.canonicalize()?;
+        self.base_dir = self.base_dir.canonicalize();
         Ok(&self.base_dir)
     }
 
     /// Returns an iterator over the absolute input paths.
     /// Input paths may be provided as arguments or from standard input.
     pub fn input_paths(&self) -> Box<dyn Iterator<Item = Path> + Send> {
-        let base_dir = Arc::new(if self.base_dir.as_os_str().is_empty() {
-            Path::from(".")
-        } else {
-            Path::from(&self.base_dir)
-        });
+        let base_dir = Arc::new(self.base_dir.clone());
         if self.stdin {
             Box::new(
                 BufReader::new(stdin())
