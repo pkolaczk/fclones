@@ -4,8 +4,7 @@ use std::io;
 
 use filetime::FileTime;
 
-use crate::dedupe::FsCommand;
-use crate::file::PathAndMetadata;
+use crate::dedupe::{FsCommand, PathAndMetadata};
 use crate::lock::FileLock;
 use crate::log::Log;
 
@@ -34,7 +33,7 @@ pub fn reflink(src: &PathAndMetadata, dest: &PathAndMetadata, log: &Log) -> io::
     };
 
     // Restore the original metadata of the deduplicated file:
-    if let Err(e) = restore_some_metadata(&dest.path.to_path_buf(), &dest.metadata.0) {
+    if let Err(e) = restore_some_metadata(&dest.path.to_path_buf(), &dest.metadata) {
         log.warn(format!("Failed keep metadata for {}: {}", dest, e))
     }
 
@@ -242,7 +241,6 @@ pub mod test {
     use crate::util::test::{cached_reflink_supported, read_file, with_dir, write_file};
 
     use super::*;
-    use crate::file::PathAndMetadata;
     use crate::path::Path as FcPath;
 
     // Usually /dev/shm only exists on Linux.

@@ -2,11 +2,12 @@
 
 use std::cmp::{max, min, Reverse};
 use std::collections::HashMap;
+use std::fmt::{Display, Formatter};
 use std::io::{BufWriter, ErrorKind, Write};
 use std::ops::{Add, AddAssign};
 use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
-use std::{fs, io};
+use std::{fmt, fs, io};
 
 use chrono::{DateTime, FixedOffset, Local};
 use crossbeam_utils::atomic::AtomicCell;
@@ -17,7 +18,7 @@ use rayon::iter::ParallelIterator;
 
 use crate::config::{DedupeConfig, Priority};
 use crate::device::DiskDevices;
-use crate::file::{FileLen, PathAndMetadata};
+use crate::file::{AsPath, FileLen, FileMetadata};
 use crate::group::{FileGroup, FileSubGroup};
 use crate::lock::FileLock;
 use crate::log::Log;
@@ -38,6 +39,37 @@ pub enum DedupeOp {
     HardLink,
     /// Reflink redundant files (cp --reflink=always, only some filesystems).
     RefLink,
+}
+
+/// Convenience struct for holding a path to a file and its metadata together
+#[derive(Debug)]
+pub struct PathAndMetadata {
+    pub path: Path,
+    pub metadata: FileMetadata,
+}
+
+impl PathAndMetadata {
+    pub fn new(path: Path) -> io::Result<PathAndMetadata> {
+        let metadata = FileMetadata::new(&path).map_err(|e| {
+            io::Error::new(
+                e.kind(),
+                format!("Failed to read metadata of {}: {}", path.display(), e),
+            )
+        })?;
+        Ok(PathAndMetadata { metadata, path })
+    }
+}
+
+impl AsPath for PathAndMetadata {
+    fn path(&self) -> &Path {
+        &self.path
+    }
+}
+
+impl Display for PathAndMetadata {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        f.pad(self.path.display().as_str())
+    }
 }
 
 /// Portable abstraction for commands used to remove duplicates

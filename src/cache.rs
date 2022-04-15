@@ -77,7 +77,6 @@ impl HashCache {
     pub fn put(&self, key: &Key, file: &FileMetadata, hash: FileHash) -> Result<(), Error> {
         let value = CachedFileInfo {
             modified_timestamp_us: file
-                .0
                 .modified()
                 .map_err(|e| format!("Unable to get file modification timestamp: {}", e))?
                 .duration_since(UNIX_EPOCH)

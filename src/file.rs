@@ -225,7 +225,7 @@ impl FileId {
 
     #[cfg(windows)]
     pub fn new(file: &Path) -> io::Result<FileId> {
-        Self::from_file(&File::open(file.to_path_buf())?).map_err(|e| {
+        Self::from_file(&fs::File::open(file.to_path_buf())?).map_err(|e| {
             io::Error::new(
                 ErrorKind::Other,
                 format!(
@@ -238,7 +238,7 @@ impl FileId {
     }
 
     #[cfg(windows)]
-    pub fn from_file(file: &File) -> io::Result<FileId> {
+    pub fn from_file(file: &fs::File) -> io::Result<FileId> {
         use std::os::windows::io::*;
         use winapi::ctypes::c_void;
         use winapi::um::fileapi::FILE_ID_INFO;
@@ -279,46 +279,50 @@ pub(crate) fn file_id_or_log_err(file: &Path, log: &Log) -> Option<FileId> {
 
 /// Convenience wrapper for accessing OS-dependent metadata like inode and device-id
 #[derive(Debug)]
-pub struct FileMetadata(pub fs::Metadata);
+pub struct FileMetadata {
+    metadata: fs::Metadata,
+    #[cfg(windows)]
+    file: fs::File,
+}
 
 impl FileMetadata {
     pub fn new(path: &Path) -> io::Result<FileMetadata> {
         let path_buf = path.to_path_buf();
-        let metadata = fs::symlink_metadata(&path_buf).map_err(|e| {
-            io::Error::new(
-                e.kind(),
-                format!("Failed to read metadata of {}: {}", path.display(), e),
-            )
-        })?;
-        Ok(FileMetadata(metadata))
+        let metadata = fs::symlink_metadata(&path_buf)?;
+
+        #[cfg(windows)]
+        {
+            let file = fs::File::open(&path_buf)?;
+            Ok(FileMetadata { metadata, file })
+        }
+        #[cfg(not(windows))]
+        Ok(FileMetadata { metadata })
     }
 
     pub fn len(&self) -> FileLen {
-        FileLen(self.0.len())
+        FileLen(self.metadata.len())
     }
 
     #[cfg(unix)]
     pub fn device_id(&self) -> io::Result<u64> {
         use std::os::unix::fs::MetadataExt;
-        Ok(self.0.dev())
+        Ok(self.metadata.dev())
     }
 
     #[cfg(windows)]
     pub fn device_id(&self) -> io::Result<u64> {
-        use crate::file::FileId;
-        FileId::new(&self.path).map(|f| f.device)
+        FileId::from_file(&self.file).map(|f| f.device)
     }
 
     #[cfg(unix)]
     pub fn inode_id(&self) -> io::Result<u128> {
         use std::os::unix::fs::MetadataExt;
-        Ok(self.0.ino() as u128)
+        Ok(self.metadata.ino() as u128)
     }
 
     #[cfg(windows)]
     pub fn inode_id(&self) -> io::Result<u128> {
-        use crate::file::FileId;
-        FileId::new(&self.path).map(|f| f.inode)
+        FileId::from_file(&self.file).map(|f| f.inode)
     }
 }
 
@@ -326,35 +330,7 @@ impl Deref for FileMetadata {
     type Target = fs::Metadata;
 
     fn deref(&self) -> &Self::Target {
-        &self.0
-    }
-}
-
-/// Convenience struct for holding a path to a file and its metadata together
-#[derive(Debug)]
-pub struct PathAndMetadata {
-    pub path: Path,
-    pub metadata: FileMetadata,
-}
-
-impl PathAndMetadata {
-    pub fn new(path: Path) -> io::Result<PathAndMetadata> {
-        Ok(PathAndMetadata {
-            metadata: FileMetadata::new(&path)?,
-            path,
-        })
-    }
-}
-
-impl AsPath for PathAndMetadata {
-    fn path(&self) -> &Path {
-        &self.path
-    }
-}
-
-impl Display for PathAndMetadata {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        f.pad(self.path.display().as_str())
+        &self.metadata
     }
 }
 
@@ -500,7 +476,6 @@ pub(crate) enum FileAccess {
 
 #[cfg(test)]
 mod test {
-
     use super::*;
 
     #[test]
