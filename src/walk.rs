@@ -9,7 +9,6 @@ use rayon::Scope;
 use crate::log::Log;
 use crate::path::Path;
 use crate::selector::PathSelector;
-use rayon::prelude::ParallelSliceMut;
 
 #[derive(Debug)]
 enum EntryType {
@@ -237,6 +236,7 @@ impl<'a> Walk<'a> {
 
     #[cfg(unix)]
     fn sort_dir_entries_by_inode(entries: &mut Vec<DirEntry>) {
+        use rayon::prelude::ParallelSliceMut;
         use std::os::unix::fs::DirEntryExt;
         entries.par_sort_unstable_by_key(|entry| entry.ino())
     }

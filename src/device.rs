@@ -6,7 +6,6 @@ use std::ops::Index;
 use itertools::Itertools;
 use lazy_init::Lazy;
 use rayon::{ThreadPool, ThreadPoolBuilder};
-use regex::Regex;
 use sysinfo::{DiskExt, DiskType, System, SystemExt};
 
 use crate::config::Parallelism;
@@ -212,7 +211,7 @@ impl DiskDevices {
     /// resides on. Otherwise, and on failures, it just returns the same `name`.
     #[cfg(target_os = "linux")]
     fn physical_device_name(name: &OsStr) -> OsString {
-        let regex = Regex::new(r"^/dev/([fhs]d[a-z]|nvme[0-9]+).*").unwrap();
+        let regex = regex::Regex::new(r"^/dev/([fhs]d[a-z]|nvme[0-9]+).*").unwrap();
         let name_str = name.to_string_lossy();
         match regex.captures(name_str.as_ref()) {
             Some(captures) => {

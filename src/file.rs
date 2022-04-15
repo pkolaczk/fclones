@@ -225,7 +225,7 @@ impl FileId {
 
     #[cfg(windows)]
     pub fn new(file: &Path) -> io::Result<FileId> {
-        Self::from_file(&fs::File::open(file.to_path_buf())?).map_err(|e| {
+        Self::from_file(&fs::File::open(file.to_path_buf())?).map_err(|_| {
             io::Error::new(
                 ErrorKind::Other,
                 format!(

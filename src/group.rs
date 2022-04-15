@@ -12,7 +12,6 @@ use std::io;
 use std::io::BufWriter;
 use std::iter::FromIterator;
 use std::marker::PhantomData;
-use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::Arc;
 
@@ -702,35 +701,37 @@ fn remove_same_files(
     groups
 }
 
-fn atomic_counter_vec(len: usize) -> Vec<AtomicU32> {
+#[cfg(target_os = "linux")]
+fn atomic_counter_vec(len: usize) -> Vec<std::sync::atomic::AtomicU32> {
     let mut v = Vec::with_capacity(len);
     for _ in 0..len {
-        v.push(AtomicU32::new(0));
+        v.push(std::sync::atomic::AtomicU32::new(0));
     }
     v
 }
 
+#[cfg(target_os = "linux")]
 fn update_file_locations(ctx: &GroupCtx<'_>, groups: &mut Vec<FileGroup<FileInfo>>) {
-    #[cfg(target_os = "linux")]
-    {
-        let count = file_count(groups.iter());
-        let progress = ctx.log.progress_bar("Fetching extents", count as u64);
+    let count = file_count(groups.iter());
+    let progress = ctx.log.progress_bar("Fetching extents", count as u64);
 
-        let err_counters = atomic_counter_vec(ctx.devices.len());
-        groups
-            .par_iter_mut()
-            .flat_map(|g| &mut g.files)
-            .update(|fi| {
-                let device: &DiskDevice = &ctx.devices[fi.get_device_index()];
-                if device.disk_type != DiskType::SSD {
-                    if let Err(e) = fi.fetch_physical_location() {
-                        handle_fetch_physical_location_err(ctx, &err_counters, fi, e)
-                    }
+    let err_counters = atomic_counter_vec(ctx.devices.len());
+    groups
+        .par_iter_mut()
+        .flat_map(|g| &mut g.files)
+        .update(|fi| {
+            let device: &DiskDevice = &ctx.devices[fi.get_device_index()];
+            if device.disk_type != DiskType::SSD {
+                if let Err(e) = fi.fetch_physical_location() {
+                    handle_fetch_physical_location_err(ctx, &err_counters, fi, e)
                 }
-            })
-            .for_each(|_| progress.tick());
-    }
+            }
+        })
+        .for_each(|_| progress.tick());
 }
+
+#[cfg(not(target_os = "linux"))]
+fn update_file_locations(_ctx: &GroupCtx<'_>, _groups: &mut Vec<FileGroup<FileInfo>>) {}
 
 /// Displays a warning message after fiemap ioctl fails and we don't know where the
 /// file data are located.
@@ -740,10 +741,12 @@ fn update_file_locations(ctx: &GroupCtx<'_>, groups: &mut Vec<FileGroup<FileInfo
 #[cfg(target_os = "linux")]
 fn handle_fetch_physical_location_err(
     ctx: &GroupCtx<'_>,
-    err_counters: &[AtomicU32],
+    err_counters: &[std::sync::atomic::AtomicU32],
     file_info: &FileInfo,
     error: io::Error,
 ) {
+    use std::sync::atomic::Ordering;
+
     const MAX_ERR_COUNT_TO_LOG: u32 = 10;
     let device = &ctx.devices[file_info.get_device_index()];
     let counter = &err_counters[device.index];
