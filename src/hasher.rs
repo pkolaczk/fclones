@@ -4,15 +4,9 @@ use std::fs::{File, OpenOptions};
 use std::hash::Hasher;
 use std::io;
 use std::io::{ErrorKind, Read, Seek};
-#[cfg(unix)]
-use std::os::unix::fs::OpenOptionsExt;
-#[cfg(unix)]
-use std::os::unix::io::*;
 
 use metrohash::MetroHash128;
 use serde::{Deserialize, Serialize};
-#[cfg(unix)]
-use sysinfo::{System, SystemExt};
 
 use crate::cache::{HashCache, Key};
 use crate::file::{FileAccess, FileChunk, FileHash, FileLen, FileMetadata, FilePos};
@@ -102,7 +96,7 @@ impl FileHasher<'_> {
     }
 }
 
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 fn to_off_t(offset: u64) -> libc::off_t {
     min(libc::off_t::MAX as u64, offset) as libc::off_t
 }
@@ -112,6 +106,7 @@ fn to_off_t(offset: u64) -> libc::off_t {
 /// the program. At worst, failure could hurt performance.
 #[cfg(target_os = "linux")]
 fn fadvise(file: &File, offset: FilePos, len: FileLen, advice: nix::fcntl::PosixFadviseAdvice) {
+    use std::os::unix::io::AsRawFd;
     let _ = nix::fcntl::posix_fadvise(
         file.as_raw_fd(),
         to_off_t(offset.into()),
@@ -156,6 +151,8 @@ fn evict_page_cache(file: &File, offset: FilePos, len: FileLen) {
 fn evict_page_cache_if_low_mem(file: &mut File, len: FileLen) {
     #[cfg(target_os = "linux")]
     {
+        use sysinfo::{System, SystemExt};
+
         let skipped_prefix_len = FileLen(256 * 1024);
         if len > skipped_prefix_len {
             let mut system = System::new();
@@ -193,6 +190,7 @@ fn open_noatime(path: &Path) -> io::Result<File> {
     options.read(true);
     #[cfg(target_os = "linux")]
     {
+        use std::os::unix::fs::OpenOptionsExt;
         let mut noatime_opts = options.clone();
         noatime_opts.custom_flags(libc::O_NOATIME);
         noatime_opts

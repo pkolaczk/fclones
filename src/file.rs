@@ -357,7 +357,7 @@ impl IntoPath for FileInfo {
 
 const OFFSET_MASK: u64 = 0x0000FFFFFFFFFFFF;
 
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 const DEVICE_MASK: u64 = 0xFFFF000000000000;
 
 impl FileInfo {
