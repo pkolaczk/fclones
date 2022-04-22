@@ -51,7 +51,7 @@ sled = "0.34"
 smallvec = "1.8"
 stfu8 = "0.2"
 structopt = "0.3"
-sysinfo = "0.16"
+sysinfo = "0.23.10"
 thread_local = "1.1"
 uuid = { version = "0.8", features = ["v4"] }
 
