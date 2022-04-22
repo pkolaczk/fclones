@@ -157,8 +157,8 @@ fn evict_page_cache_if_low_mem(file: &mut File, len: FileLen) {
         if len > skipped_prefix_len {
             let mut system = System::new();
             system.refresh_memory();
-            let free_mem = system.get_free_memory();
-            let total_mem = system.get_total_memory();
+            let free_mem = system.free_memory();
+            let total_mem = system.total_memory();
             let free_ratio = free_mem as f32 / total_mem as f32;
             if free_ratio < 0.05 {
                 evict_page_cache(
