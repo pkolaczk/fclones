@@ -96,7 +96,8 @@ impl DiskDevice {
         FileLen(match self.disk_type {
             DiskType::SSD => 4 * 1024,
             DiskType::HDD => 4 * 1024,
-            DiskType::Removable => 4 * 1024,
+            // Removable doesn't appear to be supported type in the latest sysinfo crate
+            // DiskType::Removable => 4 * 1024,
             DiskType::Unknown(_) => 4 * 1024,
         })
     }
@@ -105,7 +106,8 @@ impl DiskDevice {
         FileLen(match self.disk_type {
             DiskType::SSD => 4 * 1024,
             DiskType::HDD => 16 * 1024,
-            DiskType::Removable => 16 * 1024,
+            // Removable doesn't appear to be supported type in the latest sysinfo crate
+            // DiskType::Removable => 16 * 1024,
             DiskType::Unknown(_) => 16 * 1024,
         })
     }
@@ -118,7 +120,8 @@ impl DiskDevice {
         FileLen(match self.disk_type {
             DiskType::HDD => 64 * 1024 * 1024, // 64 MB
             DiskType::SSD => 64 * 1024,        // 64 kB
-            DiskType::Removable => 64 * 1024 * 1024,
+            // Removable doesn't appear to be supported type in the latest sysinfo crate
+            // DiskType::Removable => 64 * 1024 * 1024,
             DiskType::Unknown(_) => 64 * 1024 * 1024,
         })
     }
@@ -168,7 +171,8 @@ impl DiskDevices {
                 let p = match disk_type {
                     DiskType::SSD => pool_sizes.get(OsStr::new("ssd")),
                     DiskType::HDD => pool_sizes.get(OsStr::new("hdd")),
-                    DiskType::Removable => pool_sizes.get(OsStr::new("removable")),
+                    // Removable doesn't appear to be supported type in the latest sysinfo crate
+                    // DiskType::Removable => pool_sizes.get(OsStr::new("removable")),
                     DiskType::Unknown(_) => pool_sizes.get(OsStr::new("unknown")),
                 };
                 match p {
@@ -244,17 +248,17 @@ impl DiskDevices {
             String::from("unknown"),
             pool_sizes,
         );
-        for d in sys.get_disks() {
-            let device_name = Self::physical_device_name(d.get_name());
+        for d in sys.disks() {
+            let device_name = Self::physical_device_name(d.name());
             let index = result.add_device(
                 device_name,
-                d.get_type(),
-                String::from_utf8_lossy(d.get_file_system()).to_string(),
+                d.type_(),
+                String::from_utf8_lossy(d.file_system()).to_string(),
                 pool_sizes,
             );
             result
                 .mount_points
-                .push((Path::from(d.get_mount_point()), index));
+                .push((Path::from(d.mount_point()), index));
         }
         result
             .mount_points
