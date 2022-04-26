@@ -324,7 +324,7 @@ dependencies = [
 
 [[package]]
 name = "fclones"
-version = "0.20.1"
+version = "0.21.0"
 dependencies = [
  "atomic-counter",
  "bincode",
