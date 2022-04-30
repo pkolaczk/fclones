@@ -549,8 +549,9 @@ fn scan_files(ctx: &GroupCtx<'_>) -> Vec<Vec<FileInfo>> {
 
     let mut walk = Walk::new();
     walk.depth = config.depth.unwrap_or(usize::MAX);
-    walk.skip_hidden = config.skip_hidden;
+    walk.hidden = config.hidden;
     walk.follow_links = config.follow_links;
+    walk.no_ignore = config.no_ignore;
     walk.path_selector = ctx.path_selector.clone();
     walk.log = Some(ctx.log);
     walk.on_visit = spinner_tick;

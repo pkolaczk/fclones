@@ -177,6 +177,11 @@ You can search in multiple directories:
 
     fclones group dir1 dir2 dir3
 
+By default, hidden files and files matching patterns listed in `.gitignore` and `.fdignore` are
+ignored. To search all files, use:
+
+    fclones group --no-ignore --hidden dir
+
 Limit the recursion depth:
     
     fclones group . --depth 1   # scan only files in the current dir, skip subdirs

@@ -33,6 +33,7 @@ dtparse = "1.2"
 dunce = "1.0"
 fallible-iterator = "0.2"
 filetime = "0.2"
+ignore = "0.4.18"
 indicatif = { version = "0.14", features = ["with_rayon"] }
 indoc = "1.0"
 itertools = "0.10"
