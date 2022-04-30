@@ -1,16 +1,18 @@
+use std::default::Default;
 use std::env::current_dir;
 use std::fs::{read_link, symlink_metadata, DirEntry, FileType, ReadDir};
 use std::sync::Arc;
 use std::{fs, io};
 
 use dashmap::DashSet;
+use ignore::gitignore::{Gitignore, GitignoreBuilder};
 use rayon::Scope;
 
 use crate::log::Log;
 use crate::path::Path;
 use crate::selector::PathSelector;
 
-#[derive(Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum EntryType {
     File,
     Dir,
@@ -61,13 +63,74 @@ impl Entry {
     }
 }
 
+#[derive(Clone)]
+struct IgnoreStack(Arc<Vec<Gitignore>>);
+
+impl IgnoreStack {
+    /// Returns ignore stack initialized with global gitignore settings.
+    fn new(log: Option<&Log>) -> Self {
+        let gitignore = GitignoreBuilder::new("/").build_global();
+        if let Some(err) = gitignore.1 {
+            if let Some(log) = log {
+                log.warn(format!("Error loading global gitignore rules: {}", err))
+            }
+        }
+        IgnoreStack(Arc::new(vec![gitignore.0]))
+    }
+
+    /// Returns an empty gitignore stack that ignores no files.
+    pub fn empty() -> IgnoreStack {
+        IgnoreStack(Arc::new(vec![]))
+    }
+
+    /// If .gitignore file exists in given dir, creates a `Gitignore` struct for it
+    /// and returns the stack with the new `Gitignore` appended. Otherwise returns a cloned self.
+    pub fn push(&self, dir: &Path, log: Option<&Log>) -> IgnoreStack {
+        let mut path = Arc::new(dir.clone()).resolve(Path::from(".gitignore"));
+        let mut path_buf = path.to_path_buf();
+        if !path_buf.is_file() {
+            path = Arc::new(dir.clone()).resolve(Path::from(".fdignore"));
+            path_buf = path.to_path_buf();
+        }
+        if !path_buf.is_file() {
+            return self.clone();
+        }
+        let gitignore = Gitignore::new(&path_buf);
+        if let Some(err) = gitignore.1 {
+            if let Some(log) = log {
+                log.warn(format!(
+                    "Error while loading ignore file {}: {}",
+                    path.display(),
+                    err
+                ))
+            }
+        }
+        let mut stack = self.0.as_ref().clone();
+        stack.push(gitignore.0);
+        IgnoreStack(Arc::new(stack))
+    }
+
+    /// Returns true if any of the gitignore files in the stack selects given path
+    pub fn matches(&self, path: &Path, is_dir: bool) -> bool {
+        // this is on critical performance path, so avoid unnecessary to_path_buf conversion
+        if self.0.is_empty() {
+            return false;
+        }
+        let path = path.to_path_buf();
+        self.0
+            .iter()
+            .any(|gitignore| gitignore.matched(&path, is_dir).is_ignore())
+    }
+}
+
 /// Describes walk configuration.
 /// Many walks can be initiated from the same instance.
 pub struct Walk<'a> {
     pub base_dir: Arc<Path>,
     pub depth: usize,
-    pub skip_hidden: bool,
+    pub hidden: bool,
     pub follow_links: bool,
+    pub no_ignore: bool,
     pub path_selector: PathSelector,
     pub on_visit: &'a (dyn Fn(&Path) + Sync + Send),
     pub log: Option<&'a Log>,
@@ -86,8 +149,9 @@ impl<'a> Walk<'a> {
         Walk {
             base_dir: Arc::new(base_dir.clone()),
             depth: usize::MAX,
-            skip_hidden: false,
+            hidden: false,
             follow_links: false,
+            no_ignore: false,
             path_selector: PathSelector::new(base_dir),
             on_visit: &|_| {},
             log: None,
@@ -110,14 +174,21 @@ impl<'a> Walk<'a> {
             visited: DashSet::new(),
         };
         rayon::scope(|scope| {
+            let ignore = if self.no_ignore {
+                IgnoreStack::empty()
+            } else {
+                IgnoreStack::new(self.log)
+            };
+
             for p in roots.into_iter() {
                 let p = self.absolute(p);
+                let ignore = ignore.clone();
                 match fs::metadata(&p.to_path_buf()) {
                     Ok(metadata) if metadata.is_dir() && self.depth == 0 => self.log_warn(format!(
                         "Skipping directory {} because recursive scan is disabled.",
                         p.display()
                     )),
-                    _ => scope.spawn(|scope| self.visit_path(p, scope, 0, &state)),
+                    _ => scope.spawn(|scope| self.visit_path(p, scope, 0, ignore, &state)),
                 }
             }
         });
@@ -129,6 +200,7 @@ impl<'a> Walk<'a> {
         path: Path,
         scope: &Scope<'w>,
         level: usize,
+        gitignore: IgnoreStack,
         state: &'w WalkState<F>,
     ) where
         F: Fn(Path) + Sync + Send,
@@ -138,7 +210,7 @@ impl<'a> Walk<'a> {
             Entry::from_path(path.clone())
                 .map_err(|e| self.log_warn(format!("Failed to stat {}: {}", path.display(), e)))
                 .into_iter()
-                .for_each(|entry| self.visit_entry(entry, scope, level, state))
+                .for_each(|entry| self.visit_entry(entry, scope, level, gitignore.clone(), state))
         }
     }
 
@@ -149,6 +221,7 @@ impl<'a> Walk<'a> {
         entry: Entry,
         scope: &Scope<'w>,
         level: usize,
+        gitignore: IgnoreStack,
         state: &'w WalkState<F>,
     ) where
         F: Fn(Path) + Sync + Send,
@@ -158,7 +231,7 @@ impl<'a> Walk<'a> {
         (self.on_visit)(&entry.path);
 
         // Skip hidden files
-        if self.skip_hidden {
+        if !self.hidden {
             if let Some(name) = entry.path.file_name_cstr() {
                 if name.to_string_lossy().starts_with('.') {
                     return;
@@ -172,10 +245,15 @@ impl<'a> Walk<'a> {
             return;
         }
 
+        // Skip entries ignored by .gitignore
+        if !self.no_ignore && gitignore.matches(&entry.path, entry.tpe == EntryType::Dir) {
+            return;
+        }
+
         match entry.tpe {
             EntryType::File => self.visit_file(entry.path, state),
-            EntryType::Dir => self.visit_dir(entry.path, scope, level, state),
-            EntryType::SymLink => self.visit_link(&entry.path, scope, level, state),
+            EntryType::Dir => self.visit_dir(entry.path, scope, level, gitignore, state),
+            EntryType::SymLink => self.visit_link(&entry.path, scope, level, gitignore, state),
             EntryType::Other => {}
         }
     }
@@ -197,6 +275,7 @@ impl<'a> Walk<'a> {
         path: &Path,
         scope: &Scope<'w>,
         level: usize,
+        gitignore: IgnoreStack,
         state: &'w WalkState<F>,
     ) where
         F: Fn(Path) + Sync + Send,
@@ -204,7 +283,7 @@ impl<'a> Walk<'a> {
     {
         if self.follow_links {
             match self.resolve_link(path) {
-                Ok(target) => self.visit_path(target, scope, level, state),
+                Ok(target) => self.visit_path(target, scope, level, gitignore, state),
                 Err(e) => self.log_warn(format!("Failed to read link {}: {}", path.display(), e)),
             }
         }
@@ -217,20 +296,33 @@ impl<'a> Walk<'a> {
         path: Path,
         scope: &Scope<'w>,
         level: usize,
+        gitignore: IgnoreStack,
         state: &'w WalkState<F>,
     ) where
         F: Fn(Path) + Sync + Send,
         's: 'w,
     {
-        if level < self.depth && self.path_selector.matches_dir(&path) {
-            match std::fs::read_dir(path.to_path_buf()) {
-                Ok(rd) => {
-                    for entry in Self::sorted_entries(path, rd) {
-                        scope.spawn(move |s| self.visit_entry(entry, s, level + 1, state))
-                    }
+        if level > self.depth {
+            return;
+        }
+        if !self.path_selector.matches_dir(&path) {
+            return;
+        }
+
+        let gitignore = if self.no_ignore {
+            gitignore
+        } else {
+            gitignore.push(&path, self.log)
+        };
+
+        match fs::read_dir(path.to_path_buf()) {
+            Ok(rd) => {
+                for entry in Self::sorted_entries(path, rd) {
+                    let gitignore = gitignore.clone();
+                    scope.spawn(move |s| self.visit_entry(entry, s, level + 1, gitignore, state))
                 }
-                Err(e) => self.log_warn(format!("Failed to read dir {}: {}", path.display(), e)),
             }
+            Err(e) => self.log_warn(format!("Failed to read dir {}: {}", path.display(), e)),
         }
     }
 
@@ -304,12 +396,13 @@ impl<'a> Default for Walk<'a> {
 
 #[cfg(test)]
 mod test {
+    use std::fs::{create_dir, File};
     use std::path::PathBuf;
     use std::sync::Mutex;
 
-    use super::*;
     use crate::util::test::*;
-    use std::fs::{create_dir, File};
+
+    use super::*;
 
     #[test]
     fn list_files() {
@@ -410,17 +503,57 @@ mod test {
 
     #[test]
     fn skip_hidden() {
-        with_dir("target/test/walk/7/", |test_root| {
+        with_dir("target/test/walk/skip_hidden/", |test_root| {
             let hidden_dir = test_root.join(".dir");
             create_dir(&hidden_dir).unwrap();
             let hidden_file_1 = hidden_dir.join("file.txt");
             let hidden_file_2 = test_root.join(".file.txt");
             File::create(&hidden_file_1).unwrap();
             File::create(&hidden_file_2).unwrap();
+
             let mut walk = Walk::new();
-            walk.skip_hidden = true;
-            assert_eq!(run_walk(walk, test_root.clone()), Vec::<PathBuf>::new());
+            walk.hidden = false;
+            assert!(run_walk(walk, test_root.clone()).is_empty());
+
+            let mut walk = Walk::new();
+            walk.hidden = true;
+            assert_eq!(run_walk(walk, test_root.clone()).len(), 2);
         });
+    }
+
+    fn respect_ignore(root: &str, ignore_file: &str) {
+        with_dir(root, |test_root| {
+            use std::io::Write;
+            let mut gitignore = File::create(test_root.join(ignore_file)).unwrap();
+            writeln!(gitignore, "foo/").unwrap();
+            writeln!(gitignore, "*.log").unwrap();
+            writeln!(gitignore, "**/bar").unwrap();
+            drop(gitignore);
+
+            create_dir(&test_root.join("foo")).unwrap();
+            create_file(&test_root.join("foo").join("bar"));
+            create_file(&test_root.join("bar.log"));
+            create_dir(&test_root.join("dir")).unwrap();
+            create_dir(&test_root.join("dir").join("bar")).unwrap();
+            create_file(&test_root.join("dir").join("bar").join("file"));
+
+            let walk = Walk::new();
+            assert!(run_walk(walk, test_root.clone()).is_empty());
+
+            let mut walk = Walk::new();
+            walk.no_ignore = true;
+            assert_eq!(run_walk(walk, test_root.clone()).len(), 3)
+        });
+    }
+
+    #[test]
+    fn respect_gitignore() {
+        respect_ignore("target/test/walk/gitignore/", ".gitignore")
+    }
+
+    #[test]
+    fn respect_fdignore() {
+        respect_ignore("target/test/walk/fdignore/", ".fdignore")
     }
 
     fn run_walk(walk: Walk, root: PathBuf) -> Vec<PathBuf> {

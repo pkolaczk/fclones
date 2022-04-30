@@ -148,11 +148,15 @@ pub struct GroupConfig {
     #[structopt(short = "d", long)]
     pub depth: Option<usize>,
 
-    /// Skips hidden files
-    #[structopt(short = "A", long)]
-    pub skip_hidden: bool,
+    /// Includes hidden files.
+    #[structopt(short = ".", long)]
+    pub hidden: bool,
 
-    /// Follows symbolic links
+    /// Does not respect .gitignore and .fdignore files.
+    #[structopt(short = "A", long)]
+    pub no_ignore: bool,
+
+    /// Follows symbolic links.
     #[structopt(short = "L", long)]
     pub follow_links: bool,
 
@@ -231,16 +235,16 @@ pub struct GroupConfig {
     #[structopt(long = "path", value_name("pattern"))]
     pub path_patterns: Vec<String>,
 
-    /// Excludes paths matched fully by any of the given patterns.
+    /// Ignores paths matched fully by any of the given patterns.
     #[structopt(long = "exclude", value_name("pattern"))]
     pub exclude_patterns: Vec<String>,
 
     /// Makes pattern matching case-insensitive.
     #[structopt(short = "i", long)]
-    pub caseless: bool,
+    pub ignore_case: bool,
 
     /// Expects patterns as Perl compatible regular expressions instead of Unix globs.
-    #[structopt(short = "g", long)]
+    #[structopt(short = "x", long)]
     pub regex: bool,
 
     /// Enables caching of file hashes.
@@ -317,7 +321,7 @@ impl GroupConfig {
     }
 
     fn compile_pattern(&self, s: &str) -> Result<Pattern, PatternError> {
-        let pattern_opts = if self.caseless {
+        let pattern_opts = if self.ignore_case {
             PatternOpts::case_insensitive()
         } else {
             PatternOpts::default()
