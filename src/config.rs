@@ -157,13 +157,23 @@ pub struct GroupConfig {
     pub no_ignore: bool,
 
     /// Follows symbolic links.
+    ///
+    /// If this flag is set together with `--symbolic-links`, only links to
+    /// directories are followed.
     #[structopt(short = "L", long)]
     pub follow_links: bool,
 
-    /// Treats files reachable from multiple paths through
-    /// hard links as duplicates
+    /// Treats files reachable from multiple paths through hard links as duplicates.
     #[structopt(short = "H", long)]
     pub hard_links: bool,
+
+    /// Treats symbolic links to files as regular files.
+    /// Reports symbolic links, not their targets.
+    ///
+    /// When this flag is set, multiple symbolic links to the same file, as well as a file and
+    /// a link to it, will be considered duplicates.
+    #[structopt(short = "S", long)]
+    pub symbolic_links: bool,
 
     /// Don't count matching files found within the same directory argument as duplicates.
     #[structopt(short("I"), long, conflicts_with("follow-links"))]

@@ -20,6 +20,20 @@ enum EntryType {
     Other,
 }
 
+impl EntryType {
+    pub fn from(file_type: FileType) -> EntryType {
+        if file_type.is_symlink() {
+            EntryType::SymLink
+        } else if file_type.is_file() {
+            EntryType::File
+        } else if file_type.is_dir() {
+            EntryType::Dir
+        } else {
+            EntryType::Other
+        }
+    }
+}
+
 /// A path to a file, directory or symbolic link.
 /// Provides an abstraction over `Path` and `DirEntry`
 #[derive(Debug)]
@@ -30,26 +44,9 @@ struct Entry {
 
 impl Entry {
     pub fn new(file_type: FileType, path: Path) -> Entry {
-        if file_type.is_symlink() {
-            Entry {
-                tpe: EntryType::SymLink,
-                path,
-            }
-        } else if file_type.is_file() {
-            Entry {
-                tpe: EntryType::File,
-                path,
-            }
-        } else if file_type.is_dir() {
-            Entry {
-                tpe: EntryType::Dir,
-                path,
-            }
-        } else {
-            Entry {
-                tpe: EntryType::Other,
-                path,
-            }
+        Entry {
+            tpe: EntryType::from(file_type),
+            path,
         }
     }
 
@@ -126,13 +123,24 @@ impl IgnoreStack {
 /// Describes walk configuration.
 /// Many walks can be initiated from the same instance.
 pub struct Walk<'a> {
+    /// Relative root paths are resolved against this dir.
     pub base_dir: Arc<Path>,
+    /// Maximum allowed directory nesting level. 0 means "do not descend to directories at all".
     pub depth: usize,
+    /// Include hidden files.
     pub hidden: bool,
+    /// Resolve symlinks to dirs and files.
+    /// For a symlink to a file, report the target file, unless `report_links` is true.
     pub follow_links: bool,
+    /// Don't follow symlinks to files, but report them.
+    pub report_links: bool,
+    /// Don't honor .gitignore and .fdignore.
     pub no_ignore: bool,
+    /// Controls selecting or ignoring files by matching file and path names with regexes / globs.
     pub path_selector: PathSelector,
+    /// The function to call for each visited file. The directories are not reported.
     pub on_visit: &'a (dyn Fn(&Path) + Sync + Send),
+    /// Warnings about inaccessible files or dirs are logged here, if defined.
     pub log: Option<&'a Log>,
 }
 
@@ -151,6 +159,7 @@ impl<'a> Walk<'a> {
             depth: usize::MAX,
             hidden: false,
             follow_links: false,
+            report_links: false,
             no_ignore: false,
             path_selector: PathSelector::new(base_dir),
             on_visit: &|_| {},
@@ -253,7 +262,7 @@ impl<'a> Walk<'a> {
         match entry.tpe {
             EntryType::File => self.visit_file(entry.path, state),
             EntryType::Dir => self.visit_dir(entry.path, scope, level, gitignore, state),
-            EntryType::SymLink => self.visit_link(&entry.path, scope, level, gitignore, state),
+            EntryType::SymLink => self.visit_link(entry.path, scope, level, gitignore, state),
             EntryType::Other => {}
         }
     }
@@ -272,7 +281,7 @@ impl<'a> Walk<'a> {
     /// If `follow_links` is set to false, does nothing.
     fn visit_link<'s, 'w, F>(
         &'s self,
-        path: &Path,
+        path: Path,
         scope: &Scope<'w>,
         level: usize,
         gitignore: IgnoreStack,
@@ -281,9 +290,14 @@ impl<'a> Walk<'a> {
         F: Fn(Path) + Sync + Send,
         's: 'w,
     {
-        if self.follow_links {
-            match self.resolve_link(path) {
-                Ok(target) => self.visit_path(target, scope, level, gitignore, state),
+        if self.follow_links || self.report_links {
+            match self.resolve_link(&path) {
+                Ok((_, EntryType::File)) if self.report_links => self.visit_file(path, state),
+                Ok((target, _)) => {
+                    if self.follow_links {
+                        self.visit_path(target, scope, level, gitignore, state)
+                    }
+                }
                 Err(e) => self.log_warn(format!("Failed to read link {}: {}", path.display(), e)),
             }
         }
@@ -361,22 +375,33 @@ impl<'a> Walk<'a> {
         dirs.into_iter().chain(links).chain(files)
     }
 
-    /// Returns the absolute target path of a symbolic link
-    fn resolve_link(&self, link: &Path) -> io::Result<Path> {
-        let target = Path::from(read_link(link.to_path_buf())?);
+    /// Returns the absolute target path of a symbolic link with the type of the target
+    fn resolve_link(&self, link: &Path) -> io::Result<(Path, EntryType)> {
+        let link_buf = link.to_path_buf();
+        let target = read_link(&link_buf)?;
+        let entry_type = EntryType::from(link_buf.metadata()?.file_type());
+        let target = Path::from(target);
         let resolved = if target.is_relative() {
             link.parent().unwrap().join(target)
         } else {
             target
         };
-        Ok(self.absolute(resolved))
+        Ok((self.absolute(resolved), entry_type))
     }
 
     /// Returns absolute path with removed `.` and `..` components.
     /// Relative paths are resolved against `self.base_dir`.
-    fn absolute(&self, path: Path) -> Path {
+    /// Symbolic links to directories are resolved.
+    /// File symlinks are not resolved, because we need
+    fn absolute(&self, mut path: Path) -> Path {
         if path.is_relative() {
-            self.base_dir.join(path).canonicalize()
+            path = self.base_dir.join(path)
+        }
+        if path.to_path_buf().is_file() {
+            // for files we are sure there will be a parent and a file name
+            let parent = path.parent().unwrap().canonicalize();
+            let file_name = path.file_name().unwrap();
+            Arc::new(parent).join(Path::from(file_name))
         } else {
             path.canonicalize()
         }
@@ -440,6 +465,29 @@ mod test {
             let mut walk = Walk::new();
             walk.follow_links = true;
             assert_eq!(run_walk(walk, link), vec![file]);
+        });
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn report_rel_file_sym_links() {
+        with_dir("target/test/walk/report_symlinks/", |test_root| {
+            use std::os::unix::fs::symlink;
+            let file = test_root.join("file.txt");
+            let link1 = test_root.join("link1");
+            let link2 = test_root.join("link2");
+            File::create(&file).unwrap();
+            symlink(PathBuf::from("file.txt"), &link1).unwrap(); // link1 -> file.txt
+            symlink(PathBuf::from("link1"), &link2).unwrap(); // link2 -> link1
+
+            let mut walk1 = Walk::new();
+            walk1.report_links = true;
+            assert_eq!(run_walk(walk1, link1.clone()), vec![link1]);
+
+            // a link to a link should also be reported
+            let mut walk2 = Walk::new();
+            walk2.report_links = true;
+            assert_eq!(run_walk(walk2, link2.clone()), vec![link2]);
         });
     }
 

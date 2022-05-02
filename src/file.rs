@@ -288,7 +288,7 @@ pub struct FileMetadata {
 impl FileMetadata {
     pub fn new(path: &Path) -> io::Result<FileMetadata> {
         let path_buf = path.to_path_buf();
-        let metadata = fs::symlink_metadata(&path_buf)?;
+        let metadata = fs::metadata(&path_buf)?;
 
         #[cfg(windows)]
         {
