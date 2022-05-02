@@ -135,9 +135,13 @@ Help test and/or port to other platforms is welcome.
 Please report successes as well as failures.      
 
 ### Official Packages
-`fclones` is available in the [Snap store](https://snapcraft.io/fclones):
+[Snap store](https://snapcraft.io/fclones) (Linux):
 
     sudo snap install fclones
+
+[Homebrew](https://brew.sh/) (macOS and Linux)
+
+    brew install fclones
 
 Installation packages and binaries for some platforms 
 are also attached directly to [Releases](https://github.com/pkolaczk/fclones/releases).
@@ -148,8 +152,9 @@ are also attached directly to [Releases](https://github.com/pkolaczk/fclones/rel
 * [NixOS](https://search.nixos.org/packages?channel=unstable&show=fclones&from=0&size=50&sort=relevance&type=packages&query=fclones)
 
 ### Building from Source 
-1. [Install Rust Toolchain](https://www.rust-lang.org/tools/install)
-2. Run `cargo install fclones`
+[Install Rust Toolchain](https://www.rust-lang.org/tools/install) and then run:
+
+    cargo install fclones
 
 The build will write the binary to `.cargo/bin/fclones`. 
 
