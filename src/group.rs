@@ -551,6 +551,7 @@ fn scan_files(ctx: &GroupCtx<'_>) -> Vec<Vec<FileInfo>> {
     walk.depth = config.depth.unwrap_or(usize::MAX);
     walk.hidden = config.hidden;
     walk.follow_links = config.follow_links;
+    walk.report_links = config.symbolic_links;
     walk.no_ignore = config.no_ignore;
     walk.path_selector = ctx.path_selector.clone();
     walk.log = Some(ctx.log);
@@ -650,7 +651,7 @@ where
     for (_, file_group) in groups.into_iter() {
         if file_group.len() == 1 {
             files.extend(file_group.into_iter().inspect(|p| progress(&p.path)));
-        } else if ctx.config.hard_links {
+        } else if ctx.config.hard_links || ctx.config.symbolic_links {
             files.extend(
                 file_group
                     .into_iter()
@@ -1481,6 +1482,30 @@ mod test {
             let results = group_files(&config, &log).unwrap();
             assert_eq!(results.len(), 1);
             assert_eq!(results[0].files.len(), 1);
+        });
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn report_symbolic_links_to_files() {
+        with_dir("main/soft_links", |root| {
+            let file1 = root.join("file1");
+            let file2 = root.join("file2");
+            write_test_file(&file1, b"aaa", b"", b"");
+            std::os::unix::fs::symlink(&file1, &file2).unwrap();
+
+            let log = test_log();
+            let mut config = GroupConfig::default();
+            config.paths = vec![file1.into(), file2.into()];
+            config.symbolic_links = true;
+
+            let results = group_files(&config, &log).unwrap();
+            assert_eq!(results.len(), 1);
+            assert_eq!(results[0].files.len(), 2);
+
+            config.symbolic_links = false;
+            let results = group_files(&config, &log).unwrap();
+            assert_eq!(results.len(), 0);
         });
     }
 
