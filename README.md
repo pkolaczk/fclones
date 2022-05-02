@@ -139,7 +139,7 @@ Please report successes as well as failures.
 
     sudo snap install fclones
 
-[Homebrew](https://brew.sh/) (macOS and Linux)
+[Homebrew](https://formulae.brew.sh/formula/fclones) (macOS and Linux)
 
     brew install fclones
 
