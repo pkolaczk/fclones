@@ -97,8 +97,16 @@ pub enum FsCommand {
 }
 
 impl FsCommand {
+    /// Obtains a lock to the file if lock == true.
+    fn maybe_lock(path: &Path, lock: bool) -> io::Result<Option<FileLock>> {
+        if lock {
+            Ok(Some(FileLock::new(path)?))
+        } else {
+            Ok(None)
+        }
+    }
+
     pub fn remove(path: &Path) -> io::Result<()> {
-        let _ = FileLock::new(path)?;
         fs::remove_file(path.to_path_buf()).map_err(|e| {
             io::Error::new(
                 e.kind(),
@@ -248,7 +256,6 @@ impl FsCommand {
         f: impl Fn(&Path) -> io::Result<R>,
         log: &Log,
     ) -> io::Result<R> {
-        let _ = FileLock::new(path)?; // don't remove a locked file
         let tmp = Self::temp_file(path);
         Self::unsafe_rename(path, &tmp)?;
         let result = match f(path) {
@@ -278,21 +285,25 @@ impl FsCommand {
     }
 
     /// Executes the command and returns the number of bytes reclaimed
-    pub fn execute(&self, log: &Log) -> io::Result<FileLen> {
+    pub fn execute(&self, should_lock: bool, log: &Log) -> io::Result<FileLen> {
         match self {
             FsCommand::Remove { file } => {
+                let _ = Self::maybe_lock(&file.path, should_lock)?;
                 Self::remove(&file.path)?;
                 Ok(file.metadata.len())
             }
             FsCommand::SoftLink { target, link } => {
+                let _ = Self::maybe_lock(&link.path, should_lock)?;
                 Self::safe_remove(&link.path, |link| Self::symlink(&target.path, link), log)?;
                 Ok(link.metadata.len())
             }
             FsCommand::HardLink { target, link } => {
+                let _ = Self::maybe_lock(&link.path, should_lock)?;
                 Self::safe_remove(&link.path, |link| Self::hardlink(&target.path, link), log)?;
                 Ok(link.metadata.len())
             }
             FsCommand::RefLink { target, link } => {
+                let _ = Self::maybe_lock(&link.path, should_lock)?;
                 crate::reflink::reflink(target, link, log)?;
                 Ok(link.metadata.len())
             }
@@ -301,6 +312,7 @@ impl FsCommand {
                 target,
                 use_rename,
             } => {
+                let _ = Self::maybe_lock(&source.path, should_lock);
                 let len = source.metadata.len();
                 if *use_rename && Self::move_rename(&source.path, target).is_ok() {
                     return Ok(len);
@@ -867,10 +879,14 @@ where
 /// On command execution failure, a warning is logged and the execution of remaining commands
 /// continues.
 /// Returns the number of files processed and the amount of disk space reclaimed.
-pub fn run_script(script: impl IntoParallelIterator<Item = FsCommand>, log: &Log) -> DedupeResult {
+pub fn run_script(
+    script: impl IntoParallelIterator<Item = FsCommand>,
+    should_lock: bool,
+    log: &Log,
+) -> DedupeResult {
     script
         .into_par_iter()
-        .map(|cmd| cmd.execute(log))
+        .map(|cmd| cmd.execute(should_lock, log))
         .inspect(|res| {
             if let Err(e) = res {
                 log.warn(e);
@@ -954,7 +970,7 @@ mod test {
             create_file(&file_path);
             let file = PathAndMetadata::new(Path::from(&file_path)).unwrap();
             let cmd = FsCommand::Remove { file };
-            cmd.execute(&log).unwrap();
+            cmd.execute(true, &log).unwrap();
             assert!(!file_path.exists())
         })
     }
@@ -972,7 +988,7 @@ mod test {
                 target: target.clone(),
                 use_rename: true,
             };
-            cmd.execute(&log).unwrap();
+            cmd.execute(true, &log).unwrap();
             assert!(!file_path.exists());
             assert!(target.to_path_buf().exists());
         })
@@ -991,7 +1007,7 @@ mod test {
                 target: target.clone(),
                 use_rename: false,
             };
-            cmd.execute(&log).unwrap();
+            cmd.execute(true, &log).unwrap();
             assert!(!file_path.exists());
             assert!(target.to_path_buf().exists());
         })
@@ -1011,7 +1027,7 @@ mod test {
                 target: Path::from(&target),
                 use_rename: false,
             };
-            assert!(cmd.execute(&log).is_err());
+            assert!(cmd.execute(true, &log).is_err());
         })
     }
 
@@ -1030,7 +1046,7 @@ mod test {
                 target: Arc::new(file_1),
                 link: file_2,
             };
-            cmd.execute(&log).unwrap();
+            cmd.execute(true, &log).unwrap();
 
             assert!(file_path_1.exists());
             assert!(file_path_2.exists());
@@ -1058,7 +1074,7 @@ mod test {
                 target: Arc::new(file_1),
                 link: file_2,
             };
-            cmd.execute(&log).unwrap();
+            cmd.execute(true, &log).unwrap();
 
             assert!(file_path_1.exists());
             assert!(file_path_2.exists());
@@ -1268,7 +1284,7 @@ mod test {
             config.priority = vec![Priority::LeastRecentlyModified];
             let log = Log::new();
             let script = dedupe(vec![group], DedupeOp::Remove, &config, &log);
-            let dedupe_result = run_script(script, &log);
+            let dedupe_result = run_script(script, !config.no_lock, &log);
             assert_eq!(dedupe_result.processed_count, 2);
             assert!(!root.join("file_1").exists());
             assert!(!root.join("file_2").exists());

@@ -230,7 +230,7 @@ pub fn run_dedupe(op: DedupeOp, config: DedupeConfig, log: &mut Log) -> Result<(
             result.processed_count, upto, result.reclaimed_space
         ));
     } else {
-        let result = run_script(script, log);
+        let result = run_script(script, !dedupe_config.no_lock, log);
         log.info(format!(
             "Processed {} files and reclaimed {}{} space",
             result.processed_count, upto, result.reclaimed_space

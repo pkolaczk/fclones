@@ -281,7 +281,7 @@ pub mod test {
             };
 
             assert!(
-                cmd.execute(&log)
+                cmd.execute(true, &log)
                     .unwrap_err()
                     .to_string()
                     .starts_with("Failed to deduplicate"),
@@ -328,7 +328,7 @@ pub mod test {
 
             if via_ioctl {
                 assert!(cmd
-                    .execute(&log)
+                    .execute(true, &log)
                     .unwrap_err()
                     .to_string()
                     .starts_with("Failed to deduplicate"));
@@ -338,7 +338,7 @@ pub mod test {
                 assert_eq!(read_file(&file_path_1), "foo");
                 assert_eq!(read_file(&file_path_2), "too large");
             } else {
-                cmd.execute(&log).unwrap();
+                cmd.execute(true, &log).unwrap();
 
                 assert!(file_path_2.exists());
                 assert_eq!(read_file(&file_path_2), "foo");
@@ -378,7 +378,7 @@ pub mod test {
                 target: Arc::new(file_1),
                 link: file_2,
             };
-            cmd.execute(&log).unwrap();
+            cmd.execute(true, &log).unwrap();
 
             assert!(file_path_1.exists());
             assert!(file_path_2.exists());

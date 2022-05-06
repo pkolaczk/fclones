@@ -590,6 +590,10 @@ pub struct DedupeConfig {
     /// `fclones group` command, if `--isolate` option was present.
     #[structopt(long = "isolate", value_name = "path", parse(from_os_str))]
     pub isolated_roots: Vec<Path>,
+
+    /// Skips locking files before performing an action on them.
+    #[structopt(long)]
+    pub no_lock: bool,
 }
 
 #[derive(Debug, StructOpt)]
