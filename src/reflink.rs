@@ -5,15 +5,12 @@ use std::io;
 use filetime::FileTime;
 
 use crate::dedupe::{FsCommand, PathAndMetadata};
-use crate::lock::FileLock;
 use crate::log::Log;
 
 /// Calls OS-specific reflink implementations with an option to call the more generic
 /// one during testing one on Linux ("crosstesting").
 /// The destination file is allowed to exist.
 pub fn reflink(src: &PathAndMetadata, dest: &PathAndMetadata, log: &Log) -> io::Result<()> {
-    let _ = FileLock::new(&dest.path)?; // don't touch a locked file
-
     // Remember the original metadata of the parent directory of the destination file:
     let dest_parent = dest.path.parent();
     let dest_parent_metadata = dest_parent.map(|p| p.to_path_buf().metadata());

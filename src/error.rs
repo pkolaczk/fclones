@@ -1,5 +1,5 @@
-use std::fmt;
 use std::fmt::{Display, Formatter};
+use std::{fmt, io};
 
 /// Error reported by top-level fclones functions
 #[derive(Debug)]
@@ -31,4 +31,14 @@ impl From<&str> for Error {
     fn from(s: &str) -> Self {
         Error::new(s.to_owned())
     }
+}
+
+/// Returns error kind.
+/// Maps `libc::EOPNOTSUPP` error to `ErrorKind::Unsupported` on Unix.
+pub fn error_kind(error: &io::Error) -> io::ErrorKind {
+    #[cfg(unix)]
+    if error.raw_os_error() == Some(libc::EOPNOTSUPP) {
+        return io::ErrorKind::Unsupported;
+    }
+    error.kind()
 }

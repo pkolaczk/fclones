@@ -1,3 +1,4 @@
+use crate::error::error_kind;
 use std::fs::File;
 use std::{fs, io};
 
@@ -57,21 +58,21 @@ impl FileLock {
     pub fn new(path: &Path) -> io::Result<FileLock> {
         let path_buf = path.to_path_buf();
         let file = fs::OpenOptions::new()
-            .read(true)
+            .read(false)
             .write(true)
             .create(false)
             .open(&path_buf)
             .map_err(|e| {
                 io::Error::new(
-                    e.kind(),
-                    format!("Failed to open file {}: {}", path.display(), e),
+                    error_kind(&e),
+                    format!("Failed to open file {} for write: {}", path.display(), e),
                 )
             })?;
 
         #[cfg(unix)]
         if let Err(e) = Self::fcntl_lock(&file) {
             return Err(io::Error::new(
-                e.kind(),
+                error_kind(&e),
                 format!("Failed to lock file {}: {}", path.display(), e),
             ));
         };
