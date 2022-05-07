@@ -100,7 +100,11 @@ impl FsCommand {
     /// Obtains a lock to the file if lock == true.
     fn maybe_lock(path: &Path, lock: bool) -> io::Result<Option<FileLock>> {
         if lock {
-            Ok(Some(FileLock::new(path)?))
+            match FileLock::new(path) {
+                Ok(lock) => Ok(Some(lock)),
+                Err(e) if e.kind() == ErrorKind::Unsupported => Ok(None),
+                Err(e) => Err(e),
+            }
         } else {
             Ok(None)
         }
