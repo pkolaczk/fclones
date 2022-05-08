@@ -1,6 +1,5 @@
 //! Output formatting.
 
-use std::borrow::Borrow;
 use std::cell::Cell;
 use std::cmp::min;
 use std::io;
@@ -119,10 +118,11 @@ impl<W: Write> ReportWriter<W> {
     ///     /home/pkolaczk/Projekty/fclones/.git/refs/remotes/origin/fix_flock_freebsd
     /// ...
     /// ```
-    pub fn write_as_text<I, G>(&mut self, header: &ReportHeader, groups: I) -> io::Result<()>
+    pub fn write_as_text<I, G, P>(&mut self, header: &ReportHeader, groups: I) -> io::Result<()>
     where
         I: IntoIterator<Item = G>,
-        G: Borrow<FileGroup<Path>>,
+        G: AsRef<FileGroup<P>>,
+        P: AsRef<Path>,
     {
         let command = arg::join(&header.command);
         self.write_header_line(&format!("Report by fclones {}", header.version))?;
@@ -154,7 +154,7 @@ impl<W: Write> ReportWriter<W> {
         }
 
         for g in groups {
-            let g = g.borrow();
+            let g = g.as_ref();
             let group_header = format!(
                 "{}, {} B ({}) * {}:",
                 g.file_hash,
@@ -165,7 +165,7 @@ impl<W: Write> ReportWriter<W> {
             let group_header = style(group_header).yellow();
             writeln!(self.out, "{}", group_header.force_styling(self.color),)?;
             for f in g.files.iter() {
-                writeln!(self.out, "    {}", f.to_escaped_string())?;
+                writeln!(self.out, "    {}", f.as_ref().to_escaped_string())?;
             }
         }
         Ok(())
@@ -174,15 +174,16 @@ impl<W: Write> ReportWriter<W> {
     /// Writes the report in `fdupes` compatible format.
     /// This is very similar to the TEXT format, but there are no headers
     /// for each group, and groups are separated with empty lines.
-    pub fn write_as_fdupes<I, G>(&mut self, _header: &ReportHeader, groups: I) -> io::Result<()>
+    pub fn write_as_fdupes<I, G, P>(&mut self, _header: &ReportHeader, groups: I) -> io::Result<()>
     where
         I: IntoIterator<Item = G>,
-        G: Borrow<FileGroup<Path>>,
+        G: AsRef<FileGroup<P>>,
+        P: AsRef<Path>,
     {
         for g in groups {
-            let g = g.borrow();
+            let g = g.as_ref();
             for f in g.files.iter() {
-                writeln!(self.out, "{}", f.to_escaped_string())?;
+                writeln!(self.out, "{}", f.as_ref().to_escaped_string())?;
             }
             writeln!(self.out)?;
         }
@@ -198,10 +199,11 @@ impl<W: Write> ReportWriter<W> {
     /// - file hash (may be empty)
     /// - number of files in the group
     /// - file paths - each file in a separate column
-    pub fn write_as_csv<I, G>(&mut self, _header: &ReportHeader, groups: I) -> io::Result<()>
+    pub fn write_as_csv<I, G, P>(&mut self, _header: &ReportHeader, groups: I) -> io::Result<()>
     where
         I: IntoIterator<Item = G>,
-        G: Borrow<FileGroup<Path>>,
+        G: AsRef<FileGroup<P>>,
+        P: AsRef<Path>,
     {
         let mut wtr = csv::WriterBuilder::new()
             .delimiter(b',')
@@ -211,13 +213,13 @@ impl<W: Write> ReportWriter<W> {
 
         wtr.write_record(&["size", "hash", "count", "files"])?;
         for g in groups {
-            let g = g.borrow();
+            let g = g.as_ref();
             let mut record = csv::StringRecord::new();
             record.push_field(g.file_len.0.to_string().as_str());
             record.push_field(g.file_hash.to_string().as_str());
             record.push_field(g.files.len().to_string().as_str());
             for f in g.files.iter() {
-                record.push_field(f.to_escaped_string().as_ref());
+                record.push_field(f.as_ref().to_escaped_string().as_ref());
             }
             wtr.write_record(&record)?;
         }
@@ -267,11 +269,22 @@ impl<W: Write> ReportWriter<W> {
     ///       ]
     ///     },
     /// ```
-    pub fn write_as_json<I, P>(&mut self, header: &ReportHeader, groups: I) -> io::Result<()>
+    pub fn write_as_json<I, G, P>(&mut self, header: &ReportHeader, groups: I) -> io::Result<()>
     where
-        I: IntoIterator<Item = P>,
-        P: Serialize,
+        I: IntoIterator<Item = G>,
+        G: AsRef<FileGroup<P>>,
+        P: AsRef<Path>,
     {
+        let groups = groups.into_iter().map(|g| FileGroup {
+            file_len: g.as_ref().file_len,
+            file_hash: g.as_ref().file_hash,
+            files: g
+                .as_ref()
+                .files
+                .iter()
+                .map(|f| f.as_ref().clone())
+                .collect(),
+        });
         let report = SerializableReport {
             header,
             groups: IteratorWrapper(Cell::new(Some(groups))),
@@ -282,7 +295,7 @@ impl<W: Write> ReportWriter<W> {
     }
 
     /// Writes the report in the format given by `format` parameter.
-    pub fn write<I, G>(
+    pub fn write<I, G, P>(
         &mut self,
         format: OutputFormat,
         header: &ReportHeader,
@@ -290,7 +303,8 @@ impl<W: Write> ReportWriter<W> {
     ) -> io::Result<()>
     where
         I: IntoIterator<Item = G>,
-        G: Borrow<FileGroup<Path>> + Serialize,
+        G: AsRef<FileGroup<P>>,
+        P: AsRef<Path>,
     {
         match format {
             OutputFormat::Default => self.write_as_text(header, groups),

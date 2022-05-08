@@ -187,7 +187,7 @@ type InodeId = u128;
 
 /// Useful for identifying files in presence of hardlinks
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub(crate) struct FileId {
+pub struct FileId {
     pub inode: InodeId,
     pub device: u64,
 }
@@ -316,14 +316,14 @@ impl AsRef<FileId> for FileMetadata {
     }
 }
 
-#[derive(Clone, Debug)]
-pub(crate) struct FileInfo {
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct FileInfo {
     pub path: Path,
     pub id: FileId,
-    pub len: FileLen,
+    pub(crate) len: FileLen,
     // physical on-disk location of file data for access ordering optimisation
     // the highest 16 bits encode the device id
-    pub location: u64,
+    pub(crate) location: u64,
 }
 
 const OFFSET_MASK: u64 = 0x0000FFFFFFFFFFFF;

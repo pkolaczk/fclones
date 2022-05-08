@@ -228,7 +228,14 @@ impl<F> FileGroup<F> {
     }
 }
 
+#[cfg(test)]
 impl<F: AsRef<Path>> FileGroup<F> {
+    fn paths(&self) -> Vec<Path> {
+        self.files.iter().map(|f| f.as_ref().clone()).collect_vec()
+    }
+}
+
+impl<F: AsRef<Path> + AsRef<FileId>> FileGroup<F> {
     /// Returns true if the file group should be forwarded to the next grouping stage,
     /// because the number of duplicate files is higher than the maximum allowed number of replicas.
     ///
@@ -324,13 +331,23 @@ impl<F: AsRef<Path>> FileGroup<F> {
     /// Sorts the files by their path names.
     /// If filter requires grouping by roots, then groups are kept together.
     pub fn sort(&mut self, root_paths: &[Path]) {
-        self.files.sort_by(|f1, f2| f1.as_ref().cmp(f2.as_ref()));
+        self.files.sort_by(|f1, f2| {
+            let p1: &Path = f1.as_ref();
+            let p2: &Path = f2.as_ref();
+            p1.cmp(p2)
+        });
         if !root_paths.is_empty() {
             self.files = FileSubGroup::group(self.files.drain(..), root_paths)
                 .into_iter()
                 .flat_map(|g| g.files)
                 .collect()
         }
+    }
+}
+
+impl<T> AsRef<FileGroup<T>> for FileGroup<T> {
+    fn as_ref(&self) -> &FileGroup<T> {
+        self
     }
 }
 
@@ -352,7 +369,7 @@ impl<F> FileSubGroup<F> {
     }
 }
 
-impl<F: AsRef<Path>> FileSubGroup<F> {
+impl<F: AsRef<Path> + AsRef<FileId>> FileSubGroup<F> {
     /// Splits a group of files into subgroups.
     ///
     /// Files that share the same prefix found in the roots array are placed in the same subgroup.
@@ -1032,7 +1049,7 @@ fn group_by_contents(
 /// // print standard fclones report to stdout:
 /// write_report(&config, &log, &groups).unwrap();
 /// ```
-pub fn group_files(config: &GroupConfig, log: &Log) -> Result<Vec<FileGroup<Path>>, Error> {
+pub fn group_files(config: &GroupConfig, log: &Log) -> Result<Vec<FileGroup<FileInfo>>, Error> {
     let spinner = log.spinner("Initializing");
     let ctx = GroupCtx::new(config, log)?;
 
@@ -1042,7 +1059,7 @@ pub fn group_files(config: &GroupConfig, log: &Log) -> Result<Vec<FileGroup<Path
     let mut size_groups_pruned = remove_same_files(&ctx, size_groups);
     update_file_locations(&ctx, &mut size_groups_pruned);
 
-    let groups = match &ctx.transform {
+    let mut groups = match &ctx.transform {
         Some(transform) => group_transformed(&ctx, transform, size_groups_pruned),
         _ => {
             let prefix_len = prefix_len(&ctx.devices, flat_iter(&size_groups_pruned));
@@ -1051,14 +1068,6 @@ pub fn group_files(config: &GroupConfig, log: &Log) -> Result<Vec<FileGroup<Path
             group_by_contents(&ctx, prefix_len, suffix_groups)
         }
     };
-    let mut groups: Vec<_> = groups
-        .into_par_iter()
-        .map(|g| FileGroup {
-            file_len: g.file_len,
-            file_hash: g.file_hash,
-            files: g.files.into_iter().map(|fi| fi.path).collect(),
-        })
-        .collect();
     groups.retain(|g| g.files.len() < ctx.config.rf_under());
     groups.par_sort_by_key(|g| Reverse((g.file_len, g.file_hash)));
     groups
@@ -1077,7 +1086,11 @@ pub fn group_files(config: &GroupConfig, log: &Log) -> Result<Vec<FileGroup<Path
 ///
 /// # Errors
 /// Returns [`io::Error`] on I/O write error or if the output file cannot be created.
-pub fn write_report(config: &GroupConfig, log: &Log, groups: &[FileGroup<Path>]) -> io::Result<()> {
+pub fn write_report(
+    config: &GroupConfig,
+    log: &Log,
+    groups: &[FileGroup<FileInfo>],
+) -> io::Result<()> {
     let now = Local::now();
 
     let total_count = file_count(groups.iter());
@@ -1428,8 +1441,8 @@ mod test {
 
             let results = group_files(&config, &log).unwrap();
             assert_eq!(results.len(), 2);
-            assert_eq!(results[0].files, vec![Path::from(file1.canonicalize())]);
-            assert_eq!(results[1].files, vec![Path::from(file2.canonicalize())]);
+            assert_eq!(results[0].paths(), vec![Path::from(file1.canonicalize())]);
+            assert_eq!(results[1].paths(), vec![Path::from(file2.canonicalize())]);
         });
     }
 
@@ -1640,36 +1653,40 @@ mod test {
 
     #[test]
     fn split_to_subgroups() {
+        fn file(path: &str, id: InodeId) -> FileInfo {
+            FileInfo {
+                path: Path::from(path),
+                id: FileId {
+                    inode: id,
+                    device: 0,
+                },
+                len: FileLen(1024),
+                location: id * 1024,
+            }
+        }
+
         let roots = vec![Path::from("/r0"), Path::from("/r1"), Path::from("/r2")];
         let files = vec![
-            Path::from("/r1/f1a"),
-            Path::from("/r2/f2a"),
-            Path::from("/r2/f2b"),
-            Path::from("/r1/f1b"),
-            Path::from("/r1/f1c"),
-            Path::from("/r3/f3a"),
-            Path::from("/r2/f2c"),
+            file("/r1/f1a", 0),
+            file("/r2/f2a", 1),
+            file("/r2/f2b", 2),
+            file("/r1/f1b", 3),
+            file("/r1/f1c", 4),
+            file("/r3/f3a", 5),
+            file("/r2/f2c", 6),
         ];
         let groups = FileSubGroup::group(files, &roots);
         assert_eq!(
             groups,
             vec![
                 FileSubGroup {
-                    files: vec![
-                        Path::from("/r1/f1a"),
-                        Path::from("/r1/f1b"),
-                        Path::from("/r1/f1c"),
-                    ]
+                    files: vec![file("/r1/f1a", 0), file("/r1/f1b", 3), file("/r1/f1c", 4),]
                 },
                 FileSubGroup {
-                    files: vec![
-                        Path::from("/r2/f2a"),
-                        Path::from("/r2/f2b"),
-                        Path::from("/r2/f2c")
-                    ]
+                    files: vec![file("/r2/f2a", 1), file("/r2/f2b", 2), file("/r2/f2c", 6)]
                 },
                 FileSubGroup {
-                    files: vec![Path::from("/r3/f3a")]
+                    files: vec![file("/r3/f3a", 5)]
                 }
             ]
         )
