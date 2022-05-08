@@ -681,7 +681,7 @@ impl PartitionedFileGroup {
         let retained_file = Arc::new(self.to_keep.swap_remove(0));
         for dropped_file in self.to_drop {
             let devices_differ =
-                retained_file.metadata.device_id().ok() != dropped_file.metadata.device_id().ok();
+                retained_file.metadata.device_id() != dropped_file.metadata.device_id();
             match strategy {
                 DedupeOp::SoftLink => commands.push(FsCommand::SoftLink {
                     target: retained_file.clone(),

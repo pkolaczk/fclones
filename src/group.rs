@@ -1171,11 +1171,19 @@ mod test {
             file_hash: FileHash(0),
             files: vec![
                 FileInfo {
+                    id: FileId {
+                        device: 1,
+                        inode: 1,
+                    },
                     len: FileLen(200),
                     location: 0,
                     path: Path::from("file1"),
                 },
                 FileInfo {
+                    id: FileId {
+                        device: 1,
+                        inode: 2,
+                    },
                     len: FileLen(200),
                     location: 35847587,
                     path: Path::from("file2"),
@@ -1207,6 +1215,10 @@ mod test {
                 file_len: FileLen(200),
                 file_hash: FileHash(0),
                 files: vec![FileInfo {
+                    id: FileId {
+                        device: 1,
+                        inode: 1,
+                    },
                     len: FileLen(200),
                     location: 0,
                     path: Path::from("file1"),
@@ -1216,6 +1228,10 @@ mod test {
                 file_len: FileLen(500),
                 file_hash: FileHash(0),
                 files: vec![FileInfo {
+                    id: FileId {
+                        device: 1,
+                        inode: 2,
+                    },
                     len: FileLen(200),
                     location: 35847587,
                     path: Path::from("file2"),
@@ -1243,6 +1259,10 @@ mod test {
             file_len: FileLen(200),
             file_hash: FileHash(0),
             files: vec![FileInfo {
+                id: FileId {
+                    device: 1,
+                    inode: 1,
+                },
                 len: FileLen(200),
                 location: 0,
                 path: Path::from("file1"),
@@ -1274,11 +1294,19 @@ mod test {
             file_hash: FileHash(0),
             files: vec![
                 FileInfo {
+                    id: FileId {
+                        device: 1,
+                        inode: 1,
+                    },
                     len: FileLen(200),
                     location: 0,
                     path: Path::from("file1"),
                 },
                 FileInfo {
+                    id: FileId {
+                        device: 1,
+                        inode: 2,
+                    },
                     len: FileLen(200),
                     location: 35847587,
                     path: Path::from("file2"),
@@ -1309,6 +1337,10 @@ mod test {
                 file_len: FileLen(0),
                 file_hash: FileHash(0),
                 files: vec![FileInfo {
+                    id: FileId {
+                        device: 1,
+                        inode: i as InodeId,
+                    },
                     len: FileLen(0),
                     location: i as u64,
                     path: Path::from(format!("file{}", i)),
