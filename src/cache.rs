@@ -137,12 +137,8 @@ impl HashCache {
         algorithm: HashAlgorithm,
     ) -> Result<Key, Error> {
         let key = Key {
-            file_id: metadata
-                .inode_id()
-                .map_err(|e| format!("Unable to get file id: {}", e))?,
-            device_id: metadata
-                .device_id()
-                .map_err(|e| format!("Unable to get device id: {}", e))?,
+            file_id: metadata.inode_id() as u128,
+            device_id: metadata.device_id(),
             chunk_pos: chunk.pos,
             chunk_len: chunk.len,
             algorithm,

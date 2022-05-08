@@ -200,10 +200,15 @@ impl FileChunk<'_> {
     }
 }
 
+#[cfg(unix)]
+pub type InodeId = u64;
+#[cfg(windows)]
+type InodeId = u128;
+
 /// Useful for identifying files in presence of hardlinks
-#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(crate) struct FileId {
-    pub inode: u128,
+    pub inode: InodeId,
     pub device: u64,
 }
 
@@ -211,9 +216,9 @@ impl FileId {
     #[cfg(unix)]
     pub fn new(file: &Path) -> io::Result<FileId> {
         use std::os::unix::fs::MetadataExt;
-        match std::fs::metadata(&file.to_path_buf()) {
+        match fs::metadata(&file.to_path_buf()) {
             Ok(metadata) => Ok(FileId {
-                inode: metadata.ino() as u128,
+                inode: metadata.ino(),
                 device: metadata.dev(),
             }),
             Err(e) => Err(io::Error::new(
@@ -264,6 +269,15 @@ impl FileId {
             }
         }
     }
+
+    #[cfg(unix)]
+    pub fn from_metadata(metadata: &fs::Metadata) -> FileId {
+        use std::os::unix::fs::MetadataExt;
+        FileId {
+            inode: metadata.ino(),
+            device: metadata.dev(),
+        }
+    }
 }
 
 pub(crate) fn file_id_or_log_err(file: &Path, log: &Log) -> Option<FileId> {
@@ -280,49 +294,31 @@ pub(crate) fn file_id_or_log_err(file: &Path, log: &Log) -> Option<FileId> {
 /// Convenience wrapper for accessing OS-dependent metadata like inode and device-id
 #[derive(Debug)]
 pub struct FileMetadata {
+    id: FileId,
     metadata: fs::Metadata,
-    #[cfg(windows)]
-    file: fs::File,
 }
 
 impl FileMetadata {
     pub fn new(path: &Path) -> io::Result<FileMetadata> {
         let path_buf = path.to_path_buf();
         let metadata = fs::metadata(&path_buf)?;
-
+        #[cfg(unix)]
+        let id = FileId::from_metadata(&metadata);
         #[cfg(windows)]
-        {
-            let file = fs::File::open(&path_buf)?;
-            Ok(FileMetadata { metadata, file })
-        }
-        #[cfg(not(windows))]
-        Ok(FileMetadata { metadata })
+        let id = FileId::new(&path)?;
+        Ok(FileMetadata { id, metadata })
     }
 
     pub fn len(&self) -> FileLen {
         FileLen(self.metadata.len())
     }
 
-    #[cfg(unix)]
-    pub fn device_id(&self) -> io::Result<u64> {
-        use std::os::unix::fs::MetadataExt;
-        Ok(self.metadata.dev())
+    pub fn device_id(&self) -> u64 {
+        self.id.device
     }
 
-    #[cfg(windows)]
-    pub fn device_id(&self) -> io::Result<u64> {
-        FileId::from_file(&self.file).map(|f| f.device)
-    }
-
-    #[cfg(unix)]
-    pub fn inode_id(&self) -> io::Result<u128> {
-        use std::os::unix::fs::MetadataExt;
-        Ok(self.metadata.ino() as u128)
-    }
-
-    #[cfg(windows)]
-    pub fn inode_id(&self) -> io::Result<u128> {
-        FileId::from_file(&self.file).map(|f| f.inode)
+    pub fn inode_id(&self) -> InodeId {
+        self.id.inode
     }
 }
 
@@ -337,6 +333,7 @@ impl Deref for FileMetadata {
 #[derive(Clone, Debug)]
 pub(crate) struct FileInfo {
     pub path: Path,
+    pub id: FileId,
     pub len: FileLen,
     // physical on-disk location of file data for access ordering optimisation
     // the highest 16 bits encode the device id
@@ -365,9 +362,11 @@ impl FileInfo {
         let device_index = devices.get_by_path(&path).index as u64;
         let metadata = FileMetadata::new(&path)?;
         let file_len = metadata.len();
-        let inode_id = metadata.inode_id()? as u64;
+        let id = metadata.id;
+        let inode_id = metadata.inode_id();
         Ok(FileInfo {
             path,
+            id,
             len: file_len,
             location: device_index << 48 | inode_id & OFFSET_MASK,
         })
