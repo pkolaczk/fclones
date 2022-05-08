@@ -228,7 +228,7 @@ impl<F> FileGroup<F> {
     }
 }
 
-impl<F: AsPath> FileGroup<F> {
+impl<F: AsRef<Path>> FileGroup<F> {
     /// Returns true if the file group should be forwarded to the next grouping stage,
     /// because the number of duplicate files is higher than the maximum allowed number of replicas.
     ///
@@ -324,7 +324,7 @@ impl<F: AsPath> FileGroup<F> {
     /// Sorts the files by their path names.
     /// If filter requires grouping by roots, then groups are kept together.
     pub fn sort(&mut self, root_paths: &[Path]) {
-        self.files.sort_by(|f1, f2| f1.path().cmp(f2.path()));
+        self.files.sort_by(|f1, f2| f1.as_ref().cmp(f2.as_ref()));
         if !root_paths.is_empty() {
             self.files = FileSubGroup::group(self.files.drain(..), root_paths)
                 .into_iter()
@@ -352,7 +352,7 @@ impl<F> FileSubGroup<F> {
     }
 }
 
-impl<F: AsPath> FileSubGroup<F> {
+impl<F: AsRef<Path>> FileSubGroup<F> {
     /// Splits a group of files into subgroups.
     ///
     /// Files that share the same prefix found in the roots array are placed in the same subgroup.
@@ -361,7 +361,7 @@ impl<F: AsPath> FileSubGroup<F> {
     pub fn group(files: impl IntoIterator<Item = F>, roots: &[Path]) -> Vec<FileSubGroup<F>> {
         let mut sub_groups = Vec::from_iter(roots.iter().map(|_| FileSubGroup::empty()));
         for f in files {
-            let path = f.path();
+            let path = f.as_ref();
             let root_idx = roots.iter().position(|r| r.is_prefix_of(path));
             match root_idx {
                 Some(idx) => sub_groups[idx].files.push(f),
