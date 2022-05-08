@@ -167,26 +167,6 @@ impl Display for FileLen {
     }
 }
 
-pub trait AsPath {
-    fn path(&self) -> &Path;
-}
-
-impl AsPath for Path {
-    fn path(&self) -> &Path {
-        self
-    }
-}
-
-impl<T: AsPath> AsPath for &T {
-    fn path(&self) -> &Path {
-        (**self).path()
-    }
-}
-
-pub trait IntoPath {
-    fn into_path(self) -> Path;
-}
-
 /// A file chunk to be hashed
 pub struct FileChunk<'a> {
     pub path: &'a Path,
@@ -330,6 +310,12 @@ impl Deref for FileMetadata {
     }
 }
 
+impl AsRef<FileId> for FileMetadata {
+    fn as_ref(&self) -> &FileId {
+        &self.id
+    }
+}
+
 #[derive(Clone, Debug)]
 pub(crate) struct FileInfo {
     pub path: Path,
@@ -338,18 +324,6 @@ pub(crate) struct FileInfo {
     // physical on-disk location of file data for access ordering optimisation
     // the highest 16 bits encode the device id
     pub location: u64,
-}
-
-impl AsPath for FileInfo {
-    fn path(&self) -> &Path {
-        &self.path
-    }
-}
-
-impl IntoPath for FileInfo {
-    fn into_path(self) -> Path {
-        self.path
-    }
 }
 
 const OFFSET_MASK: u64 = 0x0000FFFFFFFFFFFF;
@@ -379,11 +353,23 @@ impl FileInfo {
 
     #[cfg(target_os = "linux")]
     pub fn fetch_physical_location(&mut self) -> io::Result<u64> {
-        let new_location = get_physical_file_location(self.path())?;
+        let new_location = get_physical_file_location(self.as_ref())?;
         if let Some(new_location) = new_location {
             self.location = self.location & DEVICE_MASK | (new_location >> 8) & OFFSET_MASK;
         }
         Ok(self.location)
+    }
+}
+
+impl AsRef<FileId> for FileInfo {
+    fn as_ref(&self) -> &FileId {
+        &self.id
+    }
+}
+
+impl AsRef<Path> for FileInfo {
+    fn as_ref(&self) -> &Path {
+        &self.path
     }
 }
 
