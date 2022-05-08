@@ -18,7 +18,7 @@ use rayon::iter::ParallelIterator;
 
 use crate::config::{DedupeConfig, Priority};
 use crate::device::DiskDevices;
-use crate::file::{FileLen, FileMetadata};
+use crate::file::{FileId, FileLen, FileMetadata};
 use crate::group::{FileGroup, FileSubGroup};
 use crate::lock::FileLock;
 use crate::log::Log;
@@ -63,6 +63,12 @@ impl PathAndMetadata {
 impl AsRef<Path> for PathAndMetadata {
     fn as_ref(&self) -> &Path {
         &self.path
+    }
+}
+
+impl AsRef<FileId> for PathAndMetadata {
+    fn as_ref(&self) -> &FileId {
+        self.metadata.as_ref()
     }
 }
 
