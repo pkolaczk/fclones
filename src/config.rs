@@ -152,7 +152,7 @@ pub struct GroupConfig {
     #[structopt(short = ".", long)]
     pub hidden: bool,
 
-    /// Does not respect .gitignore and .fdignore files.
+    /// Does not ignore files matching patterns listed in .gitignore and .fdignore.
     #[structopt(short = "A", long)]
     pub no_ignore: bool,
 
@@ -163,15 +163,18 @@ pub struct GroupConfig {
     #[structopt(short = "L", long)]
     pub follow_links: bool,
 
-    /// Treats files reachable from multiple paths through hard links as duplicates.
-    #[structopt(short = "H", long)]
-    pub hard_links: bool,
-
-    /// Treats symbolic links to files as regular files.
-    /// Reports symbolic links, not their targets.
+    /// Treats files reachable from multiple paths through links as duplicates.
     ///
-    /// When this flag is set, multiple symbolic links to the same file, as well as a file and
-    /// a link to it, will be considered duplicates.
+    /// If `--symbolic-links` is not set, only hard links are matched.
+    /// If `--symbolic-links` is set, both hard and symbolic links are matched.
+    #[structopt(short = "H", long)]
+    pub match_links: bool,
+
+    /// Doesn't ignore symbolic links to files.
+    ///
+    /// Reports symbolic links, not their targets.
+    /// Symbolic links are not treated as duplicates of their targets,
+    /// unless `--match-links` is set.
     #[structopt(short = "S", long)]
     pub symbolic_links: bool,
 
@@ -380,6 +383,7 @@ impl GroupConfig {
             } else {
                 vec![]
             },
+            group_by_id: !self.match_links,
         }
     }
 
@@ -590,6 +594,10 @@ pub struct DedupeConfig {
     /// `fclones group` command, if `--isolate` option was present.
     #[structopt(long = "isolate", value_name = "path", parse(from_os_str))]
     pub isolated_roots: Vec<Path>,
+
+    /// Treats files reachable from multiple paths through links as duplicates.
+    #[structopt(short = "H", long)]
+    pub match_links: bool,
 
     /// Doesn't lock files before performing an action on them.
     #[structopt(long)]

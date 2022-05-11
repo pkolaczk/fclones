@@ -218,7 +218,7 @@ Follow symbolic links, but don't escape out of the home folder:
     
 Exclude a part of the directory tree from the scan:
 
-    fclones group / --exclude '/dev/**' '/proc/**'    
+    fclones group / --exclude '/dev/**' '/proc/**'
 
 ### Removing Files
 To remove duplicate files, move them to a different place or replace them by links, 
@@ -231,7 +231,7 @@ Assuming the list of duplicates has been saved in file `dupes.txt`, the followin
 the redundant files: 
 
     fclones link <dupes.txt             # replace with hard links
-    fclones link -s <dupes.txt          # replace with soft links
+    fclones link -s <dupes.txt          # replace with symbolic links
     fclones move target_dir <dupes.txt  # move to target_dir  
     fclones remove <dupes.txt           # remove totally
     
@@ -280,7 +280,45 @@ This option prints all the commands that would be executed, but it doesn't actua
     ln -s /tmp/test/foo1.txt /tmp/test/foo3.txt
     rm /tmp/test/foo3.txt.ttLAWO6YckczL1LXEsHfcEau
 
-    
+### Handling links
+Files linked by symbolic links or hard links are not treated as duplicates.
+You can change this behavior by setting the following flags:
+ * When `--isolate` is set:
+   * links residing in different directory trees are treated as duplicates, 
+   * links residing in the same directory tree are counted as a single replica.
+ * When `--match-links` is set, fclones treats all linked files as duplicates.
+
+Consider the following directory structure, where all files are hard links sharing the same content:
+
+    dir1:
+      - file1
+      - file2
+    dir2:
+      - file3
+      - file4
+      
+Because all files are essentially the same data, they will end up in the same file group, but
+the actual number of replicas present in that file group will differ depending on the flags given:
+
+| Command                                 | Number of replicas | Group reported   | Files to remove     |
+|-----------------------------------------|--------------------|------------------|---------------------|
+| `fclones group dir1 dir2`               | 1                  | No               |                     |
+| `fclones group dir1 dir2 --isolate`     | 2                  | Yes              | file3, file4        | 
+| `fclones group dir1 dir2 --match-links` | 4                  | Yes              | file2, file3, file4 |
+
+#### Symbolic links
+The `group` command ignores symbolic links to files unless at least `--follow-links` 
+or `--symbolic-links` flag is set. If only `--follow-links` is set, symbolic links to files
+are followed and resolved to their targets. 
+If `--symbolic-links` is set, symbolic links to files are not followed, 
+but treated as hard links and potentially reported in the output report.
+When both `--symbolic-links` and `--follow-links` are set, symbolic links to directories are followed,
+but symbolic links to files are treated as hard links.
+
+**Caution**: Using `--match-links` together with `--symbolic-links` is very dangerous. 
+It is easy to end up deleting the only regular file you have, and to be left
+with a bunch of orphan symbolic links. 
+
 ### Preprocessing Files
 Use `--transform` option to safely transform files by an external command.
 By default, the transformation happens on a copy of file data, to avoid accidental data loss.

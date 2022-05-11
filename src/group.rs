@@ -18,6 +18,7 @@ use std::sync::Arc;
 use chrono::{DateTime, Local};
 use console::Term;
 use crossbeam_utils::thread;
+use indexmap::IndexMap;
 use itertools::Itertools;
 use rayon::prelude::*;
 use serde::*;
@@ -189,6 +190,7 @@ pub struct FileGroup<F> {
 
 /// Controls the type of search by determining the number of replicas
 /// allowed in a group of identical files.
+#[derive(Debug)]
 pub enum Replication {
     /// Looks for under-replicated files with replication factor lower than the specified number.
     /// `Underreplicated(2)` means searching for unique files.
@@ -206,6 +208,7 @@ pub enum Replication {
 /// discarded.
 ///
 /// This is to be configured from the command line parameters set by the user.
+#[derive(Debug)]
 pub struct FileGroupFilter {
     /// The allowed number of replicas in the group.
     pub replication: Replication,
@@ -214,6 +217,8 @@ pub struct FileGroupFilter {
     /// If empty - no additional grouping is performed.
     /// See [`GroupConfig::isolate`].
     pub root_paths: Vec<Path>,
+    /// If set to true, files with the same `FileId` are counted as one
+    pub group_by_id: bool,
 }
 
 impl<F> FileGroup<F> {
@@ -297,7 +302,8 @@ impl<F: AsRef<Path> + AsRef<FileId>> FileGroup<F> {
                     // fast-path, equivalent to the code in the else branch, but way faster
                     self.file_count().saturating_sub(rf)
                 } else {
-                    let sub_groups = FileSubGroup::group(&self.files, &filter.root_paths);
+                    let sub_groups =
+                        FileSubGroup::group(&self.files, &filter.root_paths, filter.group_by_id);
                     let sub_group_lengths = sub_groups
                         .into_iter()
                         .map(|sg| sg.files.len())
@@ -319,13 +325,7 @@ impl<F: AsRef<Path> + AsRef<FileId>> FileGroup<F> {
 
     /// The number of subgroups of paths with distinct root prefix.
     fn subgroup_count(&self, filter: &FileGroupFilter) -> usize {
-        if filter.root_paths.is_empty() {
-            // optimisation: the else branch would compute the same number because each file would
-            // be placed in its own subgroup, but the else branch is more complex and likely slower
-            self.files.len()
-        } else {
-            FileSubGroup::group(&self.files, &filter.root_paths).len()
-        }
+        FileSubGroup::group(&self.files, &filter.root_paths, filter.group_by_id).len()
     }
 
     /// Sorts the files by their path names.
@@ -337,7 +337,7 @@ impl<F: AsRef<Path> + AsRef<FileId>> FileGroup<F> {
             p1.cmp(p2)
         });
         if !root_paths.is_empty() {
-            self.files = FileSubGroup::group(self.files.drain(..), root_paths)
+            self.files = FileSubGroup::group(self.files.drain(..), root_paths, true)
                 .into_iter()
                 .flat_map(|g| g.files)
                 .collect()
@@ -367,6 +367,9 @@ impl<F> FileSubGroup<F> {
     pub fn single(f: F) -> FileSubGroup<F> {
         FileSubGroup { files: vec![f] }
     }
+    pub fn push(&mut self, file: F) {
+        self.files.push(file)
+    }
 }
 
 impl<F: AsRef<Path> + AsRef<FileId>> FileSubGroup<F> {
@@ -374,19 +377,38 @@ impl<F: AsRef<Path> + AsRef<FileId>> FileSubGroup<F> {
     ///
     /// Files that share the same prefix found in the roots array are placed in the same subgroup.
     /// The result vector is ordered primarily by the roots, and files having the same root have
-    /// the same order as they came from the input iterator.
-    pub fn group(files: impl IntoIterator<Item = F>, roots: &[Path]) -> Vec<FileSubGroup<F>> {
-        let mut sub_groups = Vec::from_iter(roots.iter().map(|_| FileSubGroup::empty()));
+    /// the same order as they came from the input iterator. Files with paths that don't start
+    /// with any of the root prefixes are placed last in the result, in the same order as the input.
+    ///
+    /// If `group_by_id` is set, files with the same `FileId` are also grouped together.
+    /// In this case, the order of groups follows the order of input files, i.e. the input vector
+    /// is scanned and a new group is appended at the end each time a file with a
+    /// distinct id appears in the input.
+    ///
+    /// If both `roots` is not empty and `group_by_id` is set,
+    /// grouping by prefixes takes precedence over grouping by identifiers,
+    /// so a file with the same id can be placed in two different prefix groups.
+    ///
+    pub fn group(
+        files: impl IntoIterator<Item = F>,
+        roots: &[Path],
+        group_by_id: bool,
+    ) -> Vec<FileSubGroup<F>> {
+        let mut prefix_groups = Vec::from_iter(roots.iter().map(|_| FileSubGroup::empty()));
+        let mut id_groups = IndexMap::new(); // important: keep order of insertion
         for f in files {
-            let path = f.as_ref();
+            let path: &Path = f.as_ref();
+            let id: FileId = *f.as_ref();
             let root_idx = roots.iter().position(|r| r.is_prefix_of(path));
             match root_idx {
-                Some(idx) => sub_groups[idx].files.push(f),
-                None => sub_groups.push(FileSubGroup::single(f)),
+                Some(idx) => prefix_groups[idx].files.push(f),
+                None if group_by_id => id_groups.entry(id).or_insert(FileSubGroup::empty()).push(f),
+                None => prefix_groups.push(FileSubGroup::single(f)),
             }
         }
-        sub_groups.retain(|sg| !sg.files.is_empty());
-        sub_groups
+        prefix_groups.extend(id_groups.into_values());
+        prefix_groups.retain(|sg| !sg.files.is_empty());
+        prefix_groups
     }
 }
 
@@ -654,9 +676,8 @@ fn group_by_size(ctx: &GroupCtx<'_>, files: Vec<Vec<FileInfo>>) -> Vec<FileGroup
     groups
 }
 
-/// Removes duplicate files matching by full-path or by inode-id.
-/// Deduplication by inode-id is not performed if the flag to preserve hard-links (-H) is set.
-fn deduplicate<F>(ctx: &GroupCtx<'_>, files: &mut Vec<FileInfo>, progress: F)
+/// Removes files with duplicate path names.
+fn deduplicate<F>(files: &mut Vec<FileInfo>, progress: F)
 where
     F: Fn(&Path) + Sync + Send,
 {
@@ -668,25 +689,12 @@ where
     for (_, file_group) in groups.into_iter() {
         if file_group.len() == 1 {
             files.extend(file_group.into_iter().inspect(|p| progress(&p.path)));
-        } else if ctx.config.hard_links || ctx.config.symbolic_links {
+        } else {
             files.extend(
                 file_group
                     .into_iter()
                     .inspect(|p| progress(&p.path))
                     .unique_by(|p| p.path.hash128()),
-            )
-        } else {
-            // The BTreeMap inside GroupMap results in a random ordering, so repeated runs
-            // will list a different representative filename first for a given inode.
-            // By ordering these the output becomes deterministic.
-            let mut file_group = file_group;
-            file_group.sort_by(|f1, f2| f1.path.cmp(&f2.path));
-
-            files.extend(
-                file_group
-                    .into_iter()
-                    .inspect(|p| progress(&p.path))
-                    .unique_by(|p| file_id_or_log_err(&p.path, ctx.log)),
             )
         }
     }
@@ -702,7 +710,7 @@ fn remove_same_files(
 
     let groups: Vec<_> = groups
         .into_par_iter()
-        .update(|g| deduplicate(ctx, &mut g.files, |_| progress.tick()))
+        .update(|g| deduplicate(&mut g.files, |_| progress.tick()))
         .filter(|g| g.matches(&ctx.group_filter))
         .collect();
 
@@ -711,7 +719,7 @@ fn remove_same_files(
         "Found {} ({}) candidates after grouping by paths {}",
         stats.0,
         stats.1,
-        if ctx.config.hard_links {
+        if ctx.config.match_links {
             ""
         } else {
             "and file identifiers"
@@ -1068,7 +1076,6 @@ pub fn group_files(config: &GroupConfig, log: &Log) -> Result<Vec<FileGroup<File
             group_by_contents(&ctx, prefix_len, suffix_groups)
         }
     };
-    groups.retain(|g| g.files.len() < ctx.config.rf_under());
     groups.par_sort_by_key(|g| Reverse((g.file_len, g.file_hash)));
     groups
         .par_iter_mut()
@@ -1519,13 +1526,14 @@ mod test {
             hard_link(&file1, &file2).unwrap();
 
             let log = test_log();
+
             let mut config = GroupConfig::default();
             config.paths = vec![file1.into(), file2.into()];
-            config.unique = true;
+            config.unique = true; // hardlinks to a common file should be treated as one file
 
             let results = group_files(&config, &log).unwrap();
             assert_eq!(results.len(), 1);
-            assert_eq!(results[0].files.len(), 1);
+            assert_eq!(results[0].files.len(), 2);
         });
     }
 
@@ -1540,16 +1548,31 @@ mod test {
 
             let log = test_log();
             let mut config = GroupConfig::default();
+
+            // If both hard_links and symbolic_links is set to true, symbolic links should
+            // be treated as duplicates.
             config.paths = vec![file1.into(), file2.into()];
+            config.match_links = true;
             config.symbolic_links = true;
 
             let results = group_files(&config, &log).unwrap();
             assert_eq!(results.len(), 1);
             assert_eq!(results[0].files.len(), 2);
 
+            // Symbolic links should be totally ignored:
             config.symbolic_links = false;
             let results = group_files(&config, &log).unwrap();
             assert_eq!(results.len(), 0);
+
+            // If hard_links is set to false and symbolic_links to true,
+            // a symlink to a file should be reported, but not treated as a duplicate:
+            config.unique = true;
+            config.symbolic_links = true;
+            config.match_links = false;
+
+            let results = group_files(&config, &log).unwrap();
+            assert_eq!(results.len(), 1);
+            assert_eq!(results[0].files.len(), 2);
         });
     }
 
@@ -1563,7 +1586,7 @@ mod test {
             let file1 = Path::from(file1);
             config.paths = vec![file1.clone(), file1.clone(), file1.clone()];
             config.unique = true;
-            config.hard_links = true;
+            config.match_links = true;
 
             let results = group_files(&config, &log).unwrap();
             assert_eq!(results.len(), 1);
@@ -1588,7 +1611,7 @@ mod test {
             let mut config = GroupConfig::default();
             config.paths = vec![file1.into(), file2.into()];
             config.unique = true;
-            config.hard_links = true;
+            config.match_links = true;
 
             let results = group_files(&config, &log).unwrap();
             assert_eq!(results.len(), 1);
@@ -1675,7 +1698,7 @@ mod test {
             file("/r3/f3a", 5),
             file("/r2/f2c", 6),
         ];
-        let groups = FileSubGroup::group(files, &roots);
+        let groups = FileSubGroup::group(files, &roots, true);
         assert_eq!(
             groups,
             vec![

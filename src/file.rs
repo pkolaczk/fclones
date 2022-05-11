@@ -186,10 +186,10 @@ pub type InodeId = u64;
 type InodeId = u128;
 
 /// Useful for identifying files in presence of hardlinks
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct FileId {
-    pub inode: InodeId,
     pub device: u64,
+    pub inode: InodeId,
 }
 
 impl FileId {
@@ -256,17 +256,6 @@ impl FileId {
         FileId {
             inode: metadata.ino(),
             device: metadata.dev(),
-        }
-    }
-}
-
-pub(crate) fn file_id_or_log_err(file: &Path, log: &Log) -> Option<FileId> {
-    match FileId::new(file) {
-        Ok(id) => Some(id),
-        Err(e) if e.kind() == ErrorKind::NotFound => None,
-        Err(e) => {
-            log.warn(e);
-            None
         }
     }
 }
@@ -370,6 +359,12 @@ impl AsRef<FileId> for FileInfo {
 impl AsRef<Path> for FileInfo {
     fn as_ref(&self) -> &Path {
         &self.path
+    }
+}
+
+impl From<FileInfo> for Path {
+    fn from(info: FileInfo) -> Self {
+        info.path
     }
 }
 

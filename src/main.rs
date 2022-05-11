@@ -163,7 +163,8 @@ pub fn run_dedupe(op: DedupeOp, config: DedupeConfig, log: &mut Log) -> Result<(
         // we cannot check size if a transformation was applied, because the transformation
         // may change the size of the data and the recorded data size
         // would not match the physical size of the file
-        dedupe_config.no_check_size = c.transform.is_some();
+        dedupe_config.no_check_size |= c.transform.is_some();
+        dedupe_config.match_links |= c.match_links;
 
         if dedupe_config.rf_over.is_none() {
             dedupe_config.rf_over = Some(c.rf_over())
