@@ -34,10 +34,11 @@ impl From<&str> for Error {
 }
 
 /// Returns error kind.
-/// Maps `libc::EOPNOTSUPP` error to `ErrorKind::Unsupported` on Unix.
+/// Maps `libc::ENOTSUP` and `libc::EOPNOTSUPP` errors to `ErrorKind::Unsupported` on Unix.
 pub fn error_kind(error: &io::Error) -> io::ErrorKind {
     #[cfg(unix)]
-    if error.raw_os_error() == Some(libc::EOPNOTSUPP) {
+    #[allow(unreachable_patterns)]
+    if let Some(libc::ENOTSUP | libc::EOPNOTSUPP) = error.raw_os_error() {
         return io::ErrorKind::Unsupported;
     }
     error.kind()
