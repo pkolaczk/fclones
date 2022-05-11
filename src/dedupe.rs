@@ -726,13 +726,16 @@ impl PartitionedFileGroup {
 
 /// Attempts to retrieve the metadata of all the files in the file group.
 /// If metadata is inaccessible for a file, a warning is emitted to the log, and None gets returned.
-fn files_metadata(group: FileGroup<Path>, log: &Log) -> Option<Vec<PathAndMetadata>> {
+fn files_metadata<P>(group: FileGroup<P>, log: &Log) -> Option<Vec<PathAndMetadata>>
+where
+    P: Into<Path>,
+{
     let mut last_error: Option<io::Error> = None;
     let files: Vec<_> = group
         .files
         .into_iter()
         .filter_map(|p| {
-            PathAndMetadata::new(p)
+            PathAndMetadata::new(p.into())
                 .map_err(|e| {
                     log.warn(&e);
                     last_error = Some(e);
@@ -749,11 +752,14 @@ fn files_metadata(group: FileGroup<Path>, log: &Log) -> Option<Vec<PathAndMetada
 
 /// Partitions a group of files into files to keep and files that can be safely dropped
 /// (or linked).
-fn partition(
-    group: FileGroup<Path>,
+fn partition<P>(
+    group: FileGroup<P>,
     config: &DedupeConfig,
     log: &Log,
-) -> Result<PartitionedFileGroup, Error> {
+) -> Result<PartitionedFileGroup, Error>
+where
+    P: Into<Path>,
+{
     let file_len = group.file_len;
     let file_hash = group.file_hash;
     let error = |msg: &str| {
@@ -805,7 +811,8 @@ fn partition(
         }
     }
 
-    let mut file_sub_groups = FileSubGroup::group(files, &config.isolated_roots);
+    let mut file_sub_groups =
+        FileSubGroup::group(files, &config.isolated_roots, !config.match_links);
 
     // Sort files to remove in user selected order.
     // The priorities at the beginning of the argument list have precedence over
@@ -862,14 +869,15 @@ fn partition(
 /// - `op`: what to do with duplicates
 /// - `config`: controls which files from each group to remove / link
 /// - `log`: logging target
-pub fn dedupe<'a, I>(
+pub fn dedupe<'a, I, P>(
     groups: I,
     op: DedupeOp,
     config: &'a DedupeConfig,
     log: &'a Log,
 ) -> impl ParallelIterator<Item = FsCommand> + 'a
 where
-    I: IntoParallelIterator<Item = FileGroup<Path>> + 'a,
+    I: IntoParallelIterator<Item = FileGroup<P>> + 'a,
+    P: Into<Path>,
 {
     let devices = DiskDevices::new(&HashMap::new());
     groups
@@ -954,9 +962,11 @@ mod test {
     use std::path::PathBuf;
     use std::{thread, time};
 
+    use crate::config::GroupConfig;
     use chrono::Duration;
 
     use crate::file::FileHash;
+    use crate::group_files;
     use crate::pattern::Pattern;
     use crate::util::test::{create_file, create_file_newer_than, read_file, with_dir, write_file};
 
@@ -1289,12 +1299,61 @@ mod test {
     }
 
     #[test]
+    fn test_partition_respects_links() {
+        with_dir("dedupe/partition/links", |root| {
+            let root_a = root.join("root_a");
+            let root_b = root.join("root_b");
+            create_dir(&root_a).unwrap();
+            create_dir(&root_b).unwrap();
+
+            let file_a1 = root_a.join("file_a1");
+            let file_a2 = root_a.join("file_a2");
+            write_file(&file_a1, "aaa");
+            fs::hard_link(&file_a1, &file_a2).unwrap();
+
+            let file_b1 = root_b.join("file_b1");
+            let file_b2 = root_b.join("file_b2");
+            write_file(&file_b1, "aaa");
+            fs::hard_link(&file_b1, &file_b2).unwrap();
+
+            let group = FileGroup {
+                file_len: FileLen(3),
+                file_hash: FileHash(0),
+                files: vec![
+                    Path::from(&file_b1),
+                    Path::from(&file_a2),
+                    Path::from(&file_a1),
+                    Path::from(&file_b2),
+                ],
+            };
+
+            let config = DedupeConfig::default();
+            let p = partition(group.clone(), &config, &Log::new()).unwrap();
+
+            // drop A files because file_a2 appears after file_b1 in the files vector
+            assert_eq!(p.to_drop.len(), 2);
+            assert!(p
+                .to_drop
+                .iter()
+                .all(|f| f.path.to_path_buf().starts_with(&root_a)));
+            assert_eq!(p.to_keep.len(), 2);
+            assert!(p
+                .to_keep
+                .iter()
+                .all(|f| f.path.to_path_buf().starts_with(&root_b)));
+        })
+    }
+
+    #[test]
     fn test_run_dedupe_script() {
         with_dir("dedupe/partition/dedupe_script", |root| {
+            let mut log = Log::new();
+            log.no_progress = true;
+            log.log_stderr_to_stdout = true;
+
             let group = make_group(root);
             let mut config = DedupeConfig::default();
             config.priority = vec![Priority::LeastRecentlyModified];
-            let log = Log::new();
             let script = dedupe(vec![group], DedupeOp::Remove, &config, &log);
             let dedupe_result = run_script(script, !config.no_lock, &log);
             assert_eq!(dedupe_result.processed_count, 2);
@@ -1302,5 +1361,87 @@ mod test {
             assert!(!root.join("file_2").exists());
             assert!(root.join("file_3").exists());
         });
+    }
+
+    #[test]
+    fn test_hard_link_merges_subgroups_of_hard_links() {
+        with_dir("dedupe/merge_subgroups_of_hardlinks", |root| {
+            let mut log = Log::new();
+            log.no_progress = true;
+            log.log_stderr_to_stdout = true;
+
+            let file_a1 = root.join("file_a1");
+            let file_a2 = root.join("file_a2");
+            let file_b1 = root.join("file_b1");
+            let file_b2 = root.join("file_b2");
+
+            write_file(&file_a1, "foo");
+            write_file(&file_b1, "foo");
+
+            let file_id = FileId::new(&Path::from(&file_a1)).unwrap();
+
+            fs::hard_link(&file_a1, &file_a2).unwrap();
+            fs::hard_link(&file_b1, &file_b2).unwrap();
+
+            let mut group_config = GroupConfig::default();
+            group_config.paths = vec![Path::from(root)];
+
+            let groups = group_files(&group_config, &log).unwrap();
+            let dedupe_config = DedupeConfig::default();
+            let script = dedupe(groups, DedupeOp::HardLink, &dedupe_config, &log);
+            let dedupe_result = run_script(script, false, &log);
+            assert_eq!(dedupe_result.processed_count, 2);
+            assert!(file_a1.exists());
+            assert!(file_a2.exists());
+            assert!(file_b1.exists());
+            assert!(file_b2.exists());
+
+            assert_eq!(read_file(&file_a1), "foo");
+
+            assert_eq!(FileId::new(&Path::from(&file_a2)).unwrap(), file_id);
+            assert_eq!(FileId::new(&Path::from(&file_b1)).unwrap(), file_id);
+            assert_eq!(FileId::new(&Path::from(&file_b2)).unwrap(), file_id);
+        })
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn test_remove_removes_subgroups_of_soft_links() {
+        use std::os::unix::fs;
+
+        with_dir("dedupe/remove_subgroups_with_symlinks", |root| {
+            let mut log = Log::new();
+            log.no_progress = true;
+            log.log_stderr_to_stdout = true;
+
+            let file_a1 = root.join("file_a1");
+            let file_a2 = root.join("file_a2");
+            let file_b1 = root.join("file_b1");
+            let file_b2 = root.join("file_b2");
+
+            write_file(&file_a1, "foo");
+            write_file(&file_b1, "foo");
+
+            fs::symlink(&file_a1, &file_a2).unwrap();
+            fs::symlink(&file_b1, &file_b2).unwrap();
+
+            let mut group_config = GroupConfig::default();
+            group_config.paths = vec![Path::from(root)];
+            group_config.symbolic_links = true;
+
+            let groups = group_files(&group_config, &log).unwrap();
+            let dedupe_config = DedupeConfig::default();
+            let script = dedupe(groups, DedupeOp::Remove, &dedupe_config, &log);
+            let dedupe_result = run_script(script, false, &log);
+            assert_eq!(dedupe_result.processed_count, 2);
+
+            assert!(file_a1.exists());
+            assert!(file_a2.exists());
+            assert!(!file_b1.exists());
+            assert!(!file_b2.exists());
+
+            assert_eq!(read_file(&file_a1), "foo");
+            assert_eq!(read_file(&file_a2), "foo");
+        })
     }
 }
