@@ -591,9 +591,19 @@ pub struct DedupeConfig {
     #[structopt(long = "isolate", value_name = "path", parse(from_os_str))]
     pub isolated_roots: Vec<Path>,
 
-    /// Skips locking files before performing an action on them.
+    /// Doesn't lock files before performing an action on them.
     #[structopt(long)]
     pub no_lock: bool,
+
+    /// Allows the size of a file to be different than the size recorded during grouping.
+    ///
+    /// By default, files are checked for size to prevent accidentally removing a file
+    /// that was modified since grouping.
+    /// However, if `--transform` was used when grouping, the data sizes recorded in the `fclones group`
+    /// report likely don't match the on-disk sizes of the files. Therefore,
+    /// this flag is set automatically if `--transform` was used.
+    #[structopt(long)]
+    pub no_check_size: bool,
 }
 
 #[derive(Debug, StructOpt)]

@@ -776,18 +776,20 @@ fn partition(
 
     // If file has a different length, then we really know it has been modified.
     // Therefore, it does not belong to the group and we can safely skip it.
-    files.retain(|m| {
-        let len_ok = m.metadata.len() == file_len;
-        if !len_ok {
-            log.warn(format!(
-                "Skipping file {} with length {} different than the group length {}",
-                m.path.display(),
-                m.metadata.len(),
-                file_len.0,
-            ));
-        }
-        len_ok
-    });
+    if !config.no_check_size {
+        files.retain(|m| {
+            let len_ok = m.metadata.len() == file_len;
+            if !len_ok {
+                log.warn(format!(
+                    "Skipping file {} with length {} different than the group length {}",
+                    m.path.display(),
+                    m.metadata.len(),
+                    file_len.0,
+                ));
+            }
+            len_ok
+        });
+    }
 
     // Bail out as well if any file has been modified after `config.modified_before`.
     // We need to skip the whole group, because we don't know if these files are really different.
