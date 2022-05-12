@@ -159,24 +159,26 @@ pub fn run_dedupe(op: DedupeOp, config: DedupeConfig, log: &mut Log) -> Result<(
     let header = reader.read_header().map_err(input_error)?;
     let prev_command_config = get_command_config(&header)?;
 
-    if dedupe_config.rf_over.is_none() {
-        match &prev_command_config.command {
-            Command::Group(c) => dedupe_config.rf_over = Some(c.rf_over()),
-            _ => {
-                return Err(Error::from(
-                    "Could not extract --rf-over setting from the earlier fclones configuration.",
-                ))
-            }
-        }
-    };
+    if let Command::Group(c) = &prev_command_config.command {
+        // we cannot check size if a transformation was applied, because the transformation
+        // may change the size of the data and the recorded data size
+        // would not match the physical size of the file
+        dedupe_config.no_check_size = c.transform.is_some();
 
-    if dedupe_config.isolated_roots.is_empty() {
-        if let Command::Group(c) = &prev_command_config.command {
-            if c.isolate {
-                dedupe_config.isolated_roots = c.input_paths().collect();
-            }
+        if dedupe_config.rf_over.is_none() {
+            dedupe_config.rf_over = Some(c.rf_over())
+        }
+        if dedupe_config.isolated_roots.is_empty() && c.isolate {
+            dedupe_config.isolated_roots = c.input_paths().collect();
         }
     }
+
+    if dedupe_config.rf_over.is_none() {
+        return Err(Error::from(
+            "Could not extract --rf-over setting from the earlier fclones configuration. \
+            Please set --rf-over explicitly.",
+        ));
+    };
 
     if dedupe_config.modified_before.is_none() {
         dedupe_config.modified_before = Some(header.timestamp);
