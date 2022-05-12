@@ -195,7 +195,7 @@ pub struct GroupConfig {
     /// specified by $OUT and will read output from there.
     /// If the program modifies the original file in-place without writing to the standard output
     /// nor a distinct file, use --in-place flag.
-    #[structopt(long, value_name("command"))]
+    #[structopt(long, value_name("command"), conflicts_with("cache"))]
     pub transform: Option<String>,
 
     /// Set this flag if the command given to --transform transforms the file in-place,
