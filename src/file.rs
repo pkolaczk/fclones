@@ -331,7 +331,7 @@ impl FileInfo {
             path,
             id,
             len: file_len,
-            location: device_index << 48 | inode_id & OFFSET_MASK,
+            location: device_index << 48 | inode_id as u64 & OFFSET_MASK,
         })
     }
 

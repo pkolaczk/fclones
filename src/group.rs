@@ -30,7 +30,7 @@ use crate::arg::Arg;
 use crate::cache::HashCache;
 use crate::config::*;
 use crate::device::{DiskDevice, DiskDevices};
-use crate::error::{error_kind, Error};
+use crate::error::Error;
 use crate::file::*;
 use crate::hasher::{FileHasher, HashAlgorithm};
 use crate::log::Log;
@@ -777,7 +777,7 @@ fn handle_fetch_physical_location_err(
     const MAX_ERR_COUNT_TO_LOG: u32 = 10;
     let device = &ctx.devices[file_info.get_device_index()];
     let counter = &err_counters[device.index];
-    if error_kind(&error) == io::ErrorKind::Unsupported {
+    if crate::error::error_kind(&error) == io::ErrorKind::Unsupported {
         if counter.swap(MAX_ERR_COUNT_TO_LOG, Ordering::Release) < MAX_ERR_COUNT_TO_LOG {
             ctx.log.warn(format!(
                 "File system {} on device {} doesn't support FIEMAP ioctl API. \
