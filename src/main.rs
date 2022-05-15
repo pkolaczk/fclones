@@ -9,7 +9,6 @@ use std::{fs, io};
 use console::style;
 use fallible_iterator::FallibleIterator;
 use itertools::Itertools;
-use rayon::iter::ParallelBridge;
 use regex::Regex;
 use structopt::StructOpt;
 
@@ -213,8 +212,7 @@ pub fn run_dedupe(op: DedupeOp, config: DedupeConfig, log: &mut Log) -> Result<(
         })
         .take_while(|g| g.is_some())
         .map(|g| g.unwrap())
-        .inspect(|_| progress.tick())
-        .par_bridge();
+        .inspect(|_| progress.tick());
 
     let upto = if op == DedupeOp::RefLink {
         // Can't be sure because any previous deduplications are not
