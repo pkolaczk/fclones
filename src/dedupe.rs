@@ -3,9 +3,9 @@
 use std::cmp::{max, min, Reverse};
 use std::collections::HashMap;
 use std::fmt::{Display, Formatter};
-use std::io::{BufWriter, ErrorKind, Write};
+use std::io::{ErrorKind, Write};
 use std::ops::{Add, AddAssign};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::SystemTime;
 use std::{fmt, fs, io};
 
@@ -13,7 +13,7 @@ use chrono::{DateTime, FixedOffset, Local};
 use crossbeam_utils::atomic::AtomicCell;
 use rand::distributions::Alphanumeric;
 use rand::Rng;
-use rayon::iter::IntoParallelIterator;
+use rayon::iter::ParallelBridge;
 use rayon::iter::ParallelIterator;
 
 use crate::config::{DedupeConfig, Priority};
@@ -874,14 +874,15 @@ pub fn dedupe<'a, I, P>(
     op: DedupeOp,
     config: &'a DedupeConfig,
     log: &'a Log,
-) -> impl ParallelIterator<Item = FsCommand> + 'a
+) -> impl Iterator<Item = FsCommand> + Send + 'a
 where
-    I: IntoParallelIterator<Item = FileGroup<P>> + 'a,
+    I: IntoIterator<Item = FileGroup<P>> + 'a,
+    I::IntoIter: Send,
     P: Into<Path>,
 {
     let devices = DiskDevices::new(&HashMap::new());
     groups
-        .into_par_iter()
+        .into_iter()
         .flat_map(move |group| match partition(group, config, log) {
             Ok(group) => group.dedupe_script(&op, &devices),
             Err(e) => {
@@ -899,13 +900,14 @@ where
 /// On command execution failure, a warning is logged and the execution of remaining commands
 /// continues.
 /// Returns the number of files processed and the amount of disk space reclaimed.
-pub fn run_script(
-    script: impl IntoParallelIterator<Item = FsCommand>,
-    should_lock: bool,
-    log: &Log,
-) -> DedupeResult {
+pub fn run_script<I>(script: I, should_lock: bool, log: &Log) -> DedupeResult
+where
+    I: IntoIterator<Item = FsCommand>,
+    I::IntoIter: Send,
+{
     script
-        .into_par_iter()
+        .into_iter()
+        .par_bridge()
         .map(|cmd| cmd.execute(should_lock, log))
         .inspect(|res| {
             if let Err(e) = res {
@@ -926,17 +928,15 @@ pub fn run_script(
 /// Returns the number of files processed and the amount of disk space that would be
 /// reclaimed if all commands of the script were executed with no error.
 pub fn log_script(
-    script: impl IntoParallelIterator<Item = FsCommand>,
-    out: impl Write + Send,
+    script: impl IntoIterator<Item = FsCommand>,
+    mut out: impl Write + Send,
 ) -> io::Result<DedupeResult> {
-    let writer = Mutex::new(BufWriter::new(out));
     let err = AtomicCell::new(None);
     let result = script
-        .into_par_iter()
+        .into_iter()
         .map(|cmd| {
-            let mut w = writer.lock().unwrap();
             for line in cmd.to_shell_str() {
-                if let Err(e) = writeln!(w, "{}", line) {
+                if let Err(e) = writeln!(out, "{}", line) {
                     err.store(Some(e));
                     return None;
                 }
@@ -946,8 +946,9 @@ pub fn log_script(
                 reclaimed_space: cmd.space_to_reclaim(),
             })
         })
-        .while_some()
-        .reduce(DedupeResult::default, |a, b| a + b);
+        .take_while(|r| r.is_some())
+        .map(|r| r.unwrap())
+        .fold(DedupeResult::default(), |a, b| a + b);
 
     match err.take() {
         None => Ok(result),
