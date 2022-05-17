@@ -327,7 +327,7 @@ because it invokes the external program for each file.
 
 The following command will strip exif before matching duplicate jpg images:
 
-    fclones group . --name '*.jpg' --caseless --transform 'exiv2 -d a $IN' --in-place     
+    fclones group . --name '*.jpg' -i --transform 'exiv2 -d a $IN' --in-place     
     
 ### Other    
     
