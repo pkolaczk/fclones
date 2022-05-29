@@ -5,32 +5,30 @@ use std::fs::create_dir_all;
 use std::time::{Duration, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
-use sled::IVec;
 
 use crate::error::Error;
-use crate::file::{FileChunk, FileHash, FileLen, FileMetadata, FilePos};
+use crate::file::{FileChunk, FileHash, FileId, FileLen, FileMetadata, FilePos};
 use crate::hasher::HashAlgorithm;
 use crate::path::Path;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Key {
-    file_id: u128,
-    device_id: u64,
+    file_id: FileId,
     chunk_pos: FilePos,
     chunk_len: FileLen,
-    algorithm: HashAlgorithm,
 }
 
 impl Display for Key {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}:{}", self.device_id, self.file_id)
+        write!(f, "{}:{}", self.file_id.device, self.file_id.inode)
     }
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 struct CachedFileInfo {
-    modified_timestamp_us: u128,
-    len: FileLen,
+    modified_timestamp_ms: u64,
+    file_len: FileLen,
+    data_len: FileLen,
     hash: FileHash,
 }
 
@@ -40,13 +38,17 @@ struct CachedFileInfo {
 /// Usually it is a lot faster to retrieve the hash from an embedded database that to compute
 /// them from file data.
 pub struct HashCache {
-    cache: sled::Db,
+    cache: typed_sled::Tree<Key, CachedFileInfo>,
 }
 
 impl HashCache {
     /// Opens the file hash database located in the given directory.
     /// If the database doesn't exist yet, creates a new one.
-    pub fn open(database_path: &Path) -> Result<HashCache, Error> {
+    pub fn open(
+        database_path: &Path,
+        transform: Option<&str>,
+        algorithm: HashAlgorithm,
+    ) -> Result<HashCache, Error> {
         create_dir_all(&database_path.to_path_buf()).map_err(|e| {
             format!(
                 "Count not create hash database directory {}: {}",
@@ -54,42 +56,53 @@ impl HashCache {
                 e
             )
         })?;
-        let cache = sled::open(&database_path.to_path_buf()).map_err(|e| {
+        let db = sled::open(&database_path.to_path_buf()).map_err(|e| {
             format!(
                 "Failed to open hash database at {}: {}",
                 database_path.to_escaped_string(),
                 e
             )
         })?;
+
+        let tree_id = format!("hash_db:{:?}:{}", algorithm, transform.unwrap_or("<none>"));
+        let cache = typed_sled::Tree::open(&db, tree_id);
         Ok(HashCache { cache })
     }
 
     /// Opens the file hash database located in `fclones` subdir of user cache directory.
     /// If the database doesn't exist yet, creates a new one.
-    pub fn open_default() -> Result<HashCache, Error> {
+    pub fn open_default(
+        transform: Option<&str>,
+        algorithm: HashAlgorithm,
+    ) -> Result<HashCache, Error> {
         let cache_dir =
             dirs::cache_dir().ok_or("Could not obtain user cache directory from the system.")?;
         let hash_db_path = cache_dir.join("fclones");
-        Self::open(&Path::from(hash_db_path))
+        Self::open(&Path::from(hash_db_path), transform, algorithm)
     }
 
     /// Stores the file hash plus some file metadata in the cache.
-    pub fn put(&self, key: &Key, file: &FileMetadata, hash: FileHash) -> Result<(), Error> {
+    pub fn put(
+        &self,
+        key: &Key,
+        file: &FileMetadata,
+        data_len: FileLen,
+        hash: FileHash,
+    ) -> Result<(), Error> {
         let value = CachedFileInfo {
-            modified_timestamp_us: file
+            modified_timestamp_ms: file
                 .modified()
                 .map_err(|e| format!("Unable to get file modification timestamp: {}", e))?
                 .duration_since(UNIX_EPOCH)
                 .unwrap_or(Duration::ZERO)
-                .as_micros(),
-            len: file.len(),
+                .as_millis() as u64,
+            file_len: file.len(),
+            data_len,
             hash,
         };
 
-        let key = bincode::serialize(&key).unwrap();
-        let value = bincode::serialize(&value).unwrap();
         self.cache
-            .insert(key, value)
+            .insert(key, &value)
             .map_err(|e| format!("Failed to write entry to cache: {}", e))?;
         Ok(())
     }
@@ -99,9 +112,12 @@ impl HashCache {
     /// Returns `Ok(None)` if file is not present in the cache or if its current length
     /// or its current modification time do not match the file length and modification time
     /// recorded at insertion time.
-    pub fn get(&self, key: &Key, metadata: &FileMetadata) -> Result<Option<FileHash>, Error> {
-        let key = bincode::serialize(&key).unwrap();
-        let value: Option<IVec> = self
+    pub fn get(
+        &self,
+        key: &Key,
+        metadata: &FileMetadata,
+    ) -> Result<Option<(FileLen, FileHash)>, Error> {
+        let value = self
             .cache
             .get(key)
             .map_err(|e| format!("Failed to retrieve entry from cache: {}", e))?;
@@ -109,20 +125,18 @@ impl HashCache {
             Some(v) => v,
             None => return Ok(None), // not found in cache
         };
-        let value: CachedFileInfo = bincode::deserialize(&value)
-            .map_err(|e| format!("Failed to deserialize value from cache: {}", e))?;
 
         let modified = metadata
             .modified()
             .map_err(|e| format!("Unable to get file modification timestamp: {}", e))?
             .duration_since(UNIX_EPOCH)
             .unwrap_or(Duration::ZERO)
-            .as_micros();
+            .as_millis() as u64;
 
-        if value.modified_timestamp_us != modified || value.len != metadata.len() {
+        if value.modified_timestamp_ms != modified || value.file_len != metadata.len() {
             Ok(None) // found in cache, but the file has changed since it was cached
         } else {
-            Ok(Some(value.hash))
+            Ok(Some((value.data_len, value.hash)))
         }
     }
 
@@ -130,18 +144,11 @@ impl HashCache {
     ///
     /// Using file identifiers as cache keys instead of paths allows the user for moving or renaming
     /// files without losing their cached hash data.
-    pub fn key(
-        &self,
-        chunk: &FileChunk<'_>,
-        metadata: &FileMetadata,
-        algorithm: HashAlgorithm,
-    ) -> Result<Key, Error> {
+    pub fn key(&self, chunk: &FileChunk<'_>, metadata: &FileMetadata) -> Result<Key, Error> {
         let key = Key {
-            file_id: metadata.inode_id() as u128,
-            device_id: metadata.device_id(),
+            file_id: metadata.file_id(),
             chunk_pos: chunk.pos,
             chunk_len: chunk.len,
-            algorithm,
         };
         Ok(key)
     }
@@ -167,16 +174,15 @@ mod test {
             let chunk = FileChunk::new(&path, FilePos(0), FileLen(1000));
 
             let cache_path = Path::from(root.join("cache"));
-            let cache = HashCache::open(&cache_path).unwrap();
-            let key = cache
-                .key(&chunk, &metadata, HashAlgorithm::MetroHash128)
-                .unwrap();
+            let cache = HashCache::open(&cache_path, None, HashAlgorithm::MetroHash128).unwrap();
+            let key = cache.key(&chunk, &metadata).unwrap();
             let orig_hash = FileHash(12345);
 
-            cache.put(&key, &metadata, orig_hash).unwrap();
+            let data_len = FileLen(200);
+            cache.put(&key, &metadata, data_len, orig_hash).unwrap();
             let cached_hash = cache.get(&key, &metadata).unwrap();
 
-            assert_eq!(cached_hash, Some(orig_hash))
+            assert_eq!(cached_hash, Some((data_len, orig_hash)))
         });
     }
 
@@ -190,11 +196,11 @@ mod test {
             let chunk = FileChunk::new(&path, FilePos(0), FileLen(1000));
 
             let cache_path = Path::from(root.join("cache"));
-            let cache = HashCache::open(&cache_path).unwrap();
-            let key = cache
-                .key(&chunk, &metadata, HashAlgorithm::MetroHash128)
+            let cache = HashCache::open(&cache_path, None, HashAlgorithm::MetroHash128).unwrap();
+            let key = cache.key(&chunk, &metadata).unwrap();
+            cache
+                .put(&key, &metadata, chunk.len, FileHash(12345))
                 .unwrap();
-            cache.put(&key, &metadata, FileHash(12345)).unwrap();
 
             // modify the file
             use std::io::Write;
@@ -222,20 +228,50 @@ mod test {
             let chunk = FileChunk::new(&path, FilePos(0), FileLen(1000));
 
             let cache_path = Path::from(root.join("cache"));
-            let cache = HashCache::open(&cache_path).unwrap();
-            let key = cache
-                .key(&chunk, &metadata, HashAlgorithm::MetroHash128)
-                .unwrap();
+            let cache = HashCache::open(&cache_path, None, HashAlgorithm::MetroHash128).unwrap();
+            let key = cache.key(&chunk, &metadata).unwrap();
 
-            cache.put(&key, &metadata, FileHash(12345)).unwrap();
+            cache
+                .put(&key, &metadata, chunk.len, FileHash(12345))
+                .unwrap();
 
             let chunk = FileChunk::new(&path, FilePos(1000), FileLen(2000));
-            let key = cache
-                .key(&chunk, &metadata, HashAlgorithm::MetroHash128)
-                .unwrap();
+            let key = cache.key(&chunk, &metadata).unwrap();
             let cached_hash = cache.get(&key, &metadata).unwrap();
 
             assert_eq!(cached_hash, None)
         });
+    }
+
+    #[test]
+    fn return_none_if_different_transform_was_used() {
+        with_dir(
+            "cache/return_none_if_different_transform_was_used",
+            |root| {
+                let path = root.join("file");
+                create_file(&path);
+                let path = Path::from(&path);
+                let metadata = FileMetadata::new(&path).unwrap();
+                let chunk = FileChunk::new(&path, FilePos(0), FileLen(1000));
+
+                let cache_path = Path::from(root.join("cache"));
+                let cache =
+                    HashCache::open(&cache_path, None, HashAlgorithm::MetroHash128).unwrap();
+                let key = cache.key(&chunk, &metadata).unwrap();
+
+                let orig_hash = FileHash(12345);
+                let data_len = FileLen(200);
+                cache.put(&key, &metadata, data_len, orig_hash).unwrap();
+                let cached_hash = cache.get(&key, &metadata).unwrap();
+                assert_eq!(cached_hash, Some((data_len, orig_hash)));
+                drop(cache); // unlock the db so we can open another cache
+
+                let cache =
+                    HashCache::open(&cache_path, Some("transform"), HashAlgorithm::MetroHash128)
+                        .unwrap();
+                let cached_hash = cache.get(&key, &metadata).unwrap();
+                assert_eq!(cached_hash, None);
+            },
+        );
     }
 }

@@ -27,18 +27,16 @@ use sysinfo::DiskType;
 use thread_local::ThreadLocal;
 
 use crate::arg::Arg;
-use crate::cache::HashCache;
 use crate::config::*;
 use crate::device::{DiskDevice, DiskDevices};
 use crate::error::Error;
 use crate::file::*;
-use crate::hasher::{FileHasher, HashAlgorithm};
+use crate::hasher::FileHasher;
 use crate::log::Log;
 use crate::path::Path;
 use crate::report::{FileStats, ReportHeader, ReportWriter};
 use crate::selector::PathSelector;
 use crate::semaphore::Semaphore;
-use crate::transform::Transform;
 use crate::walk::Walk;
 
 /// Groups items by key.
@@ -105,7 +103,6 @@ struct GroupCtx<'a> {
     pub log: &'a Log,
     group_filter: FileGroupFilter,
     devices: DiskDevices,
-    transform: Option<Transform>,
     path_selector: PathSelector,
     hasher: FileHasher<'a>,
 }
@@ -124,17 +121,10 @@ impl<'a> GroupCtx<'a> {
         let path_selector = config
             .path_selector(&base_dir)
             .map_err(|e| format!("Invalid pattern: {}", e))?;
-
-        let cache: Option<HashCache> = if config.cache {
-            Some(HashCache::open_default()?)
+        let hasher = if config.cache {
+            FileHasher::new_cached(transform, log)?
         } else {
-            None
-        };
-        let hasher = FileHasher {
-            cache,
-            algorithm: HashAlgorithm::MetroHash128,
-            buf_len: 65536,
-            log,
+            FileHasher::new(transform, log)
         };
 
         Self::check_pool_config(thread_pool_sizes, &devices)?;
@@ -144,7 +134,6 @@ impl<'a> GroupCtx<'a> {
             log,
             group_filter,
             devices,
-            transform,
             path_selector,
             hasher,
         })
@@ -809,7 +798,6 @@ fn handle_fetch_physical_location_err(
 /// Transforms files by piping them to an external program and groups them by their hashes
 fn group_transformed(
     ctx: &GroupCtx<'_>,
-    transform: &Transform,
     groups: Vec<FileGroup<FileInfo>>,
 ) -> Vec<FileGroup<FileInfo>> {
     let progress = ctx
@@ -823,12 +811,14 @@ fn group_transformed(
         &ctx.devices,
         FileAccess::Sequential,
         |(fi, _)| {
-            let result = transform
-                .run_or_log_err(&fi.path, ctx.log)
-                .map(|(len, hash)| {
-                    fi.len = len;
-                    hash
-                });
+            let chunk = FileChunk::new(&fi.path, FilePos(0), fi.len);
+            let result =
+                ctx.hasher
+                    .hash_transformed_or_log_err(&chunk, |_| {})
+                    .map(|(len, hash)| {
+                        fi.len = len;
+                        hash
+                    });
             progress.tick();
             result
         },
@@ -894,7 +884,7 @@ fn group_by_prefix(
                 ctx.devices[fi.get_device_index()].min_prefix_len()
             };
             let chunk = FileChunk::new(&fi.path, FilePos(0), prefix_len);
-            ctx.hasher.hash(&chunk, |_| {})
+            ctx.hasher.hash_file_or_log_err(&chunk, |_| {})
         },
     );
 
@@ -945,7 +935,7 @@ fn group_by_suffix(
             progress.tick();
             let chunk = FileChunk::new(&fi.path, fi.len.as_pos() - suffix_len, suffix_len);
             ctx.hasher
-                .hash(&chunk, |_| {})
+                .hash_file_or_log_err(&chunk, |_| {})
                 .map(|new_hash| old_hash ^ new_hash)
         },
     );
@@ -978,7 +968,7 @@ fn group_by_contents(
         |(fi, _)| {
             let chunk = FileChunk::new(&fi.path, FilePos(0), fi.len);
             ctx.hasher
-                .hash(&chunk, |bytes_read| progress.inc(bytes_read))
+                .hash_file_or_log_err(&chunk, |bytes_read| progress.inc(bytes_read))
         },
     );
 
@@ -1067,8 +1057,8 @@ pub fn group_files(config: &GroupConfig, log: &Log) -> Result<Vec<FileGroup<File
     let mut size_groups_pruned = remove_same_files(&ctx, size_groups);
     update_file_locations(&ctx, &mut size_groups_pruned);
 
-    let mut groups = match &ctx.transform {
-        Some(transform) => group_transformed(&ctx, transform, size_groups_pruned),
+    let mut groups = match &ctx.hasher.transform {
+        Some(_transform) => group_transformed(&ctx, size_groups_pruned),
         _ => {
             let prefix_len = prefix_len(&ctx.devices, flat_iter(&size_groups_pruned));
             let prefix_groups = group_by_prefix(&ctx, prefix_len, size_groups_pruned);

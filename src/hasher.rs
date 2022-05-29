@@ -12,6 +12,8 @@ use crate::cache::{HashCache, Key};
 use crate::file::{FileAccess, FileChunk, FileHash, FileLen, FileMetadata, FilePos};
 use crate::log::Log;
 use crate::path::Path;
+use crate::transform::Transform;
+use crate::Error;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum HashAlgorithm {
@@ -20,34 +22,151 @@ pub enum HashAlgorithm {
 
 /// Hashes file contents
 pub struct FileHasher<'a> {
-    pub(crate) algorithm: HashAlgorithm,
+    pub(crate) _algorithm: HashAlgorithm, // to be used later
     pub(crate) buf_len: usize,
     pub(crate) cache: Option<HashCache>,
+    pub(crate) transform: Option<Transform>,
     pub(crate) log: &'a Log,
 }
 
 impl FileHasher<'_> {
+    /// Creates a hasher with no caching
+    pub fn new(transform: Option<Transform>, log: &Log) -> FileHasher<'_> {
+        FileHasher {
+            _algorithm: HashAlgorithm::MetroHash128,
+            buf_len: 65536,
+            cache: None,
+            transform,
+            log,
+        }
+    }
+
+    /// Creates a default hasher with caching enabled
+    pub fn new_cached(transform: Option<Transform>, log: &Log) -> Result<FileHasher<'_>, Error> {
+        let algorithm = HashAlgorithm::MetroHash128;
+        let transform_command_str = transform.as_ref().map(|t| t.command_str.as_str());
+        let cache = HashCache::open_default(transform_command_str, algorithm)?;
+        Ok(FileHasher {
+            _algorithm: algorithm,
+            buf_len: 65536,
+            cache: Some(cache),
+            transform,
+            log,
+        })
+    }
+
     /// Computes the file hash or logs an error and returns none if failed.
     /// If file is not found, no error is logged and `None` is returned.
-    pub fn hash(&self, chunk: &FileChunk<'_>, progress: impl Fn(usize)) -> Option<FileHash> {
+    pub fn hash_file(
+        &self,
+        chunk: &FileChunk<'_>,
+        progress: impl Fn(usize),
+    ) -> io::Result<FileHash> {
         let cache = self.cache.as_ref();
         let metadata = cache.and_then(|_| FileMetadata::new(chunk.path).ok());
         let metadata = metadata.as_ref();
         let key = cache
             .zip(metadata.as_ref())
-            .and_then(|(c, m)| c.key(chunk, m, self.algorithm).ok());
+            .and_then(|(c, m)| c.key(chunk, m).ok());
         let key = key.as_ref();
         let hash = self.load_hash(key, metadata);
-        if hash.is_some() {
+        if let Some((_, hash)) = hash {
             progress(chunk.len.0 as usize);
-            return hash;
+            return Ok(hash);
         }
 
-        match file_hash(chunk, self.buf_len, progress) {
-            Ok(hash) => {
-                self.store_hash(key, metadata, hash);
-                Some(hash)
+        let hash = file_hash(chunk, self.buf_len, progress)?;
+        self.store_hash(key, metadata, chunk.len, hash);
+        Ok(hash)
+    }
+
+    pub fn hash_file_or_log_err(
+        &self,
+        chunk: &FileChunk<'_>,
+        progress: impl Fn(usize),
+    ) -> Option<FileHash> {
+        match self.hash_file(chunk, progress) {
+            Ok(hash) => Some(hash),
+            Err(e) if e.kind() == ErrorKind::NotFound => None,
+            Err(e) => {
+                self.log.warn(format!(
+                    "Failed to compute hash of file {}: {}",
+                    chunk.path.to_escaped_string(),
+                    e
+                ));
+                None
             }
+        }
+    }
+
+    /// Just like `hash_file`, but transforms the file before hashing.
+    pub fn hash_transformed(
+        &self,
+        chunk: &FileChunk<'_>,
+        progress: impl Fn(usize),
+    ) -> io::Result<(FileLen, FileHash)> {
+        assert_eq!(chunk.pos, FilePos::zero());
+        assert!(self.transform.is_some());
+
+        let transform = self.transform.as_ref().unwrap();
+        let cache = self.cache.as_ref();
+        let metadata = cache.and_then(|_| FileMetadata::new(chunk.path).ok());
+        let metadata = metadata.as_ref();
+        let key = cache
+            .zip(metadata.as_ref())
+            .and_then(|(c, m)| c.key(chunk, m).ok());
+        let key = key.as_ref();
+        let hash = self.load_hash(key, metadata);
+        if let Some(hash) = hash {
+            progress(chunk.len.0 as usize);
+            return Ok(hash);
+        }
+
+        let mut transform_output = transform.run(chunk.path)?;
+        let hash_input = &mut transform_output.out_stream;
+
+        // Transformed file may have a different length, so we cannot use stream_hash progress
+        // reporting, as it would report progress of the transformed stream. Instead we advance
+        // progress after doing the full file.
+        let hash = stream_hash(hash_input, chunk.len, self.buf_len, |_| {});
+        progress(chunk.len.0 as usize);
+
+        let hash = hash?;
+        let exit_status = transform_output.child.lock().unwrap().wait()?;
+        if !exit_status.success() {
+            let captured_err = transform_output
+                .err_stream
+                .take()
+                .unwrap()
+                .join()
+                .unwrap_or_else(|_| "".to_owned());
+            let captured_err = format_output_stream(captured_err.as_str());
+            return match exit_status.code() {
+                Some(exit_code) => Err(io::Error::new(
+                    io::ErrorKind::Other,
+                    format!(
+                        "{} failed with non-zero status code: {}{}",
+                        transform.program, exit_code, captured_err
+                    ),
+                )),
+                None => Err(io::Error::new(
+                    io::ErrorKind::Other,
+                    format!("{} failed{}", transform.program, captured_err),
+                )),
+            };
+        }
+
+        self.store_hash(key, metadata, hash.0, hash.1);
+        Ok(hash)
+    }
+
+    pub fn hash_transformed_or_log_err(
+        &self,
+        chunk: &FileChunk<'_>,
+        progress: impl Fn(usize),
+    ) -> Option<(FileLen, FileHash)> {
+        match self.hash_transformed(chunk, progress) {
+            Ok(hash) => Some(hash),
             Err(e) if e.kind() == ErrorKind::NotFound => None,
             Err(e) => {
                 self.log.warn(format!(
@@ -63,13 +182,17 @@ impl FileHasher<'_> {
     /// Loads hash from the cache.
     /// If the hash is not present in the cache, returns `None`.
     /// If the operation fails (e.g. corrupted cache), logs a warning and returns `None`.
-    fn load_hash(&self, key: Option<&Key>, metadata: Option<&FileMetadata>) -> Option<FileHash> {
+    fn load_hash(
+        &self,
+        key: Option<&Key>,
+        metadata: Option<&FileMetadata>,
+    ) -> Option<(FileLen, FileHash)> {
         self.cache
             .as_ref()
             .zip(key)
             .zip(metadata)
             .and_then(|((cache, key), metadata)| match cache.get(key, metadata) {
-                Ok(hash) => hash,
+                Ok(len_and_hash) => len_and_hash,
                 Err(e) => {
                     self.log.warn(format!(
                         "Failed to load hash of file id = {} from the cache: {}",
@@ -82,17 +205,32 @@ impl FileHasher<'_> {
 
     /// Stores the hash in the cache.
     /// If the operation fails (e.g. no space on drive), logs a warning.
-    fn store_hash(&self, key: Option<&Key>, metadata: Option<&FileMetadata>, hash: FileHash) {
+    fn store_hash(
+        &self,
+        key: Option<&Key>,
+        metadata: Option<&FileMetadata>,
+        data_len: FileLen,
+        hash: FileHash,
+    ) {
         if let Some(((cache, key), metadata)) =
             self.cache.as_ref().zip(key.as_ref()).zip(metadata.as_ref())
         {
-            if let Err(e) = cache.put(key, metadata, hash) {
+            if let Err(e) = cache.put(key, metadata, data_len, hash) {
                 self.log.warn(format!(
                     "Failed to store hash of file {} in the cache: {}",
                     key, e
                 ))
             }
         };
+    }
+}
+
+fn format_output_stream(output: &str) -> String {
+    let output = output.trim().to_string();
+    if output.is_empty() {
+        output
+    } else {
+        format!("\n{}\n", output)
     }
 }
 
@@ -243,7 +381,7 @@ fn scan<F: FnMut(&[u8])>(
 
 /// Computes the hash value over at most `len` bytes of the stream.
 /// Returns the number of the bytes read and a 128-bit hash value.
-pub(crate) fn stream_hash(
+fn stream_hash(
     stream: &mut impl Read,
     len: FileLen,
     buf_len: usize,
@@ -263,7 +401,7 @@ pub(crate) fn stream_hash(
 /// Computes hash of initial `len` bytes of a file.
 /// If the file does not exist or is not readable, print the error to stderr and return `None`.
 /// The returned hash is not cryptograhically secure.
-pub(crate) fn file_hash(
+fn file_hash(
     chunk: &FileChunk<'_>,
     buf_len: usize,
     progress: impl Fn(usize),

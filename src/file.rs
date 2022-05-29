@@ -186,7 +186,7 @@ pub type InodeId = u64;
 type InodeId = u128;
 
 /// Useful for identifying files in presence of hardlinks
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct FileId {
     pub device: u64,
     pub inode: InodeId,
@@ -280,6 +280,10 @@ impl FileMetadata {
 
     pub fn len(&self) -> FileLen {
         FileLen(self.metadata.len())
+    }
+
+    pub fn file_id(&self) -> FileId {
+        self.id
     }
 
     pub fn device_id(&self) -> u64 {
