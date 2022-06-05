@@ -34,6 +34,7 @@ use crate::file::*;
 use crate::hasher::FileHasher;
 use crate::log::Log;
 use crate::path::Path;
+use crate::phase::{Phase, Phases};
 use crate::report::{FileStats, ReportHeader, ReportWriter};
 use crate::selector::PathSelector;
 use crate::semaphore::Semaphore;
@@ -101,6 +102,7 @@ where
 struct GroupCtx<'a> {
     pub config: &'a GroupConfig,
     pub log: &'a Log,
+    phases: Phases,
     group_filter: FileGroupFilter,
     devices: DiskDevices,
     path_selector: PathSelector,
@@ -109,6 +111,23 @@ struct GroupCtx<'a> {
 
 impl<'a> GroupCtx<'a> {
     pub fn new(config: &'a GroupConfig, log: &'a Log) -> Result<GroupCtx<'a>, Error> {
+        let phases = if config.transform.is_some() {
+            Phases::new(vec![
+                Phase::Walk,
+                Phase::FetchExtents,
+                Phase::TransformAndGroup,
+            ])
+        } else {
+            Phases::new(vec![
+                Phase::Walk,
+                Phase::GroupBySize,
+                Phase::FetchExtents,
+                Phase::GroupByPrefix,
+                Phase::GroupBySuffix,
+                Phase::GroupByContents,
+            ])
+        };
+
         let thread_pool_sizes = config.thread_pool_sizes();
         let devices = DiskDevices::new(&thread_pool_sizes);
         let transform = match config.transform() {
@@ -132,6 +151,7 @@ impl<'a> GroupCtx<'a> {
         Ok(GroupCtx {
             config,
             log,
+            phases,
             group_filter,
             devices,
             path_selector,
@@ -568,7 +588,7 @@ where
 /// Walks the directory tree and collects matching files in parallel into a vector
 fn scan_files(ctx: &GroupCtx<'_>) -> Vec<Vec<FileInfo>> {
     let file_collector = ThreadLocal::new();
-    let spinner = ctx.log.spinner("Scanning files");
+    let spinner = ctx.log.spinner(&ctx.phases.format(Phase::Walk));
     let spinner_tick = &|_: &Path| spinner.tick();
 
     let config = &ctx.config;
@@ -637,7 +657,9 @@ fn stage_stats(groups: &[FileGroup<FileInfo>], filter: &FileGroupFilter) -> (usi
 
 fn group_by_size(ctx: &GroupCtx<'_>, files: Vec<Vec<FileInfo>>) -> Vec<FileGroup<FileInfo>> {
     let file_count: usize = files.iter().map(|v| v.len()).sum();
-    let progress = ctx.log.progress_bar("Grouping by size", file_count as u64);
+    let progress = ctx
+        .log
+        .progress_bar(&ctx.phases.format(Phase::GroupBySize), file_count as u64);
 
     let mut groups = GroupMap::new(|info: FileInfo| (info.len, info));
     for files in files.into_iter() {
@@ -693,26 +715,16 @@ fn remove_same_files(
     ctx: &GroupCtx<'_>,
     groups: Vec<FileGroup<FileInfo>>,
 ) -> Vec<FileGroup<FileInfo>> {
-    let progress = ctx
-        .log
-        .progress_bar("Removing same files", file_count(&groups) as u64);
-
     let groups: Vec<_> = groups
         .into_par_iter()
-        .update(|g| deduplicate(&mut g.files, |_| progress.tick()))
+        .update(|g| deduplicate(&mut g.files, |_| {}))
         .filter(|g| g.matches(&ctx.group_filter))
         .collect();
 
     let stats = stage_stats(&groups, &ctx.group_filter);
     ctx.log.info(format!(
-        "Found {} ({}) candidates after grouping by paths {}",
-        stats.0,
-        stats.1,
-        if ctx.config.match_links {
-            ""
-        } else {
-            "and file identifiers"
-        }
+        "Found {} ({}) candidates after grouping by paths",
+        stats.0, stats.1,
     ));
     groups
 }
@@ -796,16 +808,17 @@ fn handle_fetch_physical_location_err(
 }
 
 /// Transforms files by piping them to an external program and groups them by their hashes
-fn group_transformed(
-    ctx: &GroupCtx<'_>,
-    groups: Vec<FileGroup<FileInfo>>,
-) -> Vec<FileGroup<FileInfo>> {
-    let progress = ctx
-        .log
-        .progress_bar("Transforming & grouping", file_count(&groups) as u64);
-
+fn group_transformed(ctx: &GroupCtx<'_>, files: Vec<FileInfo>) -> Vec<FileGroup<FileInfo>> {
+    let progress = ctx.log.progress_bar(
+        &ctx.phases.format(Phase::TransformAndGroup),
+        files.len() as u64,
+    );
     let groups = rehash(
-        groups,
+        vec![FileGroup {
+            file_len: FileLen(0),   // doesn't matter, will be computed
+            file_hash: FileHash(0), // doesn't matter, will be computed
+            files,
+        }],
         |_| true,
         |g| g.matches(&ctx.group_filter),
         &ctx.devices,
@@ -868,7 +881,7 @@ fn group_by_prefix(
     let file_count = file_count(groups.iter().filter(|&g| pre_filter(g)));
     let progress = ctx
         .log
-        .progress_bar("Grouping by prefix", file_count as u64);
+        .progress_bar(&ctx.phases.format(Phase::GroupByPrefix), file_count as u64);
 
     let groups = rehash(
         groups,
@@ -923,7 +936,7 @@ fn group_by_suffix(
     let file_count = file_count(groups.iter().filter(|&g| pre_filter(g)));
     let progress = ctx
         .log
-        .progress_bar("Grouping by suffix", file_count as u64);
+        .progress_bar(&ctx.phases.format(Phase::GroupBySuffix), file_count as u64);
 
     let groups = rehash(
         groups,
@@ -957,7 +970,7 @@ fn group_by_contents(
     let bytes_to_scan = total_size(groups.iter().filter(|&g| pre_filter(g)));
     let progress = &ctx
         .log
-        .bytes_progress_bar("Grouping by contents", bytes_to_scan.0);
+        .bytes_progress_bar(&ctx.phases.format(Phase::GroupByContents), bytes_to_scan.0);
 
     let groups = rehash(
         groups,
@@ -1053,13 +1066,17 @@ pub fn group_files(config: &GroupConfig, log: &Log) -> Result<Vec<FileGroup<File
 
     drop(spinner);
     let matching_files = scan_files(&ctx);
-    let size_groups = group_by_size(&ctx, matching_files);
-    let mut size_groups_pruned = remove_same_files(&ctx, size_groups);
-    update_file_locations(&ctx, &mut size_groups_pruned);
 
     let mut groups = match &ctx.hasher.transform {
-        Some(_transform) => group_transformed(&ctx, size_groups_pruned),
+        Some(_transform) => {
+            let mut files = matching_files.into_iter().flatten().collect_vec();
+            deduplicate(&mut files, |_| {});
+            group_transformed(&ctx, files)
+        }
         _ => {
+            let size_groups = group_by_size(&ctx, matching_files);
+            let mut size_groups_pruned = remove_same_files(&ctx, size_groups);
+            update_file_locations(&ctx, &mut size_groups_pruned);
             let prefix_len = prefix_len(&ctx.devices, flat_iter(&size_groups_pruned));
             let prefix_groups = group_by_prefix(&ctx, prefix_len, size_groups_pruned);
             let suffix_groups = group_by_suffix(&ctx, prefix_groups);

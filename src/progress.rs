@@ -70,7 +70,7 @@ impl FastProgressBar {
     pub fn new_spinner(msg: &str) -> FastProgressBar {
         let inner = ProgressBar::new_spinner();
         let template =
-            style("{msg:28}").cyan().bold().for_stderr().to_string() + "[{spinner}] {pos:>10}";
+            style("{msg:32}").cyan().bold().for_stderr().to_string() + "[{spinner}] {pos:>10}";
         let tick_strings = Self::gen_tick_strings();
         let tick_strings: Vec<&str> = tick_strings.iter().map(|s| s as &str).collect();
         inner.set_style(
@@ -85,7 +85,7 @@ impl FastProgressBar {
     /// Create a new preconfigured progress bar with given message.
     pub fn new_progress_bar(msg: &str, len: u64) -> FastProgressBar {
         let inner = ProgressBar::new(len);
-        let template = style("{msg:28}").cyan().bold().for_stderr().to_string()
+        let template = style("{msg:32}").cyan().bold().for_stderr().to_string()
             + &"[{bar:WIDTH}] {pos:>10}/{len}".replace("WIDTH", Self::WIDTH.to_string().as_str());
 
         inner.set_style(
@@ -101,7 +101,7 @@ impl FastProgressBar {
     /// Displays progress in bytes.
     pub fn new_bytes_progress_bar(msg: &str, len: u64) -> FastProgressBar {
         let inner = ProgressBar::new(len);
-        let template = style("{msg:28}").cyan().bold().for_stderr().to_string()
+        let template = style("{msg:32}").cyan().bold().for_stderr().to_string()
             + &"[{bar:WIDTH}] {bytes:>10}/{total_bytes}"
                 .replace("WIDTH", Self::WIDTH.to_string().as_str());
 

@@ -14,6 +14,7 @@ mod group;
 mod hasher;
 mod lock;
 mod pattern;
+mod phase;
 mod reflink;
 mod regex;
 mod selector;
