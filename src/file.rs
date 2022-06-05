@@ -11,11 +11,13 @@ use std::{fs, io};
 
 use byte_unit::Byte;
 use bytesize::ByteSize;
+use rayon::iter::{IntoParallelRefIterator, IntoParallelRefMutIterator, ParallelIterator};
 use serde::*;
 use smallvec::alloc::fmt::Formatter;
 use smallvec::alloc::str::FromStr;
 
 use crate::device::DiskDevices;
+use crate::group::FileGroup;
 use crate::log::Log;
 use crate::path::Path;
 
@@ -449,6 +451,54 @@ impl<'de> Deserialize<'de> for FileHash {
         let s = String::deserialize(deserializer)?;
         let hash_value = u128::from_str_radix(s.as_str(), 16).map_err(serde::de::Error::custom)?;
         Ok(FileHash(hash_value))
+    }
+}
+
+/// Makes it possible to operate generically on collections of files, regardless
+/// of the way how the collection is implemented. We sometimes need to work on grouped files
+/// but sometimes we just have a flat vector.
+pub(crate) trait FileCollection {
+    /// Returns the number of files in the collection
+    fn count(&self) -> usize;
+    /// Returns the total size of files in the collection
+    fn total_size(&self) -> FileLen;
+    /// Performs given action on each file in the collection
+    fn for_each_mut<OP>(&mut self, op: OP)
+    where
+        OP: Fn(&mut FileInfo) + Sync + Send;
+}
+
+impl FileCollection for Vec<FileInfo> {
+    fn count(&self) -> usize {
+        self.len()
+    }
+
+    fn total_size(&self) -> FileLen {
+        self.par_iter().map(|f| f.len).sum()
+    }
+
+    fn for_each_mut<OP>(&mut self, op: OP)
+    where
+        OP: Fn(&mut FileInfo) + Sync + Send,
+    {
+        self.par_iter_mut().for_each(op)
+    }
+}
+
+impl FileCollection for Vec<FileGroup<FileInfo>> {
+    fn count(&self) -> usize {
+        self.iter().map(|g| g.file_count()).sum()
+    }
+
+    fn total_size(&self) -> FileLen {
+        self.par_iter().map(|g| g.total_size()).sum()
+    }
+
+    fn for_each_mut<OP>(&mut self, op: OP)
+    where
+        OP: Fn(&mut FileInfo) + Sync + Send,
+    {
+        self.par_iter_mut().flat_map(|g| &mut g.files).for_each(op)
     }
 }
 
