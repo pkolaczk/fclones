@@ -739,23 +739,20 @@ fn atomic_counter_vec(len: usize) -> Vec<std::sync::atomic::AtomicU32> {
 }
 
 #[cfg(target_os = "linux")]
-fn update_file_locations(ctx: &GroupCtx<'_>, groups: &mut Vec<FileGroup<FileInfo>>) {
-    let count = file_count(groups.iter());
+fn update_file_locations(ctx: &GroupCtx<'_>, groups: &mut (impl FileCollection + ?Sized)) {
+    let count = groups.count();
     let progress = ctx.log.progress_bar("Fetching extents", count as u64);
 
     let err_counters = atomic_counter_vec(ctx.devices.len());
-    groups
-        .par_iter_mut()
-        .flat_map(|g| &mut g.files)
-        .update(|fi| {
-            let device: &DiskDevice = &ctx.devices[fi.get_device_index()];
-            if device.disk_type != DiskType::SSD {
-                if let Err(e) = fi.fetch_physical_location() {
-                    handle_fetch_physical_location_err(ctx, &err_counters, fi, e)
-                }
+    groups.for_each_mut(|fi| {
+        let device: &DiskDevice = &ctx.devices[fi.get_device_index()];
+        if device.disk_type != DiskType::SSD {
+            if let Err(e) = fi.fetch_physical_location() {
+                handle_fetch_physical_location_err(ctx, &err_counters, fi, e)
             }
-        })
-        .for_each(|_| progress.tick());
+        }
+        progress.tick()
+    });
 }
 
 #[cfg(not(target_os = "linux"))]
@@ -1071,6 +1068,7 @@ pub fn group_files(config: &GroupConfig, log: &Log) -> Result<Vec<FileGroup<File
         Some(_transform) => {
             let mut files = matching_files.into_iter().flatten().collect_vec();
             deduplicate(&mut files, |_| {});
+            update_file_locations(&ctx, &mut files);
             group_transformed(&ctx, files)
         }
         _ => {
