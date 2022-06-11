@@ -756,7 +756,7 @@ fn update_file_locations(ctx: &GroupCtx<'_>, groups: &mut (impl FileCollection +
 }
 
 #[cfg(not(target_os = "linux"))]
-fn update_file_locations(_ctx: &GroupCtx<'_>, _groups: &mut Vec<FileGroup<FileInfo>>) {}
+fn update_file_locations(_ctx: &GroupCtx<'_>, _groups:  &mut (impl FileCollection + ?Sized)) {}
 
 /// Displays a warning message after fiemap ioctl fails and we don't know where the
 /// file data are located.
