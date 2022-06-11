@@ -1654,6 +1654,29 @@ mod test {
     }
 
     #[test]
+    #[cfg(unix)]
+    fn transformed_truncated() {
+        with_dir("target/test/group/transform/truncate/", |root| {
+            let input_path_1 = root.join("input1.txt");
+            let input_path_2 = root.join("input2.txt");
+            // the files are different and have different lengths, but their initial
+            // 2 bytes are the same
+            write_file(&input_path_1, "aa|1");
+            write_file(&input_path_2, "aa|23456");
+
+            let log = test_log();
+            let mut config = GroupConfig::default();
+            config.paths = vec![input_path_1.into(), input_path_2.into()];
+            // a transform that takes only the first two bytes of each file
+            config.transform = Some("dd count=2 bs=1".to_string());
+
+            let results = group_files(&config, &log).unwrap();
+            assert_eq!(results.len(), 1);
+            assert_eq!(results[0].files.len(), 2);
+        })
+    }
+
+    #[test]
     fn report() {
         with_dir("main/report", |root| {
             let file = root.join("file1");
