@@ -44,6 +44,7 @@ maplit = "1.0"
 metrohash = "1.0"
 nom = { version = "5.1", features = ["regexp"] }
 num_cpus = "1.13"
+priority-queue = "1.2"
 rand = "0.8"
 rayon = "1.5"
 regex = "1.5"
