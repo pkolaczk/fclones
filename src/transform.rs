@@ -216,7 +216,7 @@ impl Transform {
         self.tmp_dir.join(format!("{:x}", input.hash128()))
     }
 
-    /// Processes the input file and returns its output and err as as stream
+    /// Processes the input file and returns its output and err as stream
     pub fn run(&self, input: &Path) -> io::Result<Execution> {
         let (args, input_conf, output_conf) = self.make_args(input);
         let mut command = build_command(&args, &input_conf, &output_conf)?;
