@@ -260,6 +260,10 @@ impl FileId {
             device: metadata.dev(),
         }
     }
+
+    pub fn of(f: impl AsRef<FileId>) -> FileId {
+        *f.as_ref()
+    }
 }
 
 /// Convenience wrapper for accessing OS-dependent metadata like inode and device-id

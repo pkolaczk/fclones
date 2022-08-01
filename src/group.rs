@@ -249,6 +249,28 @@ impl<F: AsRef<Path>> FileGroup<F> {
     }
 }
 
+impl<F: AsRef<FileId>> FileGroup<F> {
+    /// Returns the number of files with distinct identifiers.
+    /// Files must be sorted by id.
+    pub fn unique_count(&self) -> usize {
+        self.files
+            .iter()
+            .dedup_by(|f1, f2| FileId::of(f1) == FileId::of(f2))
+            .count()
+    }
+
+    /// Returns the total size of data in files with distinct identifiers.
+    /// Files must be sorted by id.
+    pub fn unique_size(&self) -> FileLen {
+        self.file_len * self.unique_count() as u64
+    }
+
+    /// Sorts the files in this group by their identifiers.
+    pub fn sort_by_id(&mut self) {
+        self.files.sort_by_key(|f| FileId::of(f));
+    }
+}
+
 impl<F: AsRef<Path> + AsRef<FileId>> FileGroup<F> {
     /// Returns true if the file group should be forwarded to the next grouping stage,
     /// because the number of duplicate files is higher than the maximum allowed number of replicas.
@@ -339,7 +361,7 @@ impl<F: AsRef<Path> + AsRef<FileId>> FileGroup<F> {
 
     /// Sorts the files by their path names.
     /// If filter requires grouping by roots, then groups are kept together.
-    pub fn sort(&mut self, root_paths: &[Path]) {
+    pub fn sort_by_path(&mut self, root_paths: &[Path]) {
         self.files.sort_by(|f1, f2| {
             let p1: &Path = f1.as_ref();
             let p2: &Path = f2.as_ref();
@@ -511,10 +533,10 @@ where
             // Launch a separate thread for each device, so we can process
             // files on each device independently
             s.spawn(move |_| {
-                // Sort files by their physical location, to reduce disk seek latency
-                if device.disk_type != DiskType::SSD {
-                    files.par_sort_unstable_by_key(|f| f.file_info.location);
-                }
+                // Sort files by their physical location, to reduce disk seek latency on HDD.
+                // Additionally, files with the same id end up directly
+                // next to each other so we can avoid rehashing the same files.
+                files.par_sort_unstable_by_key(|f| f.file_info.location);
 
                 // Some devices like HDDs may benefit from different amount of parallelism
                 // depending on the access type. Therefore we chose a thread pool appropriate
@@ -533,8 +555,10 @@ where
                 // when processing 1M of files.
                 let semaphore = Arc::new(Semaphore::new(8 * thread_count));
 
-                // Run hashing on the thread-pool dedicated to the device
-                for mut f in files {
+                // Run hashing on the thread-pool dedicated to the device.
+                // Group files by their identifiers so we hash only one file per unique id.
+                for (_, fg) in &files.into_iter().group_by(|f| f.file_info.id) {
+                    let mut fg = fg.collect_vec();
                     let tx = tx.clone();
                     let guard = semaphore.clone().access_owned();
 
@@ -549,9 +573,12 @@ where
                     // when the pool has only one thread.
                     let hash_fn: &HashFn<'static> = unsafe { std::mem::transmute(hash_fn) };
                     thread_pool.spawn_fifo(move || {
-                        if let Some(hash) = hash_fn((&mut f.file_info, f.file_hash)) {
-                            f.file_hash = hash;
-                            tx.send(f).unwrap();
+                        let old_hash = fg[0].file_hash;
+                        if let Some(hash) = hash_fn((&mut fg[0].file_info, old_hash)) {
+                            for mut f in fg {
+                                f.file_hash = hash;
+                                tx.send(f).unwrap();
+                            }
                         }
                         // This forces moving the guard into this task and be released when
                         // the task is done
@@ -640,6 +667,32 @@ fn file_count<'a, T: 'a>(groups: impl IntoIterator<Item = &'a FileGroup<T>>) -> 
 /// Returns the sum of sizes of files in all groups, including duplicates
 fn total_size<'a, T: 'a>(groups: impl IntoIterator<Item = &'a FileGroup<T>>) -> FileLen {
     groups.into_iter().map(|g| g.total_size()).sum()
+}
+
+/// Returns the sum of number of files in all groups
+fn unique_file_count<'a, T>(groups: impl IntoIterator<Item = &'a FileGroup<T>>) -> usize
+where
+    T: AsRef<FileId> + 'a,
+{
+    groups.into_iter().map(|g| g.unique_count()).sum()
+}
+
+/// Returns the sum of sizes of files in all groups, including duplicates
+fn unique_file_size<'a, T: 'a>(groups: impl IntoIterator<Item = &'a FileGroup<T>>) -> FileLen
+where
+    T: AsRef<FileId> + 'a,
+{
+    groups.into_iter().map(|g| g.unique_size()).sum()
+}
+
+/// Sorts each file group by file identifiers
+fn sort_files_by_id<'a, T: 'a>(groups: impl IntoIterator<Item = &'a mut FileGroup<T>>)
+where
+    T: AsRef<FileId> + 'a,
+{
+    for g in groups.into_iter() {
+        g.sort_by_id()
+    }
 }
 
 /// Returns an estimation of the number of files matching the search criteria
@@ -806,16 +859,20 @@ fn handle_fetch_physical_location_err(
 
 /// Transforms files by piping them to an external program and groups them by their hashes
 fn group_transformed(ctx: &GroupCtx<'_>, files: Vec<FileInfo>) -> Vec<FileGroup<FileInfo>> {
+    let mut files = files;
+    files.par_sort_unstable_by_key(|f| FileId::of(f)); // need to sort so we know unique_file_count
+
+    let groups = vec![FileGroup {
+        file_len: FileLen(0),   // doesn't matter, will be computed
+        file_hash: FileHash(0), // doesn't matter, will be computed
+        files,
+    }];
     let progress = ctx.log.progress_bar(
         &ctx.phases.format(Phase::TransformAndGroup),
-        files.len() as u64,
+        unique_file_count(&groups) as u64,
     );
     let groups = rehash(
-        vec![FileGroup {
-            file_len: FileLen(0),   // doesn't matter, will be computed
-            file_hash: FileHash(0), // doesn't matter, will be computed
-            files,
-        }],
+        groups,
         |_| true,
         |g| g.matches(&ctx.group_filter),
         &ctx.devices,
@@ -874,8 +931,11 @@ fn group_by_prefix(
     prefix_len: FileLen,
     groups: Vec<FileGroup<FileInfo>>,
 ) -> Vec<FileGroup<FileInfo>> {
-    let pre_filter = |g: &FileGroup<FileInfo>| g.files.len() > 1;
-    let file_count = file_count(groups.iter().filter(|&g| pre_filter(g)));
+    let mut groups = groups;
+    sort_files_by_id(&mut groups);
+
+    let pre_filter = |g: &FileGroup<FileInfo>| g.unique_count() > 1;
+    let file_count = unique_file_count(groups.iter().filter(|g| pre_filter(g)));
     let progress = ctx
         .log
         .progress_bar(&ctx.phases.format(Phase::GroupByPrefix), file_count as u64);
@@ -927,10 +987,14 @@ fn group_by_suffix(
     ctx: &GroupCtx<'_>,
     groups: Vec<FileGroup<FileInfo>>,
 ) -> Vec<FileGroup<FileInfo>> {
+    let mut groups = groups;
+    sort_files_by_id(&mut groups);
+
     let suffix_len = suffix_len(&ctx.devices, flat_iter(&groups));
     let suffix_threshold = suffix_threshold(&ctx.devices, flat_iter(&groups));
-    let pre_filter = |g: &FileGroup<FileInfo>| g.file_len >= suffix_threshold && g.files.len() > 1;
-    let file_count = file_count(groups.iter().filter(|&g| pre_filter(g)));
+    let pre_filter =
+        |g: &FileGroup<FileInfo>| g.file_len >= suffix_threshold && g.unique_count() > 1;
+    let file_count = unique_file_count(groups.iter().filter(|g| pre_filter(g)));
     let progress = ctx
         .log
         .progress_bar(&ctx.phases.format(Phase::GroupBySuffix), file_count as u64);
@@ -963,8 +1027,11 @@ fn group_by_contents(
     min_file_len: FileLen,
     groups: Vec<FileGroup<FileInfo>>,
 ) -> Vec<FileGroup<FileInfo>> {
-    let pre_filter = |g: &FileGroup<FileInfo>| g.files.len() > 1 && g.file_len >= min_file_len;
-    let bytes_to_scan = total_size(groups.iter().filter(|&g| pre_filter(g)));
+    let mut groups = groups;
+    sort_files_by_id(&mut groups);
+
+    let pre_filter = |g: &FileGroup<FileInfo>| g.unique_count() > 1 && g.file_len >= min_file_len;
+    let bytes_to_scan = unique_file_size(groups.iter().filter(|g| pre_filter(g)));
     let progress = &ctx
         .log
         .bytes_progress_bar(&ctx.phases.format(Phase::GroupByContents), bytes_to_scan.0);
@@ -1084,7 +1151,7 @@ pub fn group_files(config: &GroupConfig, log: &Log) -> Result<Vec<FileGroup<File
     groups.par_sort_by_key(|g| Reverse((g.file_len, g.file_hash)));
     groups
         .par_iter_mut()
-        .for_each(|g| g.sort(&ctx.group_filter.root_paths));
+        .for_each(|g| g.sort_by_path(&ctx.group_filter.root_paths));
     Ok(groups)
 }
 
@@ -1156,7 +1223,7 @@ mod test {
     use std::fs::{create_dir, hard_link, File, OpenOptions};
     use std::io::{Read, Write};
     use std::path::PathBuf;
-    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::sync::Mutex;
 
     use rand::seq::SliceRandom;
@@ -1229,6 +1296,53 @@ mod test {
         assert_eq!(result[0].files.len(), 1);
         assert_eq!(result[1].files.len(), 1);
         assert_ne!(result[0].files[0].path, result[1].files[0].path);
+    }
+
+    #[test]
+    fn test_rehash_doesnt_hash_files_with_same_id_more_than_once() {
+        let devices = DiskDevices::default();
+        let input = vec![FileGroup {
+            file_len: FileLen(200),
+            file_hash: FileHash(0),
+            files: vec![
+                FileInfo {
+                    id: FileId {
+                        device: 1,
+                        inode: 1,
+                    },
+                    len: FileLen(200),
+                    location: 0,
+                    path: Path::from("file1"),
+                },
+                FileInfo {
+                    id: FileId {
+                        device: 1,
+                        inode: 1,
+                    },
+                    len: FileLen(200),
+                    location: 0,
+                    path: Path::from("file2"),
+                },
+            ],
+        }];
+
+        let hash_call_count = AtomicUsize::new(0);
+        let result = rehash(
+            input,
+            |_| true,
+            |_| true,
+            &devices,
+            FileAccess::Random,
+            |(fi, _)| {
+                hash_call_count.fetch_add(1, Ordering::Relaxed);
+                Some(FileHash(fi.location as u128))
+            },
+        );
+
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].files.len(), 2);
+        assert_ne!(result[0].files[0].path, result[0].files[1].path);
+        assert_eq!(hash_call_count.load(Ordering::Relaxed), 1);
     }
 
     /// Files hashing to same values should be placed into the same groups
