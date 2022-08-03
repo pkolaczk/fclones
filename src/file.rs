@@ -228,27 +228,41 @@ impl FileId {
     pub fn from_file(file: &fs::File) -> io::Result<FileId> {
         use std::os::windows::io::*;
         use winapi::ctypes::c_void;
-        use winapi::um::fileapi::FILE_ID_INFO;
+        use winapi::um::fileapi::{
+            GetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION, FILE_ID_INFO,
+        };
         use winapi::um::minwinbase::FileIdInfo;
         use winapi::um::winbase::GetFileInformationByHandleEx;
+
         let handle = file.as_raw_handle();
         unsafe {
             let mut file_id: FILE_ID_INFO = std::mem::zeroed();
             let file_id_ptr = (&mut file_id) as *mut _ as *mut c_void;
             const FILE_ID_SIZE: u32 = std::mem::size_of::<FILE_ID_INFO>() as u32;
-            match GetFileInformationByHandleEx(handle, FileIdInfo, file_id_ptr, FILE_ID_SIZE) {
-                0 => Err(io::Error::new(
-                    ErrorKind::Other,
-                    format!(
-                        "Failed to read file identifier: {}",
-                        io::Error::last_os_error()
-                    ),
-                )),
-                _ => Ok(FileId {
+            if GetFileInformationByHandleEx(handle, FileIdInfo, file_id_ptr, FILE_ID_SIZE) != 0 {
+                return Ok(FileId {
                     device: file_id.VolumeSerialNumber as u64,
                     inode: u128::from_be_bytes(file_id.FileId.Identifier),
-                }),
+                });
             }
+
+            let mut file_info: BY_HANDLE_FILE_INFORMATION = std::mem::zeroed();
+            let file_info_ptr = (&mut file_info) as *mut _;
+            if GetFileInformationByHandle(handle, file_info_ptr) != 0 {
+                return Ok(FileId {
+                    device: file_info.dwVolumeSerialNumber as u64,
+                    inode: ((file_info.nFileIndexHigh as u128) << 32)
+                        | file_info.nFileIndexLow as u128,
+                });
+            }
+
+            Err(io::Error::new(
+                ErrorKind::Other,
+                format!(
+                    "Failed to read file identifier: {}",
+                    io::Error::last_os_error()
+                ),
+            ))
         }
     }
 
