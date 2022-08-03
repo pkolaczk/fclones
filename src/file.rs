@@ -185,7 +185,7 @@ impl FileChunk<'_> {
 #[cfg(unix)]
 pub type InodeId = u64;
 #[cfg(windows)]
-type InodeId = u128;
+pub type InodeId = u128;
 
 /// Useful for identifying files in presence of hardlinks
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
