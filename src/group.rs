@@ -23,7 +23,6 @@ use itertools::Itertools;
 use rayon::prelude::*;
 use serde::*;
 use smallvec::SmallVec;
-use sysinfo::DiskType;
 use thread_local::ThreadLocal;
 
 use crate::arg::Arg;
@@ -799,7 +798,7 @@ fn update_file_locations(ctx: &GroupCtx<'_>, groups: &mut (impl FileCollection +
     let err_counters = atomic_counter_vec(ctx.devices.len());
     groups.for_each_mut(|fi| {
         let device: &DiskDevice = &ctx.devices[fi.get_device_index()];
-        if device.disk_type != DiskType::SSD {
+        if device.disk_type != sysinfo::DiskType::SSD {
             if let Err(e) = fi.fetch_physical_location() {
                 handle_fetch_physical_location_err(ctx, &err_counters, fi, e)
             }
@@ -1227,6 +1226,7 @@ mod test {
     use std::sync::Mutex;
 
     use rand::seq::SliceRandom;
+    use sysinfo::DiskType;
 
     use crate::path::Path;
     use crate::util::test::*;
