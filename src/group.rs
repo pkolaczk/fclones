@@ -1826,7 +1826,7 @@ mod test {
                     device: 0,
                 },
                 len: FileLen(1024),
-                location: id * 1024,
+                location: id as u64 * 1024,
             }
         }
 
