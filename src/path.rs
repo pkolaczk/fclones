@@ -53,7 +53,7 @@ impl Path {
     #[cfg(windows)]
     pub fn is_absolute(&self) -> bool {
         let root = self.root().component.as_bytes();
-        root[root.len() - 1] == b':'
+        root.len() >= 1 && root[0] == b'\\' || root.len() == 2 && root[1] == b':'
     }
 
     pub fn is_relative(&self) -> bool {
