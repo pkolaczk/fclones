@@ -305,6 +305,12 @@ impl DiskDevices {
         self.devices.len()
     }
 
+    /// Always returns false, because the default device is guaranteed to exist
+    pub fn is_empty(&self) -> bool {
+        assert!(self.devices.is_empty());
+        false
+    }
+
     /// Returns an iterator over devices
     pub fn iter(&self) -> impl Iterator<Item = &DiskDevice> {
         self.devices.iter()

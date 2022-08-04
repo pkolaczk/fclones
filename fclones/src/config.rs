@@ -542,8 +542,12 @@ impl GroupConfig {
 }
 
 /// Controls which files in a group should be removed / moved / replaced by links.
-#[derive(Clone, Debug, clap::ValueEnum)]
+#[derive(Copy, Clone, Debug, clap::ValueEnum)]
 pub enum Priority {
+    /// Give higher priority to the files listed higher in the input file.
+    Top = 0,
+    /// Give higher priority to the files listed lower in the input file.
+    Bottom,
     /// Give higher priority to the files with the most recent creation time.
     Newest,
     /// Give higher priority to the files with the least recent creation time.
@@ -565,6 +569,8 @@ pub enum Priority {
 impl Priority {
     pub fn variants() -> Vec<&'static str> {
         vec![
+            "top",
+            "bottom",
             "newest",
             "oldest",
             "most-recently-modified",
@@ -581,6 +587,8 @@ impl FromStr for Priority {
     type Err = String;
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s.to_lowercase().as_str() {
+            "top" => Ok(Priority::Top),
+            "bottom" => Ok(Priority::Bottom),
             "newest" => Ok(Priority::Newest),
             "oldest" => Ok(Priority::Oldest),
             "most-recently-modified" | "mrm" => Ok(Priority::MostRecentlyModified),

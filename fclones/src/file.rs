@@ -6,7 +6,7 @@ use std::fmt::Display;
 use std::hash::Hash;
 use std::io::{ErrorKind, SeekFrom};
 use std::iter::Sum;
-use std::ops::{Add, AddAssign, BitXor, Deref, Mul, Sub};
+use std::ops::{Add, AddAssign, BitXor, Deref, Mul, Sub, SubAssign};
 use std::{fs, io};
 
 use byte_unit::Byte;
@@ -141,6 +141,12 @@ impl Sub for FileLen {
     type Output = FileLen;
     fn sub(self, rhs: Self) -> Self::Output {
         FileLen(self.0 - rhs.0)
+    }
+}
+
+impl SubAssign for FileLen {
+    fn sub_assign(&mut self, rhs: Self) {
+        self.0 -= rhs.0
     }
 }
 
@@ -341,7 +347,7 @@ impl AsRef<FileId> for FileMetadata {
 pub struct FileInfo {
     pub path: Path,
     pub id: FileId,
-    pub(crate) len: FileLen,
+    pub len: FileLen,
     // physical on-disk location of file data for access ordering optimisation
     // the highest 16 bits encode the device id
     pub(crate) location: u64,
@@ -432,7 +438,7 @@ pub(crate) fn get_physical_file_location(path: &Path) -> io::Result<Option<u64>>
     }
 }
 
-#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
+#[derive(Clone, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub struct FileHash(Box<[u8]>);
 
 impl FileHash {

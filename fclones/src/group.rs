@@ -252,6 +252,15 @@ impl<F> FileGroup<F> {
         }
     }
 
+    /// Transforms files into different type, filtering out files that cannot be transformed
+    pub fn filter_map<R>(self, f: impl Fn(F) -> Option<R>) -> FileGroup<R> {
+        FileGroup {
+            file_len: self.file_len,
+            file_hash: self.file_hash,
+            files: self.files.into_iter().filter_map(f).collect(),
+        }
+    }
+
     /// Tries to map each file by given fallible function.
     /// Does not stop processing on the first failure.
     /// If mapping any of the files fails, then returns a vector of errors.
@@ -1197,7 +1206,7 @@ fn group_by_contents(
 /// ```
 /// use fclones::log::StdLog;
 /// use fclones::config::GroupConfig;
-/// use fclones::path::Path;
+/// use fclones::Path;
 /// use fclones::{group_files, write_report};
 ///
 /// let log = StdLog::new();
