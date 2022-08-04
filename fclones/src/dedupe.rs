@@ -28,14 +28,14 @@ use crate::util::{max_result, min_result, try_sort_by_key};
 use crate::{Error, TIMESTAMP_FMT};
 
 /// Defines what to do with redundant files
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum DedupeOp {
     /// Removes redundant files.
     Remove,
     /// Moves redundant files to a different dir
     Move(Arc<Path>),
     /// Replaces redundant files with soft-links (ln -s on Unix).
-    SoftLink,
+    SymbolicLink,
     /// Replaces redundant files with hard-links (ln on Unix).
     HardLink,
     /// Reflink redundant files (cp --reflink=always, only some filesystems).
@@ -43,7 +43,7 @@ pub enum DedupeOp {
 }
 
 /// Convenience struct for holding a path to a file and its metadata together
-#[derive(Debug, Clone)]
+#[derive(Clone, Debug)]
 pub struct PathAndMetadata {
     pub path: Path,
     pub metadata: FileMetadata,
@@ -58,6 +58,12 @@ impl PathAndMetadata {
             )
         })?;
         Ok(PathAndMetadata { metadata, path })
+    }
+}
+
+impl AsRef<PathAndMetadata> for PathAndMetadata {
+    fn as_ref(&self) -> &PathAndMetadata {
+        self
     }
 }
 
@@ -341,6 +347,19 @@ impl FsCommand {
         }
     }
 
+    /// Returns the path to be affected by running the command.
+    /// For commands that move or remove the file, it returns the path to the file before removal.
+    /// For commands that create a link, returns the path to file that will be replaced by the link.
+    pub fn file_to_remove(&self) -> &Path {
+        match self {
+            FsCommand::Remove { file, .. }
+            | FsCommand::SoftLink { link: file, .. }
+            | FsCommand::HardLink { link: file, .. }
+            | FsCommand::RefLink { link: file, .. }
+            | FsCommand::Move { source: file, .. } => &file.path,
+        }
+    }
+
     /// Returns how much disk space running this command would reclaim
     pub fn space_to_reclaim(&self) -> FileLen {
         match self {
@@ -555,10 +574,11 @@ fn may_drop(path: &Path, config: &DedupeConfig) -> bool {
         || matches_any_path()
 }
 
-impl FileSubGroup<PathAndMetadata> {
+impl<P: AsRef<PathAndMetadata>> FileSubGroup<P> {
     /// Returns the time of the earliest creation of a file in the subgroup
     pub fn created(&self) -> Result<SystemTime, Error> {
         Ok(min_result(self.files.iter().map(|f| {
+            let f = f.as_ref();
             f.metadata.created().map_err(|e| {
                 format!(
                     "Failed to read creation time of file {}: {}",
@@ -573,6 +593,7 @@ impl FileSubGroup<PathAndMetadata> {
     /// Returns the time of the latest modification of a file in the subgroup
     pub fn modified(&self) -> Result<SystemTime, Error> {
         Ok(max_result(self.files.iter().map(|f| {
+            let f = f.as_ref();
             f.metadata.modified().map_err(|e| {
                 format!(
                     "Failed to read modification time of file {}: {}",
@@ -587,6 +608,7 @@ impl FileSubGroup<PathAndMetadata> {
     /// Returns the time of the latest access of a file in the subgroup
     pub fn accessed(&self) -> Result<SystemTime, Error> {
         Ok(max_result(self.files.iter().map(|f| {
+            let f = f.as_ref();
             f.metadata.accessed().map_err(|e| {
                 format!(
                     "Failed to read access time of file {}: {}",
@@ -600,19 +622,23 @@ impl FileSubGroup<PathAndMetadata> {
 
     /// Returns true if any of the files in the subgroup must be kept
     pub fn should_keep(&self, config: &DedupeConfig) -> bool {
-        self.files.iter().any(|f| should_keep(&f.path, config))
+        self.files
+            .iter()
+            .any(|f| should_keep(&f.as_ref().path, config))
     }
 
     /// Returns true if all files in the subgroup can be dropped
     pub fn may_drop(&self, config: &DedupeConfig) -> bool {
-        self.files.iter().all(|f| may_drop(&f.path, config))
+        self.files
+            .iter()
+            .all(|f| may_drop(&f.as_ref().path, config))
     }
 
     /// Returns the number of components of the least nested path
     pub fn min_nesting(&self) -> usize {
         self.files
             .iter()
-            .map(|f| f.path.component_count())
+            .map(|f| f.as_ref().path.component_count())
             .min()
             .unwrap()
     }
@@ -621,7 +647,7 @@ impl FileSubGroup<PathAndMetadata> {
     pub fn max_nesting(&self) -> usize {
         self.files
             .iter()
-            .map(|f| f.path.component_count())
+            .map(|f| f.as_ref().path.component_count())
             .max()
             .unwrap()
     }
@@ -631,11 +657,16 @@ impl FileSubGroup<PathAndMetadata> {
 /// recently accessed, etc) are sorted last.
 /// In cases when metadata of a file cannot be accessed, an error message is pushed
 /// in the result vector and such file is placed at the beginning of the list.
-fn sort_by_priority(
-    files: &mut [FileSubGroup<PathAndMetadata>],
-    priority: &Priority,
-) -> Vec<Error> {
+pub fn sort_by_priority<P>(files: &mut [FileSubGroup<P>], priority: &Priority) -> Vec<Error>
+where
+    P: AsRef<PathAndMetadata>,
+{
     match priority {
+        Priority::Top => {
+            files.reverse();
+            vec![]
+        }
+        Priority::Bottom => vec![],
         Priority::Newest => try_sort_by_key(files, |m| m.created()),
         Priority::Oldest => try_sort_by_key(files, |m| m.created().map(Reverse)),
         Priority::MostRecentlyModified => try_sort_by_key(files, |m| m.modified()),
@@ -653,9 +684,10 @@ fn sort_by_priority(
     }
 }
 
-struct PartitionedFileGroup {
-    to_keep: Vec<PathAndMetadata>,
-    to_drop: Vec<PathAndMetadata>,
+#[derive(Debug)]
+pub struct PartitionedFileGroup {
+    pub to_keep: Vec<PathAndMetadata>,
+    pub to_drop: Vec<PathAndMetadata>,
 }
 
 impl PartitionedFileGroup {
@@ -679,7 +711,7 @@ impl PartitionedFileGroup {
     }
 
     /// Returns a list of commands that would remove redundant files in this group when executed.
-    fn dedupe_script(mut self, strategy: &DedupeOp, devices: &DiskDevices) -> Vec<FsCommand> {
+    pub fn dedupe_script(mut self, strategy: &DedupeOp, devices: &DiskDevices) -> Vec<FsCommand> {
         if self.to_drop.is_empty() {
             return vec![];
         }
@@ -691,7 +723,7 @@ impl PartitionedFileGroup {
         let retained_file = Arc::new(self.to_keep.swap_remove(0));
         for dropped_file in self.to_drop {
             match strategy {
-                DedupeOp::SoftLink => commands.push(FsCommand::SoftLink {
+                DedupeOp::SymbolicLink => commands.push(FsCommand::SoftLink {
                     target: retained_file.clone(),
                     link: dropped_file,
                 }),

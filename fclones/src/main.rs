@@ -266,7 +266,7 @@ fn main() {
     let result = match config.command {
         Command::Group(config) => run_group(config, &log),
         Command::Remove(config) => run_dedupe(DedupeOp::Remove, config, &log),
-        Command::Link { config, soft: true } => run_dedupe(DedupeOp::SoftLink, config, &log),
+        Command::Link { config, soft: true } => run_dedupe(DedupeOp::SymbolicLink, config, &log),
         Command::Link {
             config,
             soft: false,
@@ -279,8 +279,8 @@ fn main() {
             run_dedupe(DedupeOp::RefLink, config, &log)
         }
         Command::Move { config, target } => {
-            let target = fclones::path::Path::from(target);
-            let target = Arc::new(fclones::path::Path::from(cwd)).resolve(target);
+            let target = fclones::Path::from(target);
+            let target = Arc::new(fclones::Path::from(cwd)).resolve(target);
             run_dedupe(DedupeOp::Move(Arc::new(target)), config, &log)
         }
     };
