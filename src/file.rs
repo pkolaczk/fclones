@@ -290,7 +290,12 @@ pub struct FileMetadata {
 impl FileMetadata {
     pub fn new(path: &Path) -> io::Result<FileMetadata> {
         let path_buf = path.to_path_buf();
-        let metadata = fs::metadata(&path_buf)?;
+        let metadata = fs::metadata(&path_buf).map_err(|e| {
+            io::Error::new(
+                e.kind(),
+                format!("Failed to read metadata of {}: {}", path.display(), e),
+            )
+        })?;
         #[cfg(unix)]
         let id = FileId::from_metadata(&metadata);
         #[cfg(windows)]
