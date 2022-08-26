@@ -109,7 +109,7 @@ fn is_positive_int(v: String) -> Result<(), String> {
             return Ok(());
         }
     }
-    return Err(format!("Not a positive integer: {}", &*v));
+    Err(format!("Not a positive integer: {}", &*v))
 }
 
 #[derive(Clone, Copy, Debug)]

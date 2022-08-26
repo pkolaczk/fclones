@@ -607,8 +607,8 @@ where
             file_hash: hash,
             files: files.to_vec(),
         })
-        .filter(group_post_filter)
         .chain(groups_to_pass.into_iter())
+        .filter(group_post_filter)
         .collect()
 }
 
@@ -1788,6 +1788,28 @@ mod test {
             assert_eq!(results.len(), 1);
             assert_eq!(results[0].files.len(), 2);
         })
+    }
+
+    #[test]
+    fn unique_files() {
+        with_dir("main/unique_files", |root| {
+            let file1 = root.join("file1");
+            let file2 = root.join("file2");
+            let file3 = root.join("file3");
+            write_test_file(&file1, b"duplicate", b"", b"");
+            write_test_file(&file2, b"duplicate", b"", b"");
+            write_test_file(&file3, b"unique", b"", b"");
+
+            let file3 = Path::from(file3);
+
+            let log = test_log();
+            let mut config = GroupConfig::default();
+            config.unique = true;
+            config.paths = vec![file1.into(), file2.into(), file3.clone()];
+            let results = group_files(&config, &log).unwrap();
+            assert_eq!(results.len(), 1);
+            assert_eq!(results[0].files[0].path, file3);
+        });
     }
 
     #[test]
