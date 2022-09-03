@@ -137,7 +137,8 @@ Please report successes as well as failures.
 ### Official Packages
 [Snap store](https://snapcraft.io/fclones) (Linux):
 
-    sudo snap install fclones
+    snap install fclones
+    snap connect fclones:removable-media
 
 [Homebrew](https://formulae.brew.sh/formula/fclones) (macOS and Linux)
 
