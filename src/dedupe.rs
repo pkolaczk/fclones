@@ -265,7 +265,7 @@ impl FsCommand {
     /// If the function succeeds, removes the file permanently.
     pub fn safe_remove<R>(
         path: &Path,
-        f: impl Fn(&Path) -> io::Result<R>,
+        f: impl FnOnce(&Path) -> io::Result<R>,
         log: &Log,
     ) -> io::Result<R> {
         let tmp = Self::temp_file(path);

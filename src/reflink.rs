@@ -25,16 +25,17 @@ pub fn reflink(src: &PathAndMetadata, dest: &PathAndMetadata, log: &Log) -> io::
     // Call reflink:
     let result = {
         if cfg!(any(target_os = "linux", target_os = "android")) && !test::cfg::crosstest() {
-            linux_reflink(src, dest, log).map_err(|e| {
-                io::Error::new(
-                    e.kind(),
-                    format!("Failed to deduplicate {} -> {}: {}", dest, src, e),
-                )
-            })
+            linux_reflink(src, dest, log)
         } else {
             safe_reflink(src, dest, log)
         }
-    };
+    }
+    .map_err(|e| {
+        io::Error::new(
+            e.kind(),
+            format!("Failed to deduplicate {} -> {}: {}", dest, src, e),
+        )
+    });
 
     // Restore the original metadata of the deduplicated files's parent directory:
     if let Some(parent) = dest_parent {
@@ -160,13 +161,13 @@ fn restore_owner(path: &std::path::Path, metadata: &Metadata) -> io::Result<()> 
     path.set_group(gid).map_err(|e| {
         io::Error::new(
             io::ErrorKind::Other,
-            format!("Failed to set file group: {}", e),
+            format!("Failed to set file group of {}: {}", path.display(), e),
         )
     })?;
     path.set_owner(uid).map_err(|e| {
         io::Error::new(
             io::ErrorKind::Other,
-            format!("Failed to set file owner: {}", e),
+            format!("Failed to set file owner of {}: {}", path.display(), e),
         )
     })?;
     Ok(())
@@ -177,8 +178,23 @@ fn restore_metadata(path: &std::path::Path, metadata: &Metadata) -> io::Result<(
     let atime = FileTime::from_last_access_time(metadata);
     let mtime = FileTime::from_last_modification_time(metadata);
 
-    filetime::set_file_times(path, atime, mtime)?;
-    fs::set_permissions(&path, metadata.permissions())?;
+    filetime::set_file_times(path, atime, mtime).map_err(|e| {
+        io::Error::new(
+            e.kind(),
+            format!(
+                "Failed to set access and modification times for {}: {}",
+                path.display(),
+                e
+            ),
+        )
+    })?;
+
+    fs::set_permissions(&path, metadata.permissions()).map_err(|e| {
+        io::Error::new(
+            e.kind(),
+            format!("Failed to set permissions for {}: {}", path.display(), e),
+        )
+    })?;
 
     #[cfg(unix)]
     restore_owner(path, metadata)?;
@@ -192,11 +208,31 @@ fn get_xattrs(path: &std::path::Path) -> io::Result<Vec<XAttr>> {
     use xattr::FileExt;
 
     let file = fs::File::open(path)?;
-    file.list_xattr()?
+    file.list_xattr()
+        .map_err(|e| {
+            io::Error::new(
+                e.kind(),
+                format!(
+                    "Failed to list extended attributes of {}: {}",
+                    path.display(),
+                    e
+                ),
+            )
+        })?
         .into_iter()
         .map(|name| {
             Ok(XAttr {
-                value: file.get_xattr(name.as_os_str())?,
+                value: file.get_xattr(name.as_os_str()).map_err(|e| {
+                    io::Error::new(
+                        e.kind(),
+                        format!(
+                            "Failed to read extended attribute {} of {}: {}",
+                            name.to_string_lossy(),
+                            path.display(),
+                            e
+                        ),
+                    )
+                })?,
                 name,
             })
         })
@@ -205,15 +241,35 @@ fn get_xattrs(path: &std::path::Path) -> io::Result<Vec<XAttr>> {
 
 #[cfg(unix)]
 #[cfg(any(not(any(target_os = "linux", target_os = "android")), test))]
-fn restore_xattrs(path: &std::path::Path, xattrs: io::Result<Vec<XAttr>>) -> io::Result<()> {
+fn restore_xattrs(path: &std::path::Path, xattrs: Vec<XAttr>) -> io::Result<()> {
     use xattr::FileExt;
     let file = fs::File::open(path)?;
     for name in file.list_xattr()? {
-        file.remove_xattr(name)?;
+        file.remove_xattr(&name).map_err(|e| {
+            io::Error::new(
+                e.kind(),
+                format!(
+                    "Failed to clear extended attribute {} of {}: {}",
+                    name.to_string_lossy(),
+                    path.display(),
+                    e
+                ),
+            )
+        })?;
     }
-    for attr in xattrs? {
+    for attr in xattrs {
         if let Some(value) = attr.value {
-            file.set_xattr(attr.name, &value)?;
+            file.set_xattr(&attr.name, &value).map_err(|e| {
+                io::Error::new(
+                    e.kind(),
+                    format!(
+                        "Failed to set extended attribute {} of {}: {}",
+                        attr.name.to_string_lossy(),
+                        path.display(),
+                        e
+                    ),
+                )
+            })?;
         }
     }
     Ok(())
@@ -222,47 +278,31 @@ fn restore_xattrs(path: &std::path::Path, xattrs: io::Result<Vec<XAttr>>) -> io:
 // Reflink which expects the destination to not exist.
 #[cfg(any(not(any(target_os = "linux", target_os = "android")), test))]
 fn copy_by_reflink(src: &crate::path::Path, dest: &crate::path::Path) -> io::Result<()> {
-    reflink::reflink(&src.to_path_buf(), &dest.to_path_buf()).map_err(|e| {
-        io::Error::new(
-            e.kind(),
-            format!(
-                "Failed to deduplicate {} -> {}: {}",
-                dest.display(),
-                src.display(),
-                e
-            ),
-        )
-    })
+    reflink::reflink(&src.to_path_buf(), &dest.to_path_buf())
+        .map_err(|e| io::Error::new(e.kind(), format!("Failed to reflink: {}", e)))
 }
 
 // Create a reflink by removing the file and making a reflink copy of the original.
 // After successful copy, attempts to restore the metadata of the file.
+// If reflink or metadata restoration fails, moves the original file back to its original place.
 #[cfg(any(not(any(target_os = "linux", target_os = "android")), test))]
 fn safe_reflink(src: &PathAndMetadata, dest: &PathAndMetadata, log: &Log) -> io::Result<()> {
     let dest_path_buf = dest.path.to_path_buf();
-
-    // Save extended attributes of the file we're going to replace:
     #[cfg(unix)]
-    let dest_xattrs = get_xattrs(&dest_path_buf);
+    let dest_xattrs = get_xattrs(&dest_path_buf)?;
 
-    FsCommand::safe_remove(&dest.path, |link| copy_by_reflink(&src.path, link), log)?;
+    FsCommand::safe_remove(
+        &dest.path,
+        move |link| {
+            copy_by_reflink(&src.path, link)?;
 
-    // Restore the original extended attributes of the deduplicated file:
-    #[cfg(unix)]
-    if xattr::SUPPORTED_PLATFORM {
-        if let Err(e) = restore_xattrs(&dest_path_buf, dest_xattrs) {
-            log.warn(format!(
-                "Failed to keep extended attributes for {}: {}",
-                dest, e
-            ))
-        }
-    }
-    // Restore the original metadata of the deduplicated file:
-    if let Err(e) = restore_metadata(&dest_path_buf, &dest.metadata) {
-        log.warn(format!("Failed to keep metadata for {}: {}", dest, e))
-    }
-
-    Ok(())
+            #[cfg(unix)]
+            restore_xattrs(&dest_path_buf, dest_xattrs)?;
+            restore_metadata(&dest_path_buf, &dest.metadata)?;
+            Ok(())
+        },
+        log,
+    )
 }
 
 // Dummy function so non-test cfg compiles
