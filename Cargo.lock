@@ -341,6 +341,7 @@ dependencies = [
  "dunce",
  "fallible-iterator",
  "fiemap",
+ "file-owner",
  "filetime",
  "ignore",
  "indexmap",
@@ -384,6 +385,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "084632422a59165633e28f8436545a6694b3d659405ceb3be0a441d4bfbf25d1"
 dependencies = [
  "bitflags",
+]
+
+[[package]]
+name = "file-owner"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e8e7c734d6215b191e0c6944437c1b3d60d35ab8ace80ac3fbb0647d8f65cc44"
+dependencies = [
+ "nix",
 ]
 
 [[package]]
