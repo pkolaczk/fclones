@@ -149,17 +149,40 @@ fn reflink_overwrite(target: &std::path::Path, link: &std::path::Path) -> io::Re
     }
 }
 
-// Not kept: owner, xattrs, ACLs, etc.
+/// Restores file owner and group
+#[cfg(unix)]
+fn restore_owner(path: &std::path::Path, metadata: &Metadata) -> io::Result<()> {
+    use file_owner::PathExt;
+    use std::os::unix::fs::MetadataExt;
+
+    let uid = metadata.uid();
+    let gid = metadata.gid();
+    path.set_group(gid).map_err(|e| {
+        io::Error::new(
+            io::ErrorKind::Other,
+            format!("Failed to set file group: {}", e),
+        )
+    })?;
+    path.set_owner(uid).map_err(|e| {
+        io::Error::new(
+            io::ErrorKind::Other,
+            format!("Failed to set file owner: {}", e),
+        )
+    })?;
+    Ok(())
+}
+
+// Not kept: xattrs, ACLs, etc.
 fn restore_metadata(path: &std::path::Path, metadata: &Metadata) -> io::Result<()> {
     let atime = FileTime::from_last_access_time(metadata);
     let mtime = FileTime::from_last_modification_time(metadata);
 
-    let timestamp = filetime::set_file_times(path, atime, mtime);
-    if timestamp.is_err() {
-        timestamp
-    } else {
-        fs::set_permissions(&path, metadata.permissions())
-    }
+    filetime::set_file_times(path, atime, mtime)?;
+    fs::set_permissions(&path, metadata.permissions())?;
+
+    #[cfg(unix)]
+    restore_owner(path, metadata)?;
+    Ok(())
 }
 
 #[cfg(unix)]
@@ -224,10 +247,6 @@ fn safe_reflink(src: &PathAndMetadata, dest: &PathAndMetadata, log: &Log) -> io:
 
     FsCommand::safe_remove(&dest.path, |link| copy_by_reflink(&src.path, link), log)?;
 
-    // Restore the original metadata of the deduplicated file:
-    if let Err(e) = restore_metadata(&dest_path_buf, &dest.metadata) {
-        log.warn(format!("Failed to keep metadata for {}: {}", dest, e))
-    }
     // Restore the original extended attributes of the deduplicated file:
     #[cfg(unix)]
     if xattr::SUPPORTED_PLATFORM {
@@ -237,6 +256,10 @@ fn safe_reflink(src: &PathAndMetadata, dest: &PathAndMetadata, log: &Log) -> io:
                 dest, e
             ))
         }
+    }
+    // Restore the original metadata of the deduplicated file:
+    if let Err(e) = restore_metadata(&dest_path_buf, &dest.metadata) {
+        log.warn(format!("Failed to keep metadata for {}: {}", dest, e))
     }
 
     Ok(())

@@ -63,6 +63,7 @@ uuid = { version = "0.8", features = ["v4"] }
 fiemap = "0.1"
 
 [target.'cfg(unix)'.dependencies]
+file-owner = "0.1"
 libc = "0.2"
 nix = "0.21"
 xattr = "0.2"
