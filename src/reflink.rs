@@ -7,11 +7,18 @@ use filetime::FileTime;
 use crate::dedupe::{FsCommand, PathAndMetadata};
 use crate::log::Log;
 
+#[cfg(unix)]
+#[cfg(any(not(any(target_os = "linux", target_os = "android")), test))]
+struct XAttr {
+    name: std::ffi::OsString,
+    value: Option<Vec<u8>>,
+}
+
 /// Calls OS-specific reflink implementations with an option to call the more generic
 /// one during testing one on Linux ("crosstesting").
 /// The destination file is allowed to exist.
 pub fn reflink(src: &PathAndMetadata, dest: &PathAndMetadata, log: &Log) -> io::Result<()> {
-    // Remember the original metadata of the parent directory of the destination file:
+    // Remember original metadata of the parent directory:
     let dest_parent = dest.path.parent();
     let dest_parent_metadata = dest_parent.map(|p| p.to_path_buf().metadata());
 
@@ -29,16 +36,11 @@ pub fn reflink(src: &PathAndMetadata, dest: &PathAndMetadata, log: &Log) -> io::
         }
     };
 
-    // Restore the original metadata of the deduplicated file:
-    if let Err(e) = restore_some_metadata(&dest.path.to_path_buf(), &dest.metadata) {
-        log.warn(format!("Failed keep metadata for {}: {}", dest, e))
-    }
-
     // Restore the original metadata of the deduplicated files's parent directory:
     if let Some(parent) = dest_parent {
         if let Some(metadata) = dest_parent_metadata {
-            let result = metadata
-                .and_then(|metadata| restore_some_metadata(&parent.to_path_buf(), &metadata));
+            let result =
+                metadata.and_then(|metadata| restore_metadata(&parent.to_path_buf(), &metadata));
             if let Err(e) = result {
                 log.warn(format!(
                     "Failed keep metadata for {}: {}",
@@ -148,7 +150,7 @@ fn reflink_overwrite(target: &std::path::Path, link: &std::path::Path) -> io::Re
 }
 
 // Not kept: owner, xattrs, ACLs, etc.
-fn restore_some_metadata(path: &std::path::Path, metadata: &Metadata) -> io::Result<()> {
+fn restore_metadata(path: &std::path::Path, metadata: &Metadata) -> io::Result<()> {
     let atime = FileTime::from_last_access_time(metadata);
     let mtime = FileTime::from_last_modification_time(metadata);
 
@@ -158,6 +160,40 @@ fn restore_some_metadata(path: &std::path::Path, metadata: &Metadata) -> io::Res
     } else {
         fs::set_permissions(&path, metadata.permissions())
     }
+}
+
+#[cfg(unix)]
+#[cfg(any(not(any(target_os = "linux", target_os = "android")), test))]
+fn get_xattrs(path: &std::path::Path) -> io::Result<Vec<XAttr>> {
+    use itertools::Itertools;
+    use xattr::FileExt;
+
+    let file = fs::File::open(path)?;
+    file.list_xattr()?
+        .into_iter()
+        .map(|name| {
+            Ok(XAttr {
+                value: file.get_xattr(name.as_os_str())?,
+                name,
+            })
+        })
+        .try_collect()
+}
+
+#[cfg(unix)]
+#[cfg(any(not(any(target_os = "linux", target_os = "android")), test))]
+fn restore_xattrs(path: &std::path::Path, xattrs: io::Result<Vec<XAttr>>) -> io::Result<()> {
+    use xattr::FileExt;
+    let file = fs::File::open(path)?;
+    for name in file.list_xattr()? {
+        file.remove_xattr(name)?;
+    }
+    for attr in xattrs? {
+        if let Some(value) = attr.value {
+            file.set_xattr(attr.name, &value)?;
+        }
+    }
+    Ok(())
 }
 
 // Reflink which expects the destination to not exist.
@@ -177,9 +213,32 @@ fn copy_by_reflink(src: &crate::path::Path, dest: &crate::path::Path) -> io::Res
 }
 
 // Create a reflink by removing the file and making a reflink copy of the original.
+// After successful copy, attempts to restore the metadata of the file.
 #[cfg(any(not(any(target_os = "linux", target_os = "android")), test))]
 fn safe_reflink(src: &PathAndMetadata, dest: &PathAndMetadata, log: &Log) -> io::Result<()> {
+    let dest_path_buf = dest.path.to_path_buf();
+
+    // Save extended attributes of the file we're going to replace:
+    #[cfg(unix)]
+    let dest_xattrs = get_xattrs(&dest_path_buf);
+
     FsCommand::safe_remove(&dest.path, |link| copy_by_reflink(&src.path, link), log)?;
+
+    // Restore the original metadata of the deduplicated file:
+    if let Err(e) = restore_metadata(&dest_path_buf, &dest.metadata) {
+        log.warn(format!("Failed to keep metadata for {}: {}", dest, e))
+    }
+    // Restore the original extended attributes of the deduplicated file:
+    #[cfg(unix)]
+    if xattr::SUPPORTED_PLATFORM {
+        if let Err(e) = restore_xattrs(&dest_path_buf, dest_xattrs) {
+            log.warn(format!(
+                "Failed to keep extended attributes for {}: {}",
+                dest, e
+            ))
+        }
+    }
+
     Ok(())
 }
 
