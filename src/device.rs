@@ -248,9 +248,29 @@ impl DiskDevices {
                 String::from_utf8_lossy(d.file_system()).to_string(),
                 pool_sizes,
             );
-            result
-                .mount_points
-                .push((Path::from(d.mount_point()), index));
+
+            // On macOS APFS disk users' data is mounted in '/System/Volumes/Data'
+            // but fused transparently and presented as part of the root filesystem.
+            // It requires remapping Data volume path for this DiskDevice to '/'.
+            // https://www.swiftforensics.com/2019/10/macos-1015-volumes-firmlink-magic.html
+            // https://eclecticlight.co/2020/01/23/catalina-boot-volumes/
+            if cfg!(target_os = "macos") {
+                if String::from_utf8_lossy(d.file_system()) == "apfs"
+                    && d.mount_point().to_string_lossy() == "/System/Volumes/Data"  
+                {
+                    result.mount_points.push((Path::from("/"), index));
+                } else {
+                    result
+                        .mount_points
+                        .push((Path::from(d.mount_point()), index));
+                };
+
+            // For any other OS than macos
+            } else {
+                result
+                    .mount_points
+                    .push((Path::from(d.mount_point()), index));
+            }
         }
         result
             .mount_points
