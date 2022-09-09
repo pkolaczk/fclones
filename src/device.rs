@@ -256,7 +256,7 @@ impl DiskDevices {
             // https://eclecticlight.co/2020/01/23/catalina-boot-volumes/
             if cfg!(target_os = "macos") {
                 if String::from_utf8_lossy(d.file_system()) == "apfs"
-                    && d.mount_point().to_string_lossy() == "/System/Volumes/Data"  
+                    && d.mount_point().to_string_lossy() == "/System/Volumes/Data"
                 {
                     result.mount_points.push((Path::from("/"), index));
                 } else {
