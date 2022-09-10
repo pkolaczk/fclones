@@ -444,7 +444,7 @@ mod test {
     use std::io::Write;
 
     use crate::file::{FileChunk, FileLen, FilePos};
-    use crate::hasher::FileHasher;
+    use crate::hasher::{FileHasher, HashFn};
     use crate::log::Log;
     use crate::util::test::with_dir;
 
@@ -467,7 +467,7 @@ mod test {
             drop(input);
 
             let log = Log::default();
-            let hasher = FileHasher::new(Some(transform), &log);
+            let hasher = FileHasher::new(HashFn::default(), Some(transform), &log);
             let input_path = Path::from(input_path);
             let chunk = FileChunk::new(&input_path, FilePos(0), FileLen::MAX);
             let good_file_hash = hasher.hash_file(&chunk, |_| {}).unwrap();
@@ -489,7 +489,7 @@ mod test {
             drop(input);
 
             let log = Log::default();
-            let hasher = FileHasher::new(Some(transform), &log);
+            let hasher = FileHasher::new(HashFn::default(), Some(transform), &log);
             let input_path = Path::from(input_path);
 
             let chunk = FileChunk::new(&input_path, FilePos(0), FileLen::MAX);

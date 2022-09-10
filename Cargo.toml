@@ -1,6 +1,6 @@
 [package]
 name = "fclones"
-version = "0.27.3"
+version = "0.28.0"
 description = "Finds duplicate, unique, under- or over-replicated files"
 authors = ["Piotr Kołaczkowski <pkolaczk@gmail.com>"]
 homepage = "https://github.com/pkolaczk/fclones"
@@ -20,6 +20,8 @@ exclude = [
 [dependencies]
 atomic-counter = "1.0"
 bincode = "1.3"
+blake3 = "1.3"
+byteorder = "1.4"
 bytesize = "1.1"
 byte-unit = "4.0"
 chrono = { version = "0.4", features = ["serde", "clock"] }
@@ -50,6 +52,7 @@ rayon = "1.5"
 regex = "1.5"
 serde_json = "1.0"
 serde = { version = "1.0", features = ["derive"] }
+sha2 = "0.10"
 sled = "0.34"
 smallvec = "1.8"
 stfu8 = "0.2"

@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::Error;
 use crate::file::{FileChunk, FileHash, FileId, FileLen, FileMetadata, FilePos};
-use crate::hasher::HashAlgorithm;
+use crate::hasher::HashFn;
 use crate::path::Path;
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -47,7 +47,7 @@ impl HashCache {
     pub fn open(
         database_path: &Path,
         transform: Option<&str>,
-        algorithm: HashAlgorithm,
+        algorithm: HashFn,
     ) -> Result<HashCache, Error> {
         create_dir_all(&database_path.to_path_buf()).map_err(|e| {
             format!(
@@ -71,10 +71,7 @@ impl HashCache {
 
     /// Opens the file hash database located in `fclones` subdir of user cache directory.
     /// If the database doesn't exist yet, creates a new one.
-    pub fn open_default(
-        transform: Option<&str>,
-        algorithm: HashAlgorithm,
-    ) -> Result<HashCache, Error> {
+    pub fn open_default(transform: Option<&str>, algorithm: HashFn) -> Result<HashCache, Error> {
         let cache_dir =
             dirs::cache_dir().ok_or("Could not obtain user cache directory from the system.")?;
         let hash_db_path = cache_dir.join("fclones");
@@ -160,7 +157,7 @@ mod test {
 
     use crate::cache::HashCache;
     use crate::file::{FileChunk, FileHash, FileLen, FileMetadata, FilePos};
-    use crate::hasher::HashAlgorithm;
+    use crate::hasher::HashFn;
     use crate::path::Path;
     use crate::util::test::{create_file, with_dir};
 
@@ -174,7 +171,7 @@ mod test {
             let chunk = FileChunk::new(&path, FilePos(0), FileLen(1000));
 
             let cache_path = Path::from(root.join("cache"));
-            let cache = HashCache::open(&cache_path, None, HashAlgorithm::MetroHash128).unwrap();
+            let cache = HashCache::open(&cache_path, None, HashFn::Metro128).unwrap();
             let key = cache.key(&chunk, &metadata).unwrap();
             let orig_hash = FileHash(12345);
 
@@ -196,7 +193,7 @@ mod test {
             let chunk = FileChunk::new(&path, FilePos(0), FileLen(1000));
 
             let cache_path = Path::from(root.join("cache"));
-            let cache = HashCache::open(&cache_path, None, HashAlgorithm::MetroHash128).unwrap();
+            let cache = HashCache::open(&cache_path, None, HashFn::Metro128).unwrap();
             let key = cache.key(&chunk, &metadata).unwrap();
             cache
                 .put(&key, &metadata, chunk.len, FileHash(12345))
@@ -228,7 +225,7 @@ mod test {
             let chunk = FileChunk::new(&path, FilePos(0), FileLen(1000));
 
             let cache_path = Path::from(root.join("cache"));
-            let cache = HashCache::open(&cache_path, None, HashAlgorithm::MetroHash128).unwrap();
+            let cache = HashCache::open(&cache_path, None, HashFn::Metro128).unwrap();
             let key = cache.key(&chunk, &metadata).unwrap();
 
             cache
@@ -255,8 +252,7 @@ mod test {
                 let chunk = FileChunk::new(&path, FilePos(0), FileLen(1000));
 
                 let cache_path = Path::from(root.join("cache"));
-                let cache =
-                    HashCache::open(&cache_path, None, HashAlgorithm::MetroHash128).unwrap();
+                let cache = HashCache::open(&cache_path, None, HashFn::Metro128).unwrap();
                 let key = cache.key(&chunk, &metadata).unwrap();
 
                 let orig_hash = FileHash(12345);
@@ -267,8 +263,7 @@ mod test {
                 drop(cache); // unlock the db so we can open another cache
 
                 let cache =
-                    HashCache::open(&cache_path, Some("transform"), HashAlgorithm::MetroHash128)
-                        .unwrap();
+                    HashCache::open(&cache_path, Some("transform"), HashFn::Metro128).unwrap();
                 let cached_hash = cache.get(&key, &metadata).unwrap();
                 assert_eq!(cached_hash, None);
             },

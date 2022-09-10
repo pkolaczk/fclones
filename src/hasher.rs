@@ -1,12 +1,15 @@
+use byteorder::{LittleEndian, ReadBytesExt};
 use std::cell::RefCell;
 use std::cmp::{max, min};
 use std::fs::{File, OpenOptions};
 use std::hash::Hasher;
 use std::io;
 use std::io::{ErrorKind, Read, Seek};
+use std::str::FromStr;
 
 use metrohash::MetroHash128;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256, Sha512};
 
 use crate::cache::{HashCache, Key};
 use crate::file::{FileAccess, FileChunk, FileHash, FileLen, FileMetadata, FilePos};
@@ -15,14 +18,110 @@ use crate::path::Path;
 use crate::transform::Transform;
 use crate::Error;
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
-pub enum HashAlgorithm {
-    MetroHash128,
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+pub enum HashFn {
+    #[default]
+    Metro128,
+    Blake3,
+    Sha256,
+    Sha512,
+}
+
+impl HashFn {
+    pub fn variants() -> Vec<&'static str> {
+        vec!["metro128", "blake3", "sha256", "sha512"]
+    }
+}
+
+impl FromStr for HashFn {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_lowercase().as_str() {
+            "metro128" => Ok(Self::Metro128),
+            "blake3" => Ok(Self::Blake3),
+            "sha256" => Ok(Self::Sha256),
+            "sha512" => Ok(Self::Sha512),
+            _ => Err(format!("Unknown hash algorithm: {}", s)),
+        }
+    }
+}
+
+/// Computes the hash of a data stream
+trait StreamHasher {
+    fn new() -> Self;
+    fn update(&mut self, bytes: &[u8]);
+    fn finish(self) -> FileHash;
+}
+
+impl StreamHasher for MetroHash128 {
+    fn new() -> Self {
+        MetroHash128::new()
+    }
+
+    fn update(&mut self, bytes: &[u8]) {
+        self.write(bytes)
+    }
+
+    fn finish(self) -> FileHash {
+        let (a, b) = self.finish128();
+        FileHash(((a as u128) << 64) | b as u128)
+    }
+}
+
+impl StreamHasher for blake3::Hasher {
+    fn new() -> Self {
+        blake3::Hasher::new()
+    }
+
+    fn update(&mut self, bytes: &[u8]) {
+        blake3::Hasher::update(self, bytes);
+    }
+
+    fn finish(self) -> FileHash {
+        FileHash(
+            self.finalize()
+                .as_bytes()
+                .as_slice()
+                .read_u128::<LittleEndian>()
+                .unwrap(),
+        )
+    }
+}
+
+impl StreamHasher for Sha512 {
+    fn new() -> Self {
+        <Sha512 as Digest>::new()
+    }
+
+    fn update(&mut self, bytes: &[u8]) {
+        Digest::update(self, bytes);
+    }
+
+    fn finish(self) -> FileHash {
+        let result = self.finalize();
+        FileHash(result.as_slice().read_u128::<LittleEndian>().unwrap())
+    }
+}
+
+impl StreamHasher for Sha256 {
+    fn new() -> Self {
+        <Sha256 as Digest>::new()
+    }
+
+    fn update(&mut self, bytes: &[u8]) {
+        Digest::update(self, bytes);
+    }
+
+    fn finish(self) -> FileHash {
+        let result = self.finalize();
+        FileHash(result.as_slice().read_u128::<LittleEndian>().unwrap())
+    }
 }
 
 /// Hashes file contents
 pub struct FileHasher<'a> {
-    pub(crate) _algorithm: HashAlgorithm, // to be used later
+    pub(crate) algorithm: HashFn,
     pub(crate) buf_len: usize,
     pub(crate) cache: Option<HashCache>,
     pub(crate) transform: Option<Transform>,
@@ -31,9 +130,9 @@ pub struct FileHasher<'a> {
 
 impl FileHasher<'_> {
     /// Creates a hasher with no caching
-    pub fn new(transform: Option<Transform>, log: &Log) -> FileHasher<'_> {
+    pub fn new(algorithm: HashFn, transform: Option<Transform>, log: &Log) -> FileHasher<'_> {
         FileHasher {
-            _algorithm: HashAlgorithm::MetroHash128,
+            algorithm,
             buf_len: 65536,
             cache: None,
             transform,
@@ -42,12 +141,15 @@ impl FileHasher<'_> {
     }
 
     /// Creates a default hasher with caching enabled
-    pub fn new_cached(transform: Option<Transform>, log: &Log) -> Result<FileHasher<'_>, Error> {
-        let algorithm = HashAlgorithm::MetroHash128;
+    pub fn new_cached(
+        algorithm: HashFn,
+        transform: Option<Transform>,
+        log: &Log,
+    ) -> Result<FileHasher<'_>, Error> {
         let transform_command_str = transform.as_ref().map(|t| t.command_str.as_str());
         let cache = HashCache::open_default(transform_command_str, algorithm)?;
         Ok(FileHasher {
-            _algorithm: algorithm,
+            algorithm,
             buf_len: 65536,
             cache: Some(cache),
             transform,
@@ -74,8 +176,12 @@ impl FileHasher<'_> {
             progress(chunk.len.0 as usize);
             return Ok(hash);
         }
-
-        let hash = file_hash(chunk, self.buf_len, progress)?;
+        let hash = match self.algorithm {
+            HashFn::Metro128 => file_hash::<MetroHash128>(chunk, self.buf_len, progress),
+            HashFn::Blake3 => file_hash::<blake3::Hasher>(chunk, self.buf_len, progress),
+            HashFn::Sha256 => file_hash::<Sha256>(chunk, self.buf_len, progress),
+            HashFn::Sha512 => file_hash::<Sha512>(chunk, self.buf_len, progress),
+        }?;
         self.store_hash(key, metadata, chunk.len, hash);
         Ok(hash)
     }
@@ -128,7 +234,16 @@ impl FileHasher<'_> {
         // Transformed file may have a different length, so we cannot use stream_hash progress
         // reporting, as it would report progress of the transformed stream. Instead we advance
         // progress after doing the full file.
-        let hash = stream_hash(hash_input, chunk.len, self.buf_len, |_| {});
+        let hash = match self.algorithm {
+            HashFn::Metro128 => {
+                stream_hash::<MetroHash128>(hash_input, chunk.len, self.buf_len, |_| {})
+            }
+            HashFn::Blake3 => {
+                stream_hash::<blake3::Hasher>(hash_input, chunk.len, self.buf_len, |_| {})
+            }
+            HashFn::Sha256 => stream_hash::<Sha256>(hash_input, chunk.len, self.buf_len, |_| {}),
+            HashFn::Sha512 => stream_hash::<Sha512>(hash_input, chunk.len, self.buf_len, |_| {}),
+        };
         progress(chunk.len.0 as usize);
 
         let hash = hash?;
@@ -381,27 +496,26 @@ fn scan<F: FnMut(&[u8])>(
 
 /// Computes the hash value over at most `len` bytes of the stream.
 /// Returns the number of the bytes read and a 128-bit hash value.
-fn stream_hash(
+fn stream_hash<H: StreamHasher>(
     stream: &mut impl Read,
     len: FileLen,
     buf_len: usize,
     progress: impl Fn(usize),
 ) -> io::Result<(FileLen, FileHash)> {
-    let mut hasher = MetroHash128::new();
+    let mut hasher = H::new();
     let mut read_len: FileLen = FileLen(0);
     scan(stream, len, buf_len, |buf| {
-        hasher.write(buf);
+        hasher.update(buf);
         read_len += FileLen(buf.len() as u64);
         (progress)(buf.len());
     })?;
-    let (a, b) = hasher.finish128();
-    Ok((read_len, FileHash(((a as u128) << 64) | b as u128)))
+    Ok((read_len, hasher.finish()))
 }
 
 /// Computes hash of initial `len` bytes of a file.
 /// If the file does not exist or is not readable, print the error to stderr and return `None`.
 /// The returned hash is not cryptograhically secure.
-fn file_hash(
+fn file_hash<H: StreamHasher>(
     chunk: &FileChunk<'_>,
     buf_len: usize,
     progress: impl Fn(usize),
@@ -412,23 +526,24 @@ fn file_hash(
         FileAccess::Sequential
     };
     let mut file = open(chunk.path, chunk.pos, chunk.len, access)?;
-    let hash = stream_hash(&mut file, chunk.len, buf_len, progress)?.1;
+    let hash = stream_hash::<H>(&mut file, chunk.len, buf_len, progress)?.1;
     evict_page_cache_if_low_mem(&mut file, chunk.len);
     Ok(hash)
 }
 
 #[cfg(test)]
 mod test {
+    use metrohash::MetroHash128;
+    use sha2::{Sha256, Sha512};
     use std::fs::{create_dir_all, File};
     use std::io::Write;
     use std::path::PathBuf;
 
     use crate::file::{FileChunk, FileLen, FilePos};
-    use crate::hasher::file_hash;
+    use crate::hasher::{file_hash, StreamHasher};
     use crate::path::Path;
 
-    #[test]
-    fn test_file_hash() {
+    fn test_file_hash<H: StreamHasher>() {
         let test_root = PathBuf::from("target/test/file_hash/");
         create_dir_all(&test_root).unwrap();
 
@@ -450,11 +565,31 @@ mod test {
         let chunk2 = FileChunk::new(&file2, FilePos(0), FileLen::MAX);
         let chunk3 = FileChunk::new(&file2, FilePos(0), FileLen(8));
 
-        let hash1 = file_hash(&chunk1, 4096, |_| {}).unwrap();
-        let hash2 = file_hash(&chunk2, 4096, |_| {}).unwrap();
-        let hash3 = file_hash(&chunk3, 4096, |_| {}).unwrap();
+        let hash1 = file_hash::<H>(&chunk1, 4096, |_| {}).unwrap();
+        let hash2 = file_hash::<H>(&chunk2, 4096, |_| {}).unwrap();
+        let hash3 = file_hash::<H>(&chunk3, 4096, |_| {}).unwrap();
 
         assert_ne!(hash1, hash2);
         assert_ne!(hash2, hash3);
+    }
+
+    #[test]
+    fn test_file_hash_metro_128() {
+        test_file_hash::<MetroHash128>()
+    }
+
+    #[test]
+    fn test_file_hash_blake3() {
+        test_file_hash::<blake3::Hasher>()
+    }
+
+    #[test]
+    fn test_file_hash_sha_256() {
+        test_file_hash::<Sha256>()
+    }
+
+    #[test]
+    fn test_file_hash_sha_512() {
+        test_file_hash::<Sha512>()
     }
 }
