@@ -140,9 +140,9 @@ impl<'a> GroupCtx<'a> {
             .path_selector(&base_dir)
             .map_err(|e| format!("Invalid pattern: {}", e))?;
         let hasher = if config.cache {
-            FileHasher::new_cached(transform, log)?
+            FileHasher::new_cached(config.hash_fn, transform, log)?
         } else {
-            FileHasher::new(transform, log)
+            FileHasher::new(config.hash_fn, transform, log)
         };
 
         Self::check_pool_config(thread_pool_sizes, &devices)?;

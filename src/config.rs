@@ -16,6 +16,7 @@ use structopt::StructOpt;
 use crate::file::FileLen;
 use crate::group::FileGroupFilter;
 use crate::group::Replication::{Overreplicated, Underreplicated};
+use crate::hasher::HashFn;
 use crate::path::Path;
 use crate::pattern::{Pattern, PatternError, PatternOpts};
 use crate::selector::PathSelector;
@@ -259,6 +260,10 @@ pub struct GroupConfig {
     /// Expects patterns as Perl compatible regular expressions instead of Unix globs.
     #[structopt(short = "x", long)]
     pub regex: bool,
+
+    /// Hash function.
+    #[structopt(long, default_value = "metro128", possible_values = &HashFn::variants())]
+    pub hash_fn: HashFn,
 
     /// Enables caching of file hashes.
     ///
