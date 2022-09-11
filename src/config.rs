@@ -262,7 +262,7 @@ pub struct GroupConfig {
     pub regex: bool,
 
     /// Hash function.
-    #[structopt(long, default_value = "metro128", possible_values = &HashFn::variants())]
+    #[structopt(long, default_value = "metro", possible_values = &HashFn::variants())]
     pub hash_fn: HashFn,
 
     /// Enables caching of file hashes.
