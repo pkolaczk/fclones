@@ -1,9 +1,72 @@
 version: 2
 
 jobs:
-  build-and-test:
+  format:
     docker:
-      - image: circleci/rust:latest
+      - image: cimg/rust:1.63.0
+    steps:
+      - checkout
+      - run:
+          name: Version information
+          command: |
+            rustc --version; cargo --version; rustup --version
+      - run:
+          name: Install formatter
+          command: |
+            rustup component add rustfmt
+      - run:
+          name: Check format
+          command: |
+            cargo fmt --all -- --check
+
+  build:
+    docker:
+      - image: cimg/rust:1.63.0
+    environment:
+      RUSTFLAGS: '-D warnings'
+    steps:
+      - checkout
+      - run:
+          name: Calculate dependencies
+          command: |
+            rustc --version >rust-version
+            test -e Cargo.lock || cargo generate-lockfile
+      - restore_cache:
+          keys:
+            - cargo-cache-v1-{{ arch }}-{{checksum "rust-version"}}-{{ checksum "Cargo.lock" }}
+      - run:
+          name: Build
+          command: |
+            cargo build --all
+      - save_cache:
+          key: cargo-cache-v1-{{ arch }}-{{checksum "rust-version"}}-{{ checksum "Cargo.lock" }}
+          paths:
+            - /usr/local/cargo/registry
+            - target/debug/.fingerprint
+            - target/debug/build
+            - target/debug/deps
+
+  clippy:
+    docker:
+      - image: cimg/rust:1.63.0
+    steps:
+      - checkout
+      - run:
+          name: Version information
+          command: |
+            rustc --version; cargo --version; rustup --version
+      - run:
+          name: Install Clippy
+          command: |
+            rustup component add clippy
+      - run:
+          name: Run Clippy
+          command: |
+            cargo clippy --all -- -D warnings -D rust-2018-idioms
+
+  test:
+    docker:
+      - image: cimg/rust:1.63.0
     environment:
       RUSTFLAGS: '-D warnings'
     steps:
@@ -32,45 +95,12 @@ jobs:
           command: |
             export RUST_BACKTRACE=1
             cargo test
-  format:
-    docker:
-      - image: circleci/rust:latest
-    steps:
-      - checkout
-      - run:
-          name: Version information
-          command: |
-            rustc --version; cargo --version; rustup --version
-      - run:
-          name: Install formatter
-          command: |
-            rustup component add rustfmt
-      - run:
-          name: Check format
-          command: |
-            cargo fmt --all -- --check
-  lint:
-    docker:
-      - image: circleci/rust:latest
-    steps:
-      - checkout
-      - run:
-         name: Version information
-         command: |
-           rustc --version; cargo --version; rustup --version
-      - run:
-         name: Install Clippy
-         command: |
-           rustup component add clippy
-      - run:
-          name: Run Clippy
-          command: |
-            cargo clippy --all -- -D warnings -D rust-2018-idioms
 
 workflows:
   version: 2
-  build-and-test:
+  all-checks:
     jobs:
-      - build-and-test
       - format
-      - lint
+      - build
+      - clippy
+      - test
