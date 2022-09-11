@@ -4,6 +4,7 @@ use std::cell::Cell;
 use std::cmp::min;
 use std::io;
 use std::io::{BufRead, BufReader, Error, ErrorKind, Read, Write};
+use std::str::FromStr;
 
 use chrono::{DateTime, FixedOffset};
 use console::style;
@@ -277,7 +278,7 @@ impl<W: Write> ReportWriter<W> {
     {
         let groups = groups.into_iter().map(|g| FileGroup {
             file_len: g.as_ref().file_len,
-            file_hash: g.as_ref().file_hash,
+            file_hash: g.as_ref().file_hash.clone(),
             files: g
                 .as_ref()
                 .files
@@ -380,7 +381,7 @@ where
 
         lazy_static! {
             static ref GROUP_HEADER_RE: Regex =
-                Regex::new(r"^([a-f0-9]{32}), ([0-9]+) B [^*]* \* ([0-9]+):").unwrap();
+                Regex::new(r"^([a-f0-9]+), ([0-9]+) B [^*]* \* ([0-9]+):").unwrap();
         }
 
         let captures = GROUP_HEADER_RE.captures(header_str).ok_or_else(|| {
@@ -391,9 +392,7 @@ where
         })?;
 
         Ok(Some(GroupHeader {
-            file_hash: FileHash(
-                u128::from_str_radix(captures.get(1).unwrap().as_str(), 16).unwrap(),
-            ),
+            file_hash: FileHash::from_str(captures.get(1).unwrap().as_str()).unwrap(),
             file_len: FileLen(captures.get(2).unwrap().as_str().parse::<u64>().unwrap()),
             count: captures.get(3).unwrap().as_str().parse::<usize>().unwrap(),
         }))
@@ -742,12 +741,12 @@ mod test {
         let groups = vec![
             FileGroup {
                 file_len: FileLen(100),
-                file_hash: FileHash(0x00112233445566778899aabbccddeeff),
+                file_hash: FileHash::from(0x00112233445566778899aabbccddeeff),
                 files: vec![Path::from("a"), Path::from("b")],
             },
             FileGroup {
                 file_len: FileLen(40),
-                file_hash: FileHash(0x0000000000000555555555ffffffffff),
+                file_hash: FileHash::from(0x0000000000000555555555ffffffffff),
                 files: vec![Path::from("c"), Path::from("d")],
             },
         ];
@@ -761,12 +760,12 @@ mod test {
         let groups = vec![
             FileGroup {
                 file_len: FileLen(100),
-                file_hash: FileHash(0x00112233445566778899aabbccddeeff),
+                file_hash: FileHash::from(0x00112233445566778899aabbccddeeff),
                 files: vec![Path::from("\t\r\n/foo"), Path::from("ąę/ść/żź/óń/")],
             },
             FileGroup {
                 file_len: FileLen(40),
-                file_hash: FileHash(0x0000000000000555555555ffffffffff),
+                file_hash: FileHash::from(0x0000000000000555555555ffffffffff),
                 files: vec![Path::from("c\u{7f}"), Path::from("😀/😋")],
             },
         ];
@@ -781,7 +780,7 @@ mod test {
         let header = dummy_report_header();
         let groups = vec![FileGroup {
             file_len: FileLen(100),
-            file_hash: FileHash(0x00112233445566778899aabbccddeeff),
+            file_hash: FileHash::from(0x00112233445566778899aabbccddeeff),
             files: vec![Path::from(OsString::from_vec(vec![
                 0xED, 0xA0, 0xBD, 0xED, 0xB8, 0x8D,
             ]))],
@@ -875,12 +874,12 @@ mod test {
         let groups = vec![
             FileGroup {
                 file_len: FileLen(100),
-                file_hash: FileHash(0x00112233445566778899aabbccddeeff),
+                file_hash: FileHash::from(0x00112233445566778899aabbccddeeff),
                 files: vec![Path::from("a"), Path::from("b")],
             },
             FileGroup {
                 file_len: FileLen(40),
-                file_hash: FileHash(0x0000000000000555555555ffffffffff),
+                file_hash: FileHash::from(0x0000000000000555555555ffffffffff),
                 files: vec![Path::from("c"), Path::from("d")],
             },
         ];
@@ -894,12 +893,12 @@ mod test {
         let groups = vec![
             FileGroup {
                 file_len: FileLen(100),
-                file_hash: FileHash(0x00112233445566778899aabbccddeeff),
+                file_hash: FileHash::from(0x00112233445566778899aabbccddeeff),
                 files: vec![Path::from("\t\r\n/foo"), Path::from("ąę/ść/żź/óń/")],
             },
             FileGroup {
                 file_len: FileLen(40),
-                file_hash: FileHash(0x0000000000000555555555ffffffffff),
+                file_hash: FileHash::from(0x0000000000000555555555ffffffffff),
                 files: vec![Path::from("c\u{7f}"), Path::from("😀/😋")],
             },
         ];
@@ -914,7 +913,7 @@ mod test {
         let header = dummy_report_header();
         let groups = vec![FileGroup {
             file_len: FileLen(100),
-            file_hash: FileHash(0x00112233445566778899aabbccddeeff),
+            file_hash: FileHash::from(0x00112233445566778899aabbccddeeff),
             files: vec![Path::from(OsString::from_vec(vec![
                 0xED, 0xA0, 0xBD, 0xED, 0xB8, 0x8D,
             ]))],

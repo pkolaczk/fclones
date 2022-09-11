@@ -173,10 +173,12 @@ mod test {
             let cache_path = Path::from(root.join("cache"));
             let cache = HashCache::open(&cache_path, None, HashFn::Metro128).unwrap();
             let key = cache.key(&chunk, &metadata).unwrap();
-            let orig_hash = FileHash(12345);
+            let orig_hash = FileHash::from(12345);
 
             let data_len = FileLen(200);
-            cache.put(&key, &metadata, data_len, orig_hash).unwrap();
+            cache
+                .put(&key, &metadata, data_len, orig_hash.clone())
+                .unwrap();
             let cached_hash = cache.get(&key, &metadata).unwrap();
 
             assert_eq!(cached_hash, Some((data_len, orig_hash)))
@@ -196,7 +198,7 @@ mod test {
             let cache = HashCache::open(&cache_path, None, HashFn::Metro128).unwrap();
             let key = cache.key(&chunk, &metadata).unwrap();
             cache
-                .put(&key, &metadata, chunk.len, FileHash(12345))
+                .put(&key, &metadata, chunk.len, FileHash::from(12345))
                 .unwrap();
 
             // modify the file
@@ -229,7 +231,7 @@ mod test {
             let key = cache.key(&chunk, &metadata).unwrap();
 
             cache
-                .put(&key, &metadata, chunk.len, FileHash(12345))
+                .put(&key, &metadata, chunk.len, FileHash::from(12345))
                 .unwrap();
 
             let chunk = FileChunk::new(&path, FilePos(1000), FileLen(2000));
@@ -255,9 +257,11 @@ mod test {
                 let cache = HashCache::open(&cache_path, None, HashFn::Metro128).unwrap();
                 let key = cache.key(&chunk, &metadata).unwrap();
 
-                let orig_hash = FileHash(12345);
+                let orig_hash = FileHash::from(12345);
                 let data_len = FileLen(200);
-                cache.put(&key, &metadata, data_len, orig_hash).unwrap();
+                cache
+                    .put(&key, &metadata, data_len, orig_hash.clone())
+                    .unwrap();
                 let cached_hash = cache.get(&key, &metadata).unwrap();
                 assert_eq!(cached_hash, Some((data_len, orig_hash)));
                 drop(cache); // unlock the db so we can open another cache

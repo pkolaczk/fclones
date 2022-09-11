@@ -1,4 +1,3 @@
-use byteorder::{LittleEndian, ReadBytesExt};
 use std::cell::RefCell;
 use std::cmp::{max, min};
 use std::fs::{File, OpenOptions};
@@ -65,7 +64,7 @@ impl StreamHasher for MetroHash128 {
 
     fn finish(self) -> FileHash {
         let (a, b) = self.finish128();
-        FileHash(((a as u128) << 64) | b as u128)
+        FileHash::from(((a as u128) << 64) | b as u128)
     }
 }
 
@@ -79,13 +78,7 @@ impl StreamHasher for blake3::Hasher {
     }
 
     fn finish(self) -> FileHash {
-        FileHash(
-            self.finalize()
-                .as_bytes()
-                .as_slice()
-                .read_u128::<LittleEndian>()
-                .unwrap(),
-        )
+        FileHash::from(self.finalize().as_bytes().as_slice())
     }
 }
 
@@ -100,7 +93,7 @@ impl StreamHasher for Sha512 {
 
     fn finish(self) -> FileHash {
         let result = self.finalize();
-        FileHash(result.as_slice().read_u128::<LittleEndian>().unwrap())
+        FileHash::from(result.as_slice())
     }
 }
 
@@ -115,7 +108,7 @@ impl StreamHasher for Sha256 {
 
     fn finish(self) -> FileHash {
         let result = self.finalize();
-        FileHash(result.as_slice().read_u128::<LittleEndian>().unwrap())
+        FileHash::from(result.as_slice())
     }
 }
 
@@ -182,7 +175,7 @@ impl FileHasher<'_> {
             HashFn::Sha256 => file_hash::<Sha256>(chunk, self.buf_len, progress),
             HashFn::Sha512 => file_hash::<Sha512>(chunk, self.buf_len, progress),
         }?;
-        self.store_hash(key, metadata, chunk.len, hash);
+        self.store_hash(key, metadata, chunk.len, hash.clone());
         Ok(hash)
     }
 
@@ -271,7 +264,7 @@ impl FileHasher<'_> {
             };
         }
 
-        self.store_hash(key, metadata, hash.0, hash.1);
+        self.store_hash(key, metadata, hash.0, hash.1.clone());
         Ok(hash)
     }
 
