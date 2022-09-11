@@ -10,7 +10,10 @@ use std::ops::{Add, AddAssign, BitXor, Deref, Mul, Sub};
 use std::{fs, io};
 
 use byte_unit::Byte;
+use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
 use bytesize::ByteSize;
+use hex::FromHexError;
+use itertools::{EitherOrBoth, Itertools};
 use rayon::iter::{IntoParallelRefIterator, IntoParallelRefMutIterator, ParallelIterator};
 use serde::*;
 use smallvec::alloc::fmt::Formatter;
@@ -424,8 +427,17 @@ pub(crate) fn get_physical_file_location(path: &Path) -> io::Result<Option<u64>>
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
-pub struct FileHash(pub u128);
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
+pub struct FileHash(Box<[u8]>);
+
+impl FileHash {
+    pub fn u128_prefix(&self) -> u128 {
+        self.0
+            .as_ref()
+            .read_u128::<LittleEndian>()
+            .expect("Hash must be at least 128-bit long")
+    }
+}
 
 pub trait AsFileHash {
     fn as_file_hash(&self) -> &FileHash;
@@ -445,7 +457,29 @@ impl<T> AsFileHash for (T, FileHash) {
 
 impl Display for FileHash {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        f.pad(format!("{:032x}", self.0).as_str())
+        f.pad(hex::encode(&self.0).as_str())
+    }
+}
+
+impl From<&[u8]> for FileHash {
+    fn from(bytes: &[u8]) -> Self {
+        FileHash(bytes.into())
+    }
+}
+
+impl From<u128> for FileHash {
+    fn from(hash: u128) -> Self {
+        let mut bytes: Vec<u8> = vec![];
+        bytes.write_u128::<LittleEndian>(hash).unwrap();
+        FileHash(bytes.into_boxed_slice())
+    }
+}
+
+impl FromStr for FileHash {
+    type Err = FromHexError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Ok(FileHash(hex::decode(s)?.into_boxed_slice()))
     }
 }
 
@@ -453,7 +487,17 @@ impl BitXor for FileHash {
     type Output = Self;
 
     fn bitxor(self, rhs: Self) -> Self::Output {
-        FileHash(rhs.0 ^ self.0)
+        FileHash(
+            self.0
+                .iter()
+                .zip_longest(rhs.0.as_ref())
+                .map(|r| match r {
+                    EitherOrBoth::Both(a, b) => a ^ b,
+                    _ => 0,
+                })
+                .collect_vec()
+                .into_boxed_slice(),
+        )
     }
 }
 
@@ -462,7 +506,7 @@ impl Serialize for FileHash {
     where
         S: Serializer,
     {
-        serializer.collect_str(self)
+        serializer.collect_str(self.to_string().as_str())
     }
 }
 
@@ -472,8 +516,8 @@ impl<'de> Deserialize<'de> for FileHash {
         D: Deserializer<'de>,
     {
         let s = String::deserialize(deserializer)?;
-        let hash_value = u128::from_str_radix(s.as_str(), 16).map_err(serde::de::Error::custom)?;
-        Ok(FileHash(hash_value))
+        let h = FileHash::from_str(&s).map_err(serde::de::Error::custom)?;
+        Ok(h)
     }
 }
 

@@ -464,7 +464,7 @@ fn partition_by_devices(
         for f in g.files {
             let device = &devices[f.get_device_index()];
             result[device.index].push(HashedFileInfo {
-                file_hash: g.file_hash,
+                file_hash: g.file_hash.clone(),
                 file_info: f,
             });
         }
@@ -572,10 +572,10 @@ where
                     // when the pool has only one thread.
                     let hash_fn: &HashFn<'static> = unsafe { std::mem::transmute(hash_fn) };
                     thread_pool.spawn_fifo(move || {
-                        let old_hash = fg[0].file_hash;
+                        let old_hash = fg[0].file_hash.clone();
                         if let Some(hash) = hash_fn((&mut fg[0].file_info, old_hash)) {
                             for mut f in fg {
-                                f.file_hash = hash;
+                                f.file_hash = hash.clone();
                                 tx.send(f).unwrap();
                             }
                         }
@@ -725,7 +725,7 @@ fn group_by_size(ctx: &GroupCtx<'_>, files: Vec<Vec<FileInfo>>) -> Vec<FileGroup
         .into_iter()
         .map(|(l, files)| FileGroup {
             file_len: l,
-            file_hash: FileHash(0),
+            file_hash: FileHash::from(0),
             files: files.into_vec(),
         })
         .filter(|g| g.matches(&ctx.group_filter))
@@ -862,8 +862,8 @@ fn group_transformed(ctx: &GroupCtx<'_>, files: Vec<FileInfo>) -> Vec<FileGroup<
     files.par_sort_unstable_by_key(|f| FileId::of(f)); // need to sort so we know unique_file_count
 
     let groups = vec![FileGroup {
-        file_len: FileLen(0),   // doesn't matter, will be computed
-        file_hash: FileHash(0), // doesn't matter, will be computed
+        file_len: FileLen(0),         // doesn't matter, will be computed
+        file_hash: FileHash::from(0), // doesn't matter, will be computed
         files,
     }];
     let progress = ctx.log.progress_bar(
@@ -1147,7 +1147,7 @@ pub fn group_files(config: &GroupConfig, log: &Log) -> Result<Vec<FileGroup<File
             group_by_contents(&ctx, prefix_len, suffix_groups)
         }
     };
-    groups.par_sort_by_key(|g| Reverse((g.file_len, g.file_hash)));
+    groups.par_sort_by_key(|g| Reverse((g.file_len, g.file_hash.u128_prefix())));
     groups
         .par_iter_mut()
         .for_each(|g| g.sort_by_path(&ctx.group_filter.root_paths));
@@ -1260,7 +1260,7 @@ mod test {
         let devices = DiskDevices::default();
         let input = vec![FileGroup {
             file_len: FileLen(200),
-            file_hash: FileHash(0),
+            file_hash: FileHash::from(0),
             files: vec![
                 FileInfo {
                     id: FileId {
@@ -1289,7 +1289,7 @@ mod test {
             |_| true,
             &devices,
             FileAccess::Random,
-            |(fi, _)| Some(FileHash(fi.location as u128)),
+            |(fi, _)| Some(FileHash::from(fi.location as u128)),
         );
 
         assert_eq!(result.len(), 2);
@@ -1303,7 +1303,7 @@ mod test {
         let devices = DiskDevices::default();
         let input = vec![FileGroup {
             file_len: FileLen(200),
-            file_hash: FileHash(0),
+            file_hash: FileHash::from(0),
             files: vec![
                 FileInfo {
                     id: FileId {
@@ -1335,7 +1335,7 @@ mod test {
             FileAccess::Random,
             |(fi, _)| {
                 hash_call_count.fetch_add(1, Ordering::Relaxed);
-                Some(FileHash(fi.location as u128))
+                Some(FileHash::from(fi.location as u128))
             },
         );
 
@@ -1352,7 +1352,7 @@ mod test {
         let input = vec![
             FileGroup {
                 file_len: FileLen(200),
-                file_hash: FileHash(0),
+                file_hash: FileHash::from(0),
                 files: vec![FileInfo {
                     id: FileId {
                         device: 1,
@@ -1365,7 +1365,7 @@ mod test {
             },
             FileGroup {
                 file_len: FileLen(500),
-                file_hash: FileHash(0),
+                file_hash: FileHash::from(0),
                 files: vec![FileInfo {
                     id: FileId {
                         device: 1,
@@ -1384,7 +1384,7 @@ mod test {
             |_| true,
             &devices,
             FileAccess::Random,
-            |(_, _)| Some(FileHash(123456)),
+            |(_, _)| Some(FileHash::from(123456)),
         );
 
         assert_eq!(result.len(), 1);
@@ -1396,7 +1396,7 @@ mod test {
         let devices = DiskDevices::default();
         let input = vec![FileGroup {
             file_len: FileLen(200),
-            file_hash: FileHash(0),
+            file_hash: FileHash::from(0),
             files: vec![FileInfo {
                 id: FileId {
                     device: 1,
@@ -1417,7 +1417,7 @@ mod test {
             FileAccess::Random,
             |(fi, _)| {
                 called.store(true, Ordering::Release);
-                Some(FileHash(fi.location as u128))
+                Some(FileHash::from(fi.location as u128))
             },
         );
 
@@ -1430,7 +1430,7 @@ mod test {
         let devices = DiskDevices::default();
         let input = vec![FileGroup {
             file_len: FileLen(200),
-            file_hash: FileHash(0),
+            file_hash: FileHash::from(0),
             files: vec![
                 FileInfo {
                     id: FileId {
@@ -1459,7 +1459,7 @@ mod test {
             |g| g.files.len() >= 2,
             &devices,
             FileAccess::Random,
-            |(fi, _)| Some(FileHash(fi.location as u128)),
+            |(fi, _)| Some(FileHash::from(fi.location as u128)),
         );
 
         assert!(result.is_empty())
@@ -1474,7 +1474,7 @@ mod test {
         for i in 0..count {
             input.push(FileGroup {
                 file_len: FileLen(0),
-                file_hash: FileHash(0),
+                file_hash: FileHash::from(0),
                 files: vec![FileInfo {
                     id: FileId {
                         device: 1,
@@ -1497,7 +1497,7 @@ mod test {
             FileAccess::Random,
             |(fi, _)| {
                 processing_order.lock().unwrap().push(fi.location as i32);
-                Some(FileHash(fi.location as u128))
+                Some(FileHash::from(fi.location as u128))
             },
         );
         let processing_order = processing_order.into_inner().unwrap();

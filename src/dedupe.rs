@@ -763,7 +763,7 @@ where
     P: Into<Path>,
 {
     let file_len = group.file_len;
-    let file_hash = group.file_hash;
+    let file_hash = group.file_hash.clone();
     let error = |msg: &str| {
         Err(Error::from(format!(
             "Could not determine files to drop in group with hash {} and len {}: {}",
@@ -1035,6 +1035,7 @@ mod test {
     use std::collections::HashSet;
     use std::fs::{create_dir, create_dir_all};
     use std::path::PathBuf;
+    use std::str::FromStr;
     use std::{thread, time};
 
     use chrono::Duration;
@@ -1206,7 +1207,7 @@ mod test {
     #[test]
     fn test_partition_selects_files_for_removal() {
         with_dir("dedupe/partition/basic", |root| {
-            let group = make_group(root, FileHash(0));
+            let group = make_group(root, FileHash::from_str("00").unwrap());
             let config = DedupeConfig::default();
             let partitioned = partition(group, &config, &Log::new()).unwrap();
             assert_eq!(partitioned.to_keep.len(), 1);
@@ -1217,7 +1218,7 @@ mod test {
     #[test]
     fn test_partition_bails_out_if_file_modified_too_late() {
         with_dir("dedupe/partition/modification", |root| {
-            let group = make_group(root, FileHash(0));
+            let group = make_group(root, FileHash::from_str("00").unwrap());
             let mut config = DedupeConfig::default();
             config.modified_before = Some(DateTime::from(Local::now() - Duration::days(1)));
             let partitioned = partition(group, &config, &Log::new());
@@ -1228,7 +1229,7 @@ mod test {
     #[test]
     fn test_partition_skips_file_with_different_len() {
         with_dir("dedupe/partition/file_len", |root| {
-            let group = make_group(root, FileHash(0));
+            let group = make_group(root, FileHash::from_str("00").unwrap());
             let path = group.files[0].clone();
             write_file(&path.to_path_buf(), "foo");
 
@@ -1260,7 +1261,7 @@ mod test {
                 // file creation time
                 return;
             }
-            let group = make_group(root, FileHash(0));
+            let group = make_group(root, FileHash::from_str("00").unwrap());
             let mut config = DedupeConfig::default();
             config.priority = vec![Priority::Newest];
             let partitioned_1 = partition(group.clone(), &config, &Log::new()).unwrap();
@@ -1281,7 +1282,7 @@ mod test {
     #[test]
     fn test_partition_respects_modification_time_priority() {
         with_dir("dedupe/partition/mtime_priority", |root| {
-            let group = make_group(root, FileHash(0));
+            let group = make_group(root, FileHash::from_str("00").unwrap());
 
             thread::sleep(time::Duration::from_millis(10));
             let path = group.files[0].clone();
@@ -1307,7 +1308,7 @@ mod test {
     #[test]
     fn test_partition_respects_keep_patterns() {
         with_dir("dedupe/partition/keep", |root| {
-            let group = make_group(root, FileHash(0));
+            let group = make_group(root, FileHash::from_str("00").unwrap());
             let mut config = DedupeConfig::default();
             config.priority = vec![Priority::LeastRecentlyModified];
             config.keep_name_patterns = vec![Pattern::glob("*_1").unwrap()];
@@ -1326,7 +1327,7 @@ mod test {
     #[test]
     fn test_partition_respects_drop_patterns() {
         with_dir("dedupe/partition/drop", |root| {
-            let group = make_group(root, FileHash(0));
+            let group = make_group(root, FileHash::from_str("00").unwrap());
             let mut config = DedupeConfig::default();
             config.priority = vec![Priority::LeastRecentlyModified];
             config.name_patterns = vec![Pattern::glob("*_3").unwrap()];
@@ -1350,8 +1351,8 @@ mod test {
             create_dir(&root1).unwrap();
             create_dir(&root2).unwrap();
 
-            let group1 = make_group(&root1, FileHash(0));
-            let group2 = make_group(&root2, FileHash(0));
+            let group1 = make_group(&root1, FileHash::from_str("00").unwrap());
+            let group2 = make_group(&root2, FileHash::from_str("00").unwrap());
             let group = FileGroup {
                 file_len: group1.file_len,
                 file_hash: group1.file_hash,
@@ -1395,7 +1396,7 @@ mod test {
 
             let group = FileGroup {
                 file_len: FileLen(3),
-                file_hash: FileHash(0),
+                file_hash: FileHash::from_str("00").unwrap(),
                 files: vec![
                     Path::from(&file_b1),
                     Path::from(&file_a2),
@@ -1428,7 +1429,7 @@ mod test {
             log.no_progress = true;
             log.log_stderr_to_stdout = true;
 
-            let group = make_group(root, FileHash(0));
+            let group = make_group(root, FileHash::from_str("00").unwrap());
             let mut config = DedupeConfig::default();
             config.priority = vec![Priority::LeastRecentlyModified];
             let script = dedupe(vec![group], DedupeOp::Remove, &config, &log);
@@ -1447,9 +1448,9 @@ mod test {
             log.no_progress = true;
             log.log_stderr_to_stdout = true;
 
-            let group_1 = make_group(&root.join("group_1"), FileHash(0));
-            let group_2 = make_group(&root.join("group_2"), FileHash(1));
-            let group_3 = make_group(&root.join("group_3"), FileHash(2));
+            let group_1 = make_group(&root.join("group_1"), FileHash::from_str("00").unwrap());
+            let group_2 = make_group(&root.join("group_2"), FileHash::from_str("01").unwrap());
+            let group_3 = make_group(&root.join("group_3"), FileHash::from_str("02").unwrap());
             let groups = vec![group_1, group_2, group_3];
 
             let mut config = DedupeConfig::default();

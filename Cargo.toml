@@ -35,6 +35,7 @@ dtparse = "1.2"
 dunce = "1.0"
 fallible-iterator = "0.2"
 filetime = "0.2"
+hex = "0.4"
 ignore = "0.4.18"
 indicatif = { version = "0.14", features = ["with_rayon"] }
 indexmap = "1.8"
