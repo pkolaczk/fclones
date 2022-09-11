@@ -8,7 +8,12 @@ use std::str::FromStr;
 
 use metrohash::MetroHash128;
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256, Sha512};
+#[cfg(feature = "sha2")]
+use sha2::{Sha256, Sha512};
+#[cfg(feature = "sha3")]
+use sha3::{Sha3_256, Sha3_512};
+#[cfg(feature = "xxhash")]
+use xxhash_rust::xxh3::Xxh3;
 
 use crate::cache::{HashCache, Key};
 use crate::file::{FileAccess, FileChunk, FileHash, FileLen, FileMetadata, FilePos};
@@ -20,15 +25,38 @@ use crate::Error;
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub enum HashFn {
     #[default]
-    Metro128,
+    Metro,
+    #[cfg(feature = "xxhash")]
+    Xxh3,
+    #[cfg(feature = "blake3")]
     Blake3,
+    #[cfg(feature = "sha2")]
     Sha256,
+    #[cfg(feature = "sha2")]
     Sha512,
+    #[cfg(feature = "sha3")]
+    Sha3_256,
+    #[cfg(feature = "sha3")]
+    Sha3_512,
 }
 
 impl HashFn {
     pub fn variants() -> Vec<&'static str> {
-        vec!["metro128", "blake3", "sha256", "sha512"]
+        vec![
+            "metro",
+            #[cfg(feature = "xxhash")]
+            "xxhash3",
+            #[cfg(feature = "blake3")]
+            "blake3",
+            #[cfg(feature = "sha2")]
+            "sha256",
+            #[cfg(feature = "sha2")]
+            "sha512",
+            #[cfg(feature = "sha3")]
+            "sha3-256",
+            #[cfg(feature = "sha3")]
+            "sha3-512",
+        ]
     }
 }
 
@@ -37,10 +65,19 @@ impl FromStr for HashFn {
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s.to_lowercase().as_str() {
-            "metro128" => Ok(Self::Metro128),
+            "metro" => Ok(Self::Metro),
+            #[cfg(feature = "xxhash")]
+            "xxhash3" => Ok(Self::Xxh3),
+            #[cfg(feature = "blake3")]
             "blake3" => Ok(Self::Blake3),
+            #[cfg(feature = "sha2")]
             "sha256" => Ok(Self::Sha256),
+            #[cfg(feature = "sha2")]
             "sha512" => Ok(Self::Sha512),
+            #[cfg(feature = "sha3")]
+            "sha3-256" => Ok(Self::Sha3_256),
+            #[cfg(feature = "sha3")]
+            "sha3-512" => Ok(Self::Sha3_512),
             _ => Err(format!("Unknown hash algorithm: {}", s)),
         }
     }
@@ -68,13 +105,29 @@ impl StreamHasher for MetroHash128 {
     }
 }
 
+#[cfg(feature = "xxhash")]
+impl StreamHasher for Xxh3 {
+    fn new() -> Self {
+        Xxh3::new()
+    }
+
+    fn update(&mut self, bytes: &[u8]) {
+        self.update(bytes)
+    }
+
+    fn finish(self) -> FileHash {
+        FileHash::from(self.digest128())
+    }
+}
+
+#[cfg(feature = "blake3")]
 impl StreamHasher for blake3::Hasher {
     fn new() -> Self {
         blake3::Hasher::new()
     }
 
     fn update(&mut self, bytes: &[u8]) {
-        blake3::Hasher::update(self, bytes);
+        self.update(bytes);
     }
 
     fn finish(self) -> FileHash {
@@ -82,31 +135,69 @@ impl StreamHasher for blake3::Hasher {
     }
 }
 
-impl StreamHasher for Sha512 {
+#[cfg(feature = "sha2")]
+impl StreamHasher for Sha256 {
     fn new() -> Self {
-        <Sha512 as Digest>::new()
+        <Sha256 as sha2::Digest>::new()
     }
 
     fn update(&mut self, bytes: &[u8]) {
-        Digest::update(self, bytes);
+        sha2::Digest::update(self, bytes);
     }
 
     fn finish(self) -> FileHash {
+        use sha2::Digest;
         let result = self.finalize();
         FileHash::from(result.as_slice())
     }
 }
 
-impl StreamHasher for Sha256 {
+#[cfg(feature = "sha2")]
+impl StreamHasher for Sha512 {
     fn new() -> Self {
-        <Sha256 as Digest>::new()
+        <Sha512 as sha2::Digest>::new()
     }
 
     fn update(&mut self, bytes: &[u8]) {
-        Digest::update(self, bytes);
+        sha2::Digest::update(self, bytes);
     }
 
     fn finish(self) -> FileHash {
+        use sha2::Digest;
+        let result = self.finalize();
+        FileHash::from(result.as_slice())
+    }
+}
+
+#[cfg(feature = "sha3")]
+impl StreamHasher for Sha3_256 {
+    fn new() -> Self {
+        <Sha3_256 as sha3::Digest>::new()
+    }
+
+    fn update(&mut self, bytes: &[u8]) {
+        sha3::Digest::update(self, bytes);
+    }
+
+    fn finish(self) -> FileHash {
+        use sha3::Digest;
+        let result = self.finalize();
+        FileHash::from(result.as_slice())
+    }
+}
+
+#[cfg(feature = "sha3")]
+impl StreamHasher for Sha3_512 {
+    fn new() -> Self {
+        <Sha3_512 as sha3::Digest>::new()
+    }
+
+    fn update(&mut self, bytes: &[u8]) {
+        sha3::Digest::update(self, bytes);
+    }
+
+    fn finish(self) -> FileHash {
+        use sha3::Digest;
         let result = self.finalize();
         FileHash::from(result.as_slice())
     }
@@ -170,10 +261,19 @@ impl FileHasher<'_> {
             return Ok(hash);
         }
         let hash = match self.algorithm {
-            HashFn::Metro128 => file_hash::<MetroHash128>(chunk, self.buf_len, progress),
+            HashFn::Metro => file_hash::<MetroHash128>(chunk, self.buf_len, progress),
+            #[cfg(feature = "xxhash")]
+            HashFn::Xxh3 => file_hash::<Xxh3>(chunk, self.buf_len, progress),
+            #[cfg(feature = "blake3")]
             HashFn::Blake3 => file_hash::<blake3::Hasher>(chunk, self.buf_len, progress),
+            #[cfg(feature = "sha2")]
             HashFn::Sha256 => file_hash::<Sha256>(chunk, self.buf_len, progress),
+            #[cfg(feature = "sha2")]
             HashFn::Sha512 => file_hash::<Sha512>(chunk, self.buf_len, progress),
+            #[cfg(feature = "sha3")]
+            HashFn::Sha3_256 => file_hash::<Sha3_256>(chunk, self.buf_len, progress),
+            #[cfg(feature = "sha3")]
+            HashFn::Sha3_512 => file_hash::<Sha3_512>(chunk, self.buf_len, progress),
         }?;
         self.store_hash(key, metadata, chunk.len, hash.clone());
         Ok(hash)
@@ -222,20 +322,26 @@ impl FileHasher<'_> {
         }
 
         let mut transform_output = transform.run(chunk.path)?;
-        let hash_input = &mut transform_output.out_stream;
+        let stream = &mut transform_output.out_stream;
+        let buf_len = self.buf_len;
 
         // Transformed file may have a different length, so we cannot use stream_hash progress
         // reporting, as it would report progress of the transformed stream. Instead we advance
         // progress after doing the full file.
         let hash = match self.algorithm {
-            HashFn::Metro128 => {
-                stream_hash::<MetroHash128>(hash_input, chunk.len, self.buf_len, |_| {})
-            }
-            HashFn::Blake3 => {
-                stream_hash::<blake3::Hasher>(hash_input, chunk.len, self.buf_len, |_| {})
-            }
-            HashFn::Sha256 => stream_hash::<Sha256>(hash_input, chunk.len, self.buf_len, |_| {}),
-            HashFn::Sha512 => stream_hash::<Sha512>(hash_input, chunk.len, self.buf_len, |_| {}),
+            HashFn::Metro => stream_hash::<MetroHash128>(stream, chunk.len, buf_len, |_| {}),
+            #[cfg(feature = "xxhash")]
+            HashFn::Xxh3 => stream_hash::<Xxh3>(stream, chunk.len, buf_len, |_| {}),
+            #[cfg(feature = "blake3")]
+            HashFn::Blake3 => stream_hash::<blake3::Hasher>(stream, chunk.len, buf_len, |_| {}),
+            #[cfg(feature = "sha2")]
+            HashFn::Sha256 => stream_hash::<Sha256>(stream, chunk.len, buf_len, |_| {}),
+            #[cfg(feature = "sha2")]
+            HashFn::Sha512 => stream_hash::<Sha512>(stream, chunk.len, buf_len, |_| {}),
+            #[cfg(feature = "sha3")]
+            HashFn::Sha3_256 => stream_hash::<Sha3_256>(stream, chunk.len, buf_len, |_| {}),
+            #[cfg(feature = "sha3")]
+            HashFn::Sha3_512 => stream_hash::<Sha3_512>(stream, chunk.len, buf_len, |_| {}),
         };
         progress(chunk.len.0 as usize);
 
@@ -527,7 +633,6 @@ fn file_hash<H: StreamHasher>(
 #[cfg(test)]
 mod test {
     use metrohash::MetroHash128;
-    use sha2::{Sha256, Sha512};
     use std::fs::{create_dir_all, File};
     use std::io::Write;
     use std::path::PathBuf;
@@ -572,17 +677,38 @@ mod test {
     }
 
     #[test]
+    #[cfg(feature = "xxhash")]
+    fn test_file_hash_xxh3() {
+        test_file_hash::<xxhash_rust::xxh3::Xxh3>()
+    }
+
+    #[test]
+    #[cfg(feature = "blake3")]
     fn test_file_hash_blake3() {
         test_file_hash::<blake3::Hasher>()
     }
 
     #[test]
-    fn test_file_hash_sha_256() {
-        test_file_hash::<Sha256>()
+    #[cfg(feature = "sha2")]
+    fn test_file_hash_sha256() {
+        test_file_hash::<sha2::Sha256>()
     }
 
     #[test]
-    fn test_file_hash_sha_512() {
-        test_file_hash::<Sha512>()
+    #[cfg(feature = "sha2")]
+    fn test_file_hash_sha512() {
+        test_file_hash::<sha2::Sha512>()
+    }
+
+    #[test]
+    #[cfg(feature = "sha3")]
+    fn test_file_hash_sha3_256() {
+        test_file_hash::<sha3::Sha3_256>()
+    }
+
+    #[test]
+    #[cfg(feature = "sha3")]
+    fn test_file_hash_sha3_512() {
+        test_file_hash::<sha3::Sha3_512>()
     }
 }

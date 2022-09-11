@@ -171,7 +171,7 @@ mod test {
             let chunk = FileChunk::new(&path, FilePos(0), FileLen(1000));
 
             let cache_path = Path::from(root.join("cache"));
-            let cache = HashCache::open(&cache_path, None, HashFn::Metro128).unwrap();
+            let cache = HashCache::open(&cache_path, None, HashFn::Metro).unwrap();
             let key = cache.key(&chunk, &metadata).unwrap();
             let orig_hash = FileHash::from(12345);
 
@@ -195,7 +195,7 @@ mod test {
             let chunk = FileChunk::new(&path, FilePos(0), FileLen(1000));
 
             let cache_path = Path::from(root.join("cache"));
-            let cache = HashCache::open(&cache_path, None, HashFn::Metro128).unwrap();
+            let cache = HashCache::open(&cache_path, None, HashFn::Metro).unwrap();
             let key = cache.key(&chunk, &metadata).unwrap();
             cache
                 .put(&key, &metadata, chunk.len, FileHash::from(12345))
@@ -227,7 +227,7 @@ mod test {
             let chunk = FileChunk::new(&path, FilePos(0), FileLen(1000));
 
             let cache_path = Path::from(root.join("cache"));
-            let cache = HashCache::open(&cache_path, None, HashFn::Metro128).unwrap();
+            let cache = HashCache::open(&cache_path, None, HashFn::Metro).unwrap();
             let key = cache.key(&chunk, &metadata).unwrap();
 
             cache
@@ -254,7 +254,7 @@ mod test {
                 let chunk = FileChunk::new(&path, FilePos(0), FileLen(1000));
 
                 let cache_path = Path::from(root.join("cache"));
-                let cache = HashCache::open(&cache_path, None, HashFn::Metro128).unwrap();
+                let cache = HashCache::open(&cache_path, None, HashFn::Metro).unwrap();
                 let key = cache.key(&chunk, &metadata).unwrap();
 
                 let orig_hash = FileHash::from(12345);
@@ -266,8 +266,7 @@ mod test {
                 assert_eq!(cached_hash, Some((data_len, orig_hash)));
                 drop(cache); // unlock the db so we can open another cache
 
-                let cache =
-                    HashCache::open(&cache_path, Some("transform"), HashFn::Metro128).unwrap();
+                let cache = HashCache::open(&cache_path, Some("transform"), HashFn::Metro).unwrap();
                 let cached_hash = cache.get(&key, &metadata).unwrap();
                 assert_eq!(cached_hash, None);
             },
