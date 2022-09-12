@@ -58,7 +58,7 @@ on either SSD or HDD storage.
   - parallel processing capability in all I/O and CPU heavy stages
   - automatic tuning of parallelism and access strategy based on device type (SSD vs HDD)
   - low memory footprint thanks to heavily optimized path representation
-  - fast, non-cryptographic 128-bit hashing function
+  - variety of fast non-cryptographic and cryptographic hash functions up to 512 bits wide
   - doesn't push data out of the page-cache (Linux-only)
   - optional persistent caching of file hashes
   - accurate progress reporting   
@@ -385,7 +385,7 @@ the previous stage must complete fully before the next one is started.
    (default 2). 
 3. In each group, remove duplicate files with the same inode id. The same file could be reached through different
    paths when hardlinks are present. This step can be optionally skipped.
-4. For each remaining file, compute a 128-bit hash of a tiny block of initial data. Put files with different hashes 
+4. For each remaining file, compute a hash of a tiny block of initial data. Put files with different hashes 
    into separate groups. Prune result groups if needed. 
 5. For each remaining file, compute a hash of a tiny block of data at the end of the file. 
    Put files with different hashes into separate groups. Prune small groups if needed.
@@ -394,10 +394,25 @@ the previous stage must complete fully before the next one is started.
    omitted. Same as in steps 4 and 5, split groups and remove the ones that are too small.
 7. Write report to the stdout.          
     
-Note that there is no byte-by-byte comparison of files anywhere. A fast and good 128-bit 
-[MetroHash](http://www.jandrewrogers.com/2015/05/27/metrohash/) hash function
-is used and you don't need to worry about hash collisions. At 10<sup>15</sup> files, the probability of collision is
-0.000000001, without taking into account the requirement for the files to also match by size.
+Note that there is no byte-by-byte comparison of files anywhere. All available hash functions are at least 
+128-bit wide, and you don't need to worry about hash collisions. At 10<sup>15</sup> files, 
+the probability of collision is 0.000000001 when using a 128-bit hash, 
+without taking into account the requirement for the files to also match by size.
+
+### Hashes
+You can select the hash function with `--hash-fn` (default: `metro`).
+Non-cryptographic hashes are much more efficient than cryptographic, 
+however you probably won't see much difference unless you're reading from a fast SSD or if file data is cached.
+
+| Hash function                                               | Hash width | Cryptographic | 
+|-------------------------------------------------------------|------------|---------------|
+| [metro](http://www.jandrewrogers.com/2015/05/27/metrohash/) | 128-bit    | No            |
+| [xxhash3](https://cyan4973.github.io/xxHash/)               | 128-bit    | No            |
+| [blake3](https://github.com/BLAKE3-team/BLAKE3)             | 256-bit    | Yes           |         
+| [sha256](https://en.wikipedia.org/wiki/SHA-2)               | 256-bit    | Yes           | 
+| [sha512](https://en.wikipedia.org/wiki/SHA-2)               | 512-bit    | Yes           | 
+| [sha3-256](https://en.wikipedia.org/wiki/SHA-3)             | 256-bit    | Yes           |
+| [sha3-512](https://en.wikipedia.org/wiki/SHA-3)             | 512-bit    | Yes           |
 
 ## Tuning
 This section provides hints on getting the best performance from `fclones`.
