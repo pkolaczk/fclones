@@ -718,3 +718,46 @@ pub struct Config {
     #[structopt(subcommand)]
     pub command: Command,
 }
+
+#[cfg(test)]
+mod test {
+    use crate::config::{Command, Config};
+    use crate::path::Path;
+    use assert_matches::assert_matches;
+    use std::path::PathBuf;
+    use structopt::StructOpt;
+
+    #[test]
+    fn test_group_command() {
+        let config: Config = Config::from_iter(vec!["fclones", "group", "dir1", "dir2"]);
+        assert_matches!(
+            config.command,
+            Command::Group(g) if g.paths == vec![Path::from("dir1"), Path::from("dir2")]);
+    }
+
+    #[test]
+    fn test_dedupe_command() {
+        let config: Config = Config::from_iter(vec!["fclones", "dedupe"]);
+        assert_matches!(config.command, Command::Dedupe { .. });
+    }
+
+    #[test]
+    fn test_remove_command() {
+        let config: Config = Config::from_iter(vec!["fclones", "remove"]);
+        assert_matches!(config.command, Command::Remove { .. });
+    }
+
+    #[test]
+    fn test_link_command() {
+        let config: Config = Config::from_iter(vec!["fclones", "link"]);
+        assert_matches!(config.command, Command::Link { .. });
+    }
+
+    #[test]
+    fn test_move_command() {
+        let config: Config = Config::from_iter(vec!["fclones", "move", "target"]);
+        assert_matches!(
+            config.command,
+            Command::Move { target, .. } if target == PathBuf::from("target"));
+    }
+}

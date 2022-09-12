@@ -76,6 +76,7 @@ winapi-util = "0.1"
 reflink = "0.1"
 
 [dev-dependencies]
+assert_matches = "1.5"
 reflink = "0.1"
 serde_test = "1.0"
 tempfile = "3.3"
