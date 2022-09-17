@@ -13,7 +13,8 @@ use regex::Regex;
 use structopt::StructOpt;
 
 use fclones::config::{Command, Config, DedupeConfig, GroupConfig, Parallelism};
-use fclones::log::Log;
+use fclones::log::{Log, LogExt, ProgressBarLength, StdLog};
+use fclones::progress::{NoProgressBar, ProgressTracker};
 use fclones::report::{open_report, ReportHeader};
 use fclones::{dedupe, log_script, run_script, DedupeOp};
 use fclones::{group_files, write_report, Error};
@@ -35,7 +36,7 @@ fn extract_error_cause(message: &str) -> String {
 }
 
 /// Returns error if any of the input paths doesn't exist or if input paths list is empty.
-fn check_input_paths_exist(config: &GroupConfig, log: &mut Log) -> Result<(), Error> {
+fn check_input_paths_exist(config: &GroupConfig, log: &dyn Log) -> Result<(), Error> {
     // Unfortunately we can't fail fast here when the list of files
     // is streamed from the standard input, because we'd have to collect all paths into a vector
     // list first, but we don't want to do this because there may be many.
@@ -109,7 +110,7 @@ fn configure_main_thread_pool(pool_sizes: &HashMap<OsString, Parallelism>) {
         .unwrap();
 }
 
-fn run_group(mut config: GroupConfig, log: &mut Log) -> Result<(), Error> {
+fn run_group(mut config: GroupConfig, log: &dyn Log) -> Result<(), Error> {
     config.resolve_base_dir().map_err(|e| e.to_string())?;
     check_input_paths_exist(&config, log)?;
     check_can_create_output_file(&config)?;
@@ -151,7 +152,7 @@ fn get_command_config(header: &ReportHeader) -> Result<Config, Error> {
     Ok(command)
 }
 
-pub fn run_dedupe(op: DedupeOp, config: DedupeConfig, log: &mut Log) -> Result<(), Error> {
+pub fn run_dedupe(op: DedupeOp, config: DedupeConfig, log: &dyn Log) -> Result<(), Error> {
     let input_error = |e: io::Error| format!("Input error: {}", e);
     let mut dedupe_config = config;
     let mut reader = open_report(stdin()).map_err(input_error)?;
@@ -192,10 +193,12 @@ pub fn run_dedupe(op: DedupeOp, config: DedupeConfig, log: &mut Log) -> Result<(
 
     let mut result: Result<(), io::Error> = Ok(());
     let group_count = header.stats.map(|s| s.group_count as u64);
-    let progress = match group_count {
-        _ if dedupe_config.dry_run && dedupe_config.output.is_none() => log.hidden(),
-        Some(group_count) => log.progress_bar("Deduplicating", group_count),
-        None => log.spinner("Deduplicating"),
+    let progress: Arc<dyn ProgressTracker> = match group_count {
+        _ if dedupe_config.dry_run && dedupe_config.output.is_none() => Arc::new(NoProgressBar),
+        Some(group_count) => {
+            log.progress_bar("Deduplicating", ProgressBarLength::Items(group_count))
+        }
+        None => log.progress_bar("Deduplicating", ProgressBarLength::Unknown),
     };
 
     let groups = reader.read_groups();
@@ -212,7 +215,7 @@ pub fn run_dedupe(op: DedupeOp, config: DedupeConfig, log: &mut Log) -> Result<(
         })
         .take_while(|g| g.is_some())
         .map(|g| g.unwrap())
-        .inspect(|_| progress.tick());
+        .inspect(|_| progress.inc(1));
 
     let upto = if op == DedupeOp::RefLink {
         // Can't be sure because any previous deduplications are not
@@ -247,7 +250,7 @@ fn main() {
         exit(1);
     }
 
-    let mut log = Log::new();
+    let mut log = StdLog::new();
     if config.quiet {
         log.no_progress = true;
     }
@@ -261,24 +264,24 @@ fn main() {
     };
 
     let result = match config.command {
-        Command::Group(config) => run_group(config, &mut log),
-        Command::Remove(config) => run_dedupe(DedupeOp::Remove, config, &mut log),
-        Command::Link { config, soft: true } => run_dedupe(DedupeOp::SoftLink, config, &mut log),
+        Command::Group(config) => run_group(config, &log),
+        Command::Remove(config) => run_dedupe(DedupeOp::Remove, config, &log),
+        Command::Link { config, soft: true } => run_dedupe(DedupeOp::SoftLink, config, &log),
         Command::Link {
             config,
             soft: false,
-        } => run_dedupe(DedupeOp::HardLink, config, &mut log),
+        } => run_dedupe(DedupeOp::HardLink, config, &log),
         Command::Dedupe { config, .. } => {
             if cfg!(windows) {
                 log.err("Command \"dedupe\" is unsupported on Windows");
                 exit(1);
             }
-            run_dedupe(DedupeOp::RefLink, config, &mut log)
+            run_dedupe(DedupeOp::RefLink, config, &log)
         }
         Command::Move { config, target } => {
             let target = fclones::path::Path::from(target);
             let target = Arc::new(fclones::path::Path::from(cwd)).resolve(target);
-            run_dedupe(DedupeOp::Move(Arc::new(target)), config, &mut log)
+            run_dedupe(DedupeOp::Move(Arc::new(target)), config, &log)
         }
     };
 

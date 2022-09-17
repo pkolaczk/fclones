@@ -12,6 +12,7 @@ use std::io;
 use std::io::BufWriter;
 use std::iter::FromIterator;
 use std::marker::PhantomData;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::Arc;
 
@@ -31,7 +32,7 @@ use crate::device::{DiskDevice, DiskDevices};
 use crate::error::Error;
 use crate::file::*;
 use crate::hasher::FileHasher;
-use crate::log::Log;
+use crate::log::{Log, LogExt, ProgressBarLength};
 use crate::path::Path;
 use crate::phase::{Phase, Phases};
 use crate::report::{FileStats, ReportHeader, ReportWriter};
@@ -100,7 +101,7 @@ where
 /// Holds stuff needed globally by the whole application
 struct GroupCtx<'a> {
     pub config: &'a GroupConfig,
-    pub log: &'a Log,
+    pub log: &'a dyn Log,
     phases: Phases,
     group_filter: FileGroupFilter,
     devices: DiskDevices,
@@ -109,7 +110,7 @@ struct GroupCtx<'a> {
 }
 
 impl<'a> GroupCtx<'a> {
-    pub fn new(config: &'a GroupConfig, log: &'a Log) -> Result<GroupCtx<'a>, Error> {
+    pub fn new(config: &'a GroupConfig, log: &'a dyn Log) -> Result<GroupCtx<'a>, Error> {
         let phases = if config.transform.is_some() {
             Phases::new(vec![
                 Phase::Walk,
@@ -614,8 +615,14 @@ where
 /// Walks the directory tree and collects matching files in parallel into a vector
 fn scan_files(ctx: &GroupCtx<'_>) -> Vec<Vec<FileInfo>> {
     let file_collector = ThreadLocal::new();
-    let spinner = ctx.log.spinner(&ctx.phases.format(Phase::Walk));
-    let spinner_tick = &|_: &Path| spinner.tick();
+    let file_count = AtomicU64::new(0);
+    let spinner = ctx
+        .log
+        .progress_bar(&ctx.phases.format(Phase::Walk), ProgressBarLength::Unknown);
+    let spinner_tick = &|_: &Path| {
+        file_count.fetch_add(1, Ordering::Relaxed);
+        spinner.inc(1);
+    };
 
     let config = &ctx.config;
     let min_size = config.min_size;
@@ -643,8 +650,10 @@ fn scan_files(ctx: &GroupCtx<'_>) -> Vec<Vec<FileInfo>> {
             });
     });
 
-    ctx.log
-        .info(format!("Scanned {} file entries", spinner.position()));
+    ctx.log.info(format!(
+        "Scanned {} file entries",
+        file_count.load(Ordering::Relaxed)
+    ));
 
     let files: Vec<_> = file_collector.into_iter().map(|r| r.into_inner()).collect();
 
@@ -709,14 +718,15 @@ fn stage_stats(groups: &[FileGroup<FileInfo>], filter: &FileGroupFilter) -> (usi
 
 fn group_by_size(ctx: &GroupCtx<'_>, files: Vec<Vec<FileInfo>>) -> Vec<FileGroup<FileInfo>> {
     let file_count: usize = files.iter().map(|v| v.len()).sum();
-    let progress = ctx
-        .log
-        .progress_bar(&ctx.phases.format(Phase::GroupBySize), file_count as u64);
+    let progress = ctx.log.progress_bar(
+        &ctx.phases.format(Phase::GroupBySize),
+        ProgressBarLength::Items(file_count as u64),
+    );
 
     let mut groups = GroupMap::new(|info: FileInfo| (info.len, info));
     for files in files.into_iter() {
         for file in files.into_iter() {
-            progress.tick();
+            progress.inc(1);
             groups.add(file);
         }
     }
@@ -793,7 +803,9 @@ fn atomic_counter_vec(len: usize) -> Vec<std::sync::atomic::AtomicU32> {
 #[cfg(target_os = "linux")]
 fn update_file_locations(ctx: &GroupCtx<'_>, groups: &mut (impl FileCollection + ?Sized)) {
     let count = groups.count();
-    let progress = ctx.log.progress_bar("Fetching extents", count as u64);
+    let progress = ctx
+        .log
+        .progress_bar("Fetching extents", ProgressBarLength::Items(count as u64));
 
     let err_counters = atomic_counter_vec(ctx.devices.len());
     groups.for_each_mut(|fi| {
@@ -803,7 +815,7 @@ fn update_file_locations(ctx: &GroupCtx<'_>, groups: &mut (impl FileCollection +
                 handle_fetch_physical_location_err(ctx, &err_counters, fi, e)
             }
         }
-        progress.tick()
+        progress.inc(1)
     });
 }
 
@@ -822,8 +834,6 @@ fn handle_fetch_physical_location_err(
     file_info: &FileInfo,
     error: io::Error,
 ) {
-    use std::sync::atomic::Ordering;
-
     const MAX_ERR_COUNT_TO_LOG: u32 = 10;
     let device = &ctx.devices[file_info.get_device_index()];
     let counter = &err_counters[device.index];
@@ -868,7 +878,7 @@ fn group_transformed(ctx: &GroupCtx<'_>, files: Vec<FileInfo>) -> Vec<FileGroup<
     }];
     let progress = ctx.log.progress_bar(
         &ctx.phases.format(Phase::TransformAndGroup),
-        unique_file_count(&groups) as u64,
+        ProgressBarLength::Items(unique_file_count(&groups) as u64),
     );
     let groups = rehash(
         groups,
@@ -885,7 +895,7 @@ fn group_transformed(ctx: &GroupCtx<'_>, files: Vec<FileInfo>) -> Vec<FileGroup<
                         fi.len = len;
                         hash
                     });
-            progress.tick();
+            progress.inc(1);
             result
         },
     );
@@ -935,9 +945,10 @@ fn group_by_prefix(
 
     let pre_filter = |g: &FileGroup<FileInfo>| g.unique_count() > 1;
     let file_count = unique_file_count(groups.iter().filter(|g| pre_filter(g)));
-    let progress = ctx
-        .log
-        .progress_bar(&ctx.phases.format(Phase::GroupByPrefix), file_count as u64);
+    let progress = ctx.log.progress_bar(
+        &ctx.phases.format(Phase::GroupByPrefix),
+        ProgressBarLength::Items(file_count as u64),
+    );
 
     let groups = rehash(
         groups,
@@ -946,7 +957,7 @@ fn group_by_prefix(
         &ctx.devices,
         FileAccess::Random,
         |(fi, _)| {
-            progress.tick();
+            progress.inc(1);
             let prefix_len = if fi.len <= prefix_len {
                 prefix_len
             } else {
@@ -994,9 +1005,10 @@ fn group_by_suffix(
     let pre_filter =
         |g: &FileGroup<FileInfo>| g.file_len >= suffix_threshold && g.unique_count() > 1;
     let file_count = unique_file_count(groups.iter().filter(|g| pre_filter(g)));
-    let progress = ctx
-        .log
-        .progress_bar(&ctx.phases.format(Phase::GroupBySuffix), file_count as u64);
+    let progress = ctx.log.progress_bar(
+        &ctx.phases.format(Phase::GroupBySuffix),
+        ProgressBarLength::Items(file_count as u64),
+    );
 
     let groups = rehash(
         groups,
@@ -1005,7 +1017,7 @@ fn group_by_suffix(
         &ctx.devices,
         FileAccess::Random,
         |(fi, old_hash)| {
-            progress.tick();
+            progress.inc(1);
             let chunk = FileChunk::new(&fi.path, fi.len.as_pos() - suffix_len, suffix_len);
             ctx.hasher
                 .hash_file_or_log_err(&chunk, |_| {})
@@ -1031,9 +1043,10 @@ fn group_by_contents(
 
     let pre_filter = |g: &FileGroup<FileInfo>| g.unique_count() > 1 && g.file_len >= min_file_len;
     let bytes_to_scan = unique_file_size(groups.iter().filter(|g| pre_filter(g)));
-    let progress = &ctx
-        .log
-        .bytes_progress_bar(&ctx.phases.format(Phase::GroupByContents), bytes_to_scan.0);
+    let progress = &ctx.log.progress_bar(
+        &ctx.phases.format(Phase::GroupByContents),
+        ProgressBarLength::Bytes(bytes_to_scan.0),
+    );
 
     let groups = rehash(
         groups,
@@ -1044,7 +1057,7 @@ fn group_by_contents(
         |(fi, _)| {
             let chunk = FileChunk::new(&fi.path, FilePos(0), fi.len);
             ctx.hasher
-                .hash_file_or_log_err(&chunk, |bytes_read| progress.inc(bytes_read))
+                .hash_file_or_log_err(&chunk, |bytes_read| progress.inc(bytes_read as u64))
         },
     );
 
@@ -1108,12 +1121,12 @@ fn group_by_contents(
 ///
 /// # Example
 /// ```
-/// use fclones::log::Log;
+/// use fclones::log::StdLog;
 /// use fclones::config::GroupConfig;
 /// use fclones::path::Path;
 /// use fclones::{group_files, write_report};
 ///
-/// let log = Log::new();
+/// let log = StdLog::new();
 /// let mut config = GroupConfig::default();
 /// config.paths = vec![Path::from("/path/to/a/dir")];
 ///
@@ -1123,8 +1136,8 @@ fn group_by_contents(
 /// // print standard fclones report to stdout:
 /// write_report(&config, &log, &groups).unwrap();
 /// ```
-pub fn group_files(config: &GroupConfig, log: &Log) -> Result<Vec<FileGroup<FileInfo>>, Error> {
-    let spinner = log.spinner("Initializing");
+pub fn group_files(config: &GroupConfig, log: &dyn Log) -> Result<Vec<FileGroup<FileInfo>>, Error> {
+    let spinner = log.progress_bar("Initializing", ProgressBarLength::Unknown);
     let ctx = GroupCtx::new(config, log)?;
 
     drop(spinner);
@@ -1166,7 +1179,7 @@ pub fn group_files(config: &GroupConfig, log: &Log) -> Result<Vec<FileGroup<File
 /// Returns [`io::Error`] on I/O write error or if the output file cannot be created.
 pub fn write_report(
     config: &GroupConfig,
-    log: &Log,
+    log: &dyn Log,
     groups: &[FileGroup<FileInfo>],
 ) -> io::Result<()> {
     let now = Local::now();
@@ -1201,8 +1214,11 @@ pub fn write_report(
 
     match &config.output {
         Some(path) => {
-            let progress = log.progress_bar("Writing report", groups.len() as u64);
-            let iter = groups.iter().inspect(|_g| progress.tick());
+            let progress = log.progress_bar(
+                "Writing report",
+                ProgressBarLength::Items(groups.len() as u64),
+            );
+            let iter = groups.iter().inspect(|_g| progress.inc(1));
             let file = BufWriter::new(File::create(path)?);
             let mut reporter = ReportWriter::new(file, false);
             reporter.write(config.format, &header, iter)
@@ -1225,6 +1241,7 @@ mod test {
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::sync::Mutex;
 
+    use crate::log::StdLog;
     use rand::seq::SliceRandom;
     use sysinfo::DiskType;
 
@@ -1890,8 +1907,8 @@ mod test {
         file.write(suffix).unwrap();
     }
 
-    fn test_log() -> Log {
-        let mut log = Log::new();
+    fn test_log() -> StdLog {
+        let mut log = StdLog::new();
         log.no_progress = true;
         log
     }

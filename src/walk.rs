@@ -8,7 +8,7 @@ use dashmap::DashSet;
 use ignore::gitignore::{Gitignore, GitignoreBuilder};
 use rayon::Scope;
 
-use crate::log::Log;
+use crate::log::{Log, LogExt};
 use crate::path::Path;
 use crate::selector::PathSelector;
 
@@ -65,7 +65,7 @@ struct IgnoreStack(Arc<Vec<Gitignore>>);
 
 impl IgnoreStack {
     /// Returns ignore stack initialized with global gitignore settings.
-    fn new(log: Option<&Log>) -> Self {
+    fn new(log: Option<&dyn Log>) -> Self {
         let gitignore = GitignoreBuilder::new("/").build_global();
         if let Some(err) = gitignore.1 {
             if let Some(log) = log {
@@ -82,7 +82,7 @@ impl IgnoreStack {
 
     /// If .gitignore file exists in given dir, creates a `Gitignore` struct for it
     /// and returns the stack with the new `Gitignore` appended. Otherwise returns a cloned self.
-    pub fn push(&self, dir: &Path, log: Option<&Log>) -> IgnoreStack {
+    pub fn push(&self, dir: &Path, log: Option<&dyn Log>) -> IgnoreStack {
         let mut path = Arc::new(dir.clone()).resolve(Path::from(".gitignore"));
         let mut path_buf = path.to_path_buf();
         if !path_buf.is_file() {
@@ -141,7 +141,7 @@ pub struct Walk<'a> {
     /// The function to call for each visited file. The directories are not reported.
     pub on_visit: &'a (dyn Fn(&Path) + Sync + Send),
     /// Warnings about inaccessible files or dirs are logged here, if defined.
-    pub log: Option<&'a Log>,
+    pub log: Option<&'a dyn Log>,
 }
 
 /// Private shared state scoped to a single `run` invocation.

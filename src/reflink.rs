@@ -5,7 +5,7 @@ use std::io;
 use filetime::FileTime;
 
 use crate::dedupe::{FsCommand, PathAndMetadata};
-use crate::log::Log;
+use crate::log::{Log, LogExt};
 
 #[cfg(unix)]
 #[cfg(any(not(any(target_os = "linux", target_os = "android")), test))]
@@ -17,7 +17,7 @@ struct XAttr {
 /// Calls OS-specific reflink implementations with an option to call the more generic
 /// one during testing one on Linux ("crosstesting").
 /// The destination file is allowed to exist.
-pub fn reflink(src: &PathAndMetadata, dest: &PathAndMetadata, log: &Log) -> io::Result<()> {
+pub fn reflink(src: &PathAndMetadata, dest: &PathAndMetadata, log: &dyn Log) -> io::Result<()> {
     // Remember original metadata of the parent directory:
     let dest_parent = dest.path.parent();
     let dest_parent_metadata = dest_parent.map(|p| p.to_path_buf().metadata());
@@ -57,14 +57,18 @@ pub fn reflink(src: &PathAndMetadata, dest: &PathAndMetadata, log: &Log) -> io::
 
 // Dummy function so tests compile
 #[cfg(not(any(target_os = "linux", target_os = "android")))]
-fn linux_reflink(_target: &PathAndMetadata, _link: &PathAndMetadata, _log: &Log) -> io::Result<()> {
+fn linux_reflink(
+    _target: &PathAndMetadata,
+    _link: &PathAndMetadata,
+    _log: &StdLog,
+) -> io::Result<()> {
     unreachable!()
 }
 
 // First reflink (not move) the target file out of the way (this also checks for
 // reflink support), then overwrite the existing file to preserve metadata.
 #[cfg(any(target_os = "linux", target_os = "android"))]
-fn linux_reflink(src: &PathAndMetadata, dest: &PathAndMetadata, log: &Log) -> io::Result<()> {
+fn linux_reflink(src: &PathAndMetadata, dest: &PathAndMetadata, log: &dyn Log) -> io::Result<()> {
     let tmp = FsCommand::temp_file(&dest.path);
     let std_tmp = tmp.to_path_buf();
 
@@ -112,10 +116,10 @@ fn reflink_overwrite(target: &std::path::Path, link: &std::path::Path) -> io::Re
     use nix::request_code_write;
     use std::os::unix::prelude::AsRawFd;
 
-    let src = std::fs::File::open(&target)?;
+    let src = fs::File::open(&target)?;
 
     // This operation does not require `.truncate(true)` because the files are already of the same size.
-    let dest = std::fs::OpenOptions::new()
+    let dest = fs::OpenOptions::new()
         .create(true)
         .write(true)
         .open(&link)?;
@@ -286,7 +290,7 @@ fn copy_by_reflink(src: &crate::path::Path, dest: &crate::path::Path) -> io::Res
 // After successful copy, attempts to restore the metadata of the file.
 // If reflink or metadata restoration fails, moves the original file back to its original place.
 #[cfg(any(not(any(target_os = "linux", target_os = "android")), test))]
-fn safe_reflink(src: &PathAndMetadata, dest: &PathAndMetadata, log: &Log) -> io::Result<()> {
+fn safe_reflink(src: &PathAndMetadata, dest: &PathAndMetadata, log: &dyn Log) -> io::Result<()> {
     let dest_path_buf = dest.path.to_path_buf();
     #[cfg(unix)]
     let dest_xattrs = get_xattrs(&dest_path_buf)?;
@@ -307,7 +311,7 @@ fn safe_reflink(src: &PathAndMetadata, dest: &PathAndMetadata, log: &Log) -> io:
 
 // Dummy function so non-test cfg compiles
 #[cfg(not(any(not(any(target_os = "linux", target_os = "android")), test)))]
-fn safe_reflink(_src: &PathAndMetadata, _dest: &PathAndMetadata, _log: &Log) -> io::Result<()> {
+fn safe_reflink(_src: &PathAndMetadata, _dest: &PathAndMetadata, _log: &dyn Log) -> io::Result<()> {
     unreachable!()
 }
 
@@ -323,6 +327,7 @@ pub fn crosstest() -> bool {
 
 #[cfg(test)]
 pub mod test {
+
     pub mod cfg {
         // Helpers to switch reflink implementations when running tests
         // and to ensure only one reflink test runs at a time.
@@ -356,6 +361,7 @@ pub mod test {
         }
     }
 
+    use crate::log::StdLog;
     use std::sync::Arc;
 
     use crate::util::test::{cached_reflink_supported, read_file, with_dir, write_file};
@@ -381,12 +387,12 @@ pub mod test {
             struct CleanupGuard<'a>(&'a str);
             impl<'a> Drop for CleanupGuard<'a> {
                 fn drop(&mut self) {
-                    std::fs::remove_dir_all(&self.0).unwrap();
+                    fs::remove_dir_all(&self.0).unwrap();
                 }
             }
             let _guard = CleanupGuard(&test_root);
 
-            let log = Log::new();
+            let log = StdLog::new();
             let file_path_1 = root.join("file_1");
             let file_path_2 = root.join("file_2");
 
@@ -432,7 +438,7 @@ pub mod test {
         }
 
         with_dir("dedupe/reflink_too_large", |root| {
-            let log = Log::new();
+            let log = StdLog::new();
             let file_path_1 = root.join("file_1");
             let file_path_2 = root.join("file_2");
 
@@ -485,7 +491,7 @@ pub mod test {
             return;
         }
         with_dir("dedupe/reflink_test", |root| {
-            let log = Log::new();
+            let log = StdLog::new();
             let file_path_1 = root.join("file_1");
             let file_path_2 = root.join("file_2");
 

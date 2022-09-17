@@ -7,7 +7,24 @@ use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 
-/// A wrapper over `indicatif::ProgressBar` that makes updating its progress lockless.
+/// Common interface for components that can show progress of a task. E.g. progress bars.
+pub trait ProgressTracker: Sync + Send {
+    fn inc(&self, delta: u64);
+}
+
+/// A progress bar that doesn't display itself and does nothing.
+/// This exists purely because sometimes there is an operation that needs to report progress,
+/// but we don't want to show it to the user.
+pub struct NoProgressBar;
+
+impl ProgressTracker for NoProgressBar {
+    fn inc(&self, _delta: u64) {}
+}
+
+/// Console-based progress bar that renders to standard error.
+///
+/// Implemented as a wrapper over `indicatif::ProgressBar` that makes updating its progress
+/// lockless.
 /// Unfortunately `indicatif::ProgressBar` wraps state in a `Mutex`, so updates are slow
 /// and can become a bottleneck in multithreaded context.
 /// This wrapper uses `atomic_counter::RelaxedCounter` to keep shared state without ever blocking
@@ -145,10 +162,6 @@ impl FastProgressBar {
         self.counter.inc();
     }
 
-    pub fn inc(&self, delta: usize) {
-        self.counter.add(delta);
-    }
-
     pub fn position(&self) -> usize {
         self.counter.get()
     }
@@ -167,11 +180,6 @@ impl FastProgressBar {
         self.progress_bar.finish_and_clear();
     }
 
-    pub fn finish_with_msg(&self, message: &str) {
-        self.update_progress();
-        self.progress_bar.finish_with_message(message);
-    }
-
     pub fn abandon(&self) {
         self.update_progress();
         self.progress_bar.abandon();
@@ -179,6 +187,12 @@ impl FastProgressBar {
 
     pub fn is_finished(&self) -> bool {
         self.progress_bar.is_finished()
+    }
+}
+
+impl ProgressTracker for FastProgressBar {
+    fn inc(&self, delta: u64) {
+        self.counter.add(delta as usize);
     }
 }
 

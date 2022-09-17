@@ -21,7 +21,7 @@ use smallvec::alloc::str::FromStr;
 
 use crate::device::DiskDevices;
 use crate::group::FileGroup;
-use crate::log::Log;
+use crate::log::{Log, LogExt};
 use crate::path::Path;
 
 /// Represents data position in the file, counted from the beginning of the file, in bytes.
@@ -405,7 +405,7 @@ impl From<FileInfo> for Path {
 pub(crate) fn file_info_or_log_err(
     file: Path,
     devices: &DiskDevices,
-    log: &Log,
+    log: &dyn Log,
 ) -> Option<FileInfo> {
     match FileInfo::new(file, devices) {
         Ok(info) => Some(info),
@@ -516,7 +516,7 @@ impl<'de> Deserialize<'de> for FileHash {
         D: Deserializer<'de>,
     {
         let s = String::deserialize(deserializer)?;
-        let h = FileHash::from_str(&s).map_err(serde::de::Error::custom)?;
+        let h = FileHash::from_str(&s).map_err(de::Error::custom)?;
         Ok(h)
     }
 }
