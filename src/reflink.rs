@@ -24,7 +24,7 @@ pub fn reflink(src: &PathAndMetadata, dest: &PathAndMetadata, log: &Log) -> io::
 
     // Call reflink:
     let result = {
-        if cfg!(any(target_os = "linux", target_os = "android")) && !test::cfg::crosstest() {
+        if cfg!(any(target_os = "linux", target_os = "android")) && !crosstest() {
             linux_reflink(src, dest, log)
         } else {
             safe_reflink(src, dest, log)
@@ -312,12 +312,13 @@ fn safe_reflink(_src: &PathAndMetadata, _dest: &PathAndMetadata, _log: &Log) -> 
 }
 
 #[cfg(not(test))]
-pub mod test {
-    pub mod cfg {
-        pub const fn crosstest() -> bool {
-            false
-        }
-    }
+pub const fn crosstest() -> bool {
+    false
+}
+
+#[cfg(test)]
+pub fn crosstest() -> bool {
+    test::cfg::crosstest()
 }
 
 #[cfg(test)]
