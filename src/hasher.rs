@@ -3,7 +3,7 @@ use std::cmp::{max, min};
 use std::fs::{File, OpenOptions};
 use std::hash::Hasher;
 use std::io;
-use std::io::{ErrorKind, Read, Seek};
+use std::io::{Read, Seek};
 use std::str::FromStr;
 
 use metrohash::MetroHash128;
@@ -17,7 +17,7 @@ use xxhash_rust::xxh3::Xxh3;
 
 use crate::cache::{HashCache, Key};
 use crate::file::{FileAccess, FileChunk, FileHash, FileLen, FileMetadata, FilePos};
-use crate::log::Log;
+use crate::log::{Log, LogExt};
 use crate::path::Path;
 use crate::transform::Transform;
 use crate::Error;
@@ -209,12 +209,12 @@ pub struct FileHasher<'a> {
     pub(crate) buf_len: usize,
     pub(crate) cache: Option<HashCache>,
     pub(crate) transform: Option<Transform>,
-    pub(crate) log: &'a Log,
+    pub(crate) log: &'a dyn Log,
 }
 
 impl FileHasher<'_> {
     /// Creates a hasher with no caching
-    pub fn new(algorithm: HashFn, transform: Option<Transform>, log: &Log) -> FileHasher<'_> {
+    pub fn new(algorithm: HashFn, transform: Option<Transform>, log: &dyn Log) -> FileHasher<'_> {
         FileHasher {
             algorithm,
             buf_len: 65536,
@@ -228,7 +228,7 @@ impl FileHasher<'_> {
     pub fn new_cached(
         algorithm: HashFn,
         transform: Option<Transform>,
-        log: &Log,
+        log: &dyn Log,
     ) -> Result<FileHasher<'_>, Error> {
         let transform_command_str = transform.as_ref().map(|t| t.command_str.as_str());
         let cache = HashCache::open_default(transform_command_str, algorithm)?;
@@ -286,7 +286,7 @@ impl FileHasher<'_> {
     ) -> Option<FileHash> {
         match self.hash_file(chunk, progress) {
             Ok(hash) => Some(hash),
-            Err(e) if e.kind() == ErrorKind::NotFound => None,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => None,
             Err(e) => {
                 self.log.warn(format!(
                     "Failed to compute hash of file {}: {}",
@@ -381,7 +381,7 @@ impl FileHasher<'_> {
     ) -> Option<(FileLen, FileHash)> {
         match self.hash_transformed(chunk, progress) {
             Ok(hash) => Some(hash),
-            Err(e) if e.kind() == ErrorKind::NotFound => None,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => None,
             Err(e) => {
                 self.log.warn(format!(
                     "Failed to compute hash of file {}: {}",

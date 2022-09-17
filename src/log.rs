@@ -3,22 +3,74 @@
 use std::sync::{Arc, Mutex, Weak};
 
 use console::style;
-use indicatif::ProgressDrawTarget;
 use nom::lib::std::fmt::Display;
 
-use crate::progress::FastProgressBar;
+use crate::progress::{FastProgressBar, ProgressTracker};
 use chrono::Local;
 
-pub struct Log {
+/// Determines the size of the task tracked by ProgressTracker.
+#[derive(Debug, Clone, Copy)]
+pub enum ProgressBarLength {
+    Items(u64),
+    Bytes(u64),
+    Unknown,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum LogLevel {
+    Info,
+    Warn,
+    Error,
+}
+
+/// Common interface for logging diagnostics and progress.
+pub trait Log: Sync + Send {
+    /// Clears any previous progress bar or spinner and installs a new progress bar.
+    fn progress_bar(&self, msg: &str, len: ProgressBarLength) -> Arc<dyn ProgressTracker>;
+
+    /// Logs a message.
+    fn log(&self, level: LogLevel, msg: String);
+}
+
+/// Additional convenience methods for logging.
+pub trait LogExt {
+    /// Logs an info message.
+    fn info(&self, msg: impl Display);
+    /// Logs an warning.
+    fn warn(&self, msg: impl Display);
+    /// Logs an error.
+    fn err(&self, msg: impl Display);
+}
+
+/// Additional convenience methods for logging.
+impl<L: Log + ?Sized> LogExt for L {
+    /// Logs an info message.
+    fn info(&self, msg: impl Display) {
+        self.log(LogLevel::Info, msg.to_string())
+    }
+
+    /// Logs an warning.
+    fn warn(&self, msg: impl Display) {
+        self.log(LogLevel::Warn, msg.to_string())
+    }
+
+    /// Logs an error.
+    fn err(&self, msg: impl Display) {
+        self.log(LogLevel::Error, msg.to_string())
+    }
+}
+
+/// A logger that uses standard error stream to communicate with the user.
+pub struct StdLog {
     program_name: String,
     progress_bar: Mutex<Weak<FastProgressBar>>,
     pub log_stderr_to_stdout: bool,
     pub no_progress: bool,
 }
 
-impl Log {
-    pub fn new() -> Log {
-        Log {
+impl StdLog {
+    pub fn new() -> StdLog {
+        StdLog {
             progress_bar: Mutex::new(Weak::default()),
             program_name: std::env::current_exe()
                 .unwrap()
@@ -78,22 +130,9 @@ impl Log {
         result
     }
 
-    /// Prints a message to stdout.
-    /// Does not interfere with progress bar.
-    pub fn println<I: Display>(&self, msg: I) {
-        match self.progress_bar.lock().unwrap().upgrade() {
-            Some(pb) if pb.is_visible() => {
-                pb.set_draw_target(ProgressDrawTarget::hidden());
-                println!("{}", msg);
-                pb.set_draw_target(ProgressDrawTarget::stderr());
-            }
-            _ => println!("{}", msg),
-        }
-    }
-
     /// Prints a message to stderr.
     /// Does not interfere with progress bar.
-    pub fn eprintln<I: Display>(&self, msg: I) {
+    fn eprintln<I: Display>(&self, msg: I) {
         match self.progress_bar.lock().unwrap().upgrade() {
             Some(pb) if pb.is_visible() => pb.println(format!("{}", msg)),
             _ if self.log_stderr_to_stdout => println!("{}", msg),
@@ -102,24 +141,24 @@ impl Log {
     }
 
     const TIMESTAMP_FMT: &'static str = "[%Y-%m-%d %H:%M:%S.%3f]";
+}
 
-    pub fn info<I: Display>(&self, msg: I) {
-        let timestamp = Local::now();
-        let msg = format!(
-            "{} {}: {} {}",
-            style(timestamp.format(Self::TIMESTAMP_FMT))
-                .for_stderr()
-                .dim()
-                .white(),
-            style(&self.program_name).for_stderr().yellow(),
-            style(" info:").for_stderr().green(),
-            msg
-        );
-        self.eprintln(msg);
+impl Log for StdLog {
+    fn progress_bar(&self, msg: &str, len: ProgressBarLength) -> Arc<dyn ProgressTracker> {
+        match len {
+            ProgressBarLength::Items(count) => self.progress_bar(msg, count),
+            ProgressBarLength::Bytes(count) => self.bytes_progress_bar(msg, count),
+            ProgressBarLength::Unknown => self.spinner(msg),
+        }
     }
 
-    pub fn warn<I: Display>(&self, msg: I) {
+    fn log(&self, level: LogLevel, msg: String) {
         let timestamp = Local::now();
+        let level = match level {
+            LogLevel::Info => style(" info:").for_stderr().green(),
+            LogLevel::Warn => style("warn:").for_stderr().yellow(),
+            LogLevel::Error => style("error:").for_stderr().red(),
+        };
         let msg = format!(
             "{} {}: {} {}",
             style(timestamp.format(Self::TIMESTAMP_FMT))
@@ -127,30 +166,15 @@ impl Log {
                 .dim()
                 .white(),
             style(&self.program_name).for_stderr().yellow(),
-            style(" warn:").for_stderr().yellow(),
-            msg
-        );
-        self.eprintln(msg);
-    }
-
-    pub fn err<I: Display>(&self, msg: I) {
-        let timestamp = Local::now();
-        let msg = format!(
-            "{} {}: {} {}",
-            style(timestamp.format(Self::TIMESTAMP_FMT))
-                .for_stderr()
-                .dim()
-                .white(),
-            style(&self.program_name).for_stderr().yellow(),
-            style("error:").for_stderr().red(),
+            level,
             msg
         );
         self.eprintln(msg);
     }
 }
 
-impl Default for Log {
+impl Default for StdLog {
     fn default() -> Self {
-        Log::new()
+        StdLog::new()
     }
 }

@@ -445,7 +445,7 @@ mod test {
 
     use crate::file::{FileChunk, FileLen, FilePos};
     use crate::hasher::{FileHasher, HashFn};
-    use crate::log::Log;
+    use crate::log::StdLog;
     use crate::util::test::with_dir;
 
     use super::*;
@@ -466,7 +466,7 @@ mod test {
             input.write(content).unwrap();
             drop(input);
 
-            let log = Log::default();
+            let log = StdLog::default();
             let hasher = FileHasher::new(HashFn::default(), Some(transform), &log);
             let input_path = Path::from(input_path);
             let chunk = FileChunk::new(&input_path, FilePos(0), FileLen::MAX);
@@ -488,7 +488,7 @@ mod test {
             input.write(content).unwrap();
             drop(input);
 
-            let log = Log::default();
+            let log = StdLog::default();
             let hasher = FileHasher::new(HashFn::default(), Some(transform), &log);
             let input_path = Path::from(input_path);
 

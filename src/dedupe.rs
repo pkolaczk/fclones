@@ -22,7 +22,7 @@ use crate::device::DiskDevices;
 use crate::file::{FileId, FileLen, FileMetadata};
 use crate::group::{FileGroup, FileSubGroup};
 use crate::lock::FileLock;
-use crate::log::Log;
+use crate::log::{Log, LogExt};
 use crate::path::Path;
 use crate::util::{max_result, min_result, try_sort_by_key};
 use crate::{Error, TIMESTAMP_FMT};
@@ -266,7 +266,7 @@ impl FsCommand {
     pub fn safe_remove<R>(
         path: &Path,
         f: impl FnOnce(&Path) -> io::Result<R>,
-        log: &Log,
+        log: &dyn Log,
     ) -> io::Result<R> {
         let tmp = Self::temp_file(path);
         Self::unsafe_rename(path, &tmp)?;
@@ -297,7 +297,7 @@ impl FsCommand {
     }
 
     /// Executes the command and returns the number of bytes reclaimed
-    pub fn execute(&self, should_lock: bool, log: &Log) -> io::Result<FileLen> {
+    pub fn execute(&self, should_lock: bool, log: &dyn Log) -> io::Result<FileLen> {
         match self {
             FsCommand::Remove { file } => {
                 let _ = Self::maybe_lock(&file.path, should_lock)?;
@@ -471,7 +471,7 @@ impl AddAssign for DedupeResult {
 
 /// Returns true if any of the files have been modified after the given timestamp.
 /// Also returns true if file timestamp could not be read.
-fn was_modified(files: &[PathAndMetadata], after: DateTime<FixedOffset>, log: &Log) -> bool {
+fn was_modified(files: &[PathAndMetadata], after: DateTime<FixedOffset>, log: &dyn Log) -> bool {
     let mut result = false;
     let after: DateTime<Local> = after.into();
     for PathAndMetadata {
@@ -728,7 +728,7 @@ impl PartitionedFileGroup {
 
 /// Attempts to retrieve the metadata of all the files in the file group.
 /// If metadata is inaccessible for a file, a warning is emitted to the log, and None gets returned.
-fn files_metadata<P>(group: FileGroup<P>, log: &Log) -> Option<Vec<PathAndMetadata>>
+fn files_metadata<P>(group: FileGroup<P>, log: &dyn Log) -> Option<Vec<PathAndMetadata>>
 where
     P: Into<Path>,
 {
@@ -757,7 +757,7 @@ where
 fn partition<P>(
     group: FileGroup<P>,
     config: &DedupeConfig,
-    log: &Log,
+    log: &dyn Log,
 ) -> Result<PartitionedFileGroup, Error>
 where
     P: Into<Path>,
@@ -881,7 +881,7 @@ pub fn dedupe<'a, I, P>(
     groups: I,
     op: DedupeOp,
     config: &'a DedupeConfig,
-    log: &'a Log,
+    log: &'a dyn Log,
 ) -> impl ParallelIterator<Item = (usize, Vec<FsCommand>)> + Send + 'a
 where
     I: IntoIterator<Item = FileGroup<P>> + 'a,
@@ -910,7 +910,7 @@ where
 /// On command execution failure, a warning is logged and the execution of remaining commands
 /// continues.
 /// Returns the number of files processed and the amount of disk space reclaimed.
-pub fn run_script<I>(script: I, should_lock: bool, log: &Log) -> DedupeResult
+pub fn run_script<I>(script: I, should_lock: bool, log: &dyn Log) -> DedupeResult
 where
     I: IntoParallelIterator<Item = (usize, Vec<FsCommand>)>,
 {
@@ -1044,6 +1044,7 @@ mod test {
     use crate::config::GroupConfig;
     use crate::file::FileHash;
     use crate::group_files;
+    use crate::log::StdLog;
     use crate::pattern::Pattern;
     use crate::util::test::{create_file, create_file_newer_than, read_file, with_dir, write_file};
 
@@ -1064,7 +1065,7 @@ mod test {
     #[test]
     fn test_remove_command_removes_file() {
         with_dir("dedupe/remove_cmd", |root| {
-            let log = Log::new();
+            let log = StdLog::new();
             let file_path = root.join("file");
             create_file(&file_path);
             let file = PathAndMetadata::new(Path::from(&file_path)).unwrap();
@@ -1077,7 +1078,7 @@ mod test {
     #[test]
     fn test_move_command_moves_file_by_rename() {
         with_dir("dedupe/move_rename_cmd", |root| {
-            let log = Log::new();
+            let log = StdLog::new();
             let file_path = root.join("file");
             let target = Path::from(root.join("target"));
             create_file(&file_path);
@@ -1096,7 +1097,7 @@ mod test {
     #[test]
     fn test_move_command_moves_file_by_copy() {
         with_dir("dedupe/move_copy_cmd", |root| {
-            let log = Log::new();
+            let log = StdLog::new();
             let file_path = root.join("file");
             let target = Path::from(root.join("target"));
             create_file(&file_path);
@@ -1115,7 +1116,7 @@ mod test {
     #[test]
     fn test_move_fails_if_target_exists() {
         with_dir("dedupe/move_target_exists", |root| {
-            let log = Log::new();
+            let log = StdLog::new();
             let file_path = root.join("file");
             let target = root.join("target");
             create_file(&file_path);
@@ -1133,7 +1134,7 @@ mod test {
     #[test]
     fn test_soft_link_command_replaces_file_with_a_link() {
         with_dir("dedupe/soft_link_cmd", |root| {
-            let log = Log::new();
+            let log = StdLog::new();
             let file_path_1 = root.join("file_1");
             let file_path_2 = root.join("file_2");
             write_file(&file_path_1, "foo");
@@ -1160,7 +1161,7 @@ mod test {
     #[test]
     fn test_hard_link_command_replaces_file_with_a_link() {
         with_dir("dedupe/hard_link_cmd", |root| {
-            let log = Log::new();
+            let log = StdLog::new();
             let file_path_1 = root.join("file_1");
             let file_path_2 = root.join("file_2");
 
@@ -1209,7 +1210,7 @@ mod test {
         with_dir("dedupe/partition/basic", |root| {
             let group = make_group(root, FileHash::from_str("00").unwrap());
             let config = DedupeConfig::default();
-            let partitioned = partition(group, &config, &Log::new()).unwrap();
+            let partitioned = partition(group, &config, &StdLog::new()).unwrap();
             assert_eq!(partitioned.to_keep.len(), 1);
             assert_eq!(partitioned.to_drop.len(), 2);
         })
@@ -1221,7 +1222,7 @@ mod test {
             let group = make_group(root, FileHash::from_str("00").unwrap());
             let mut config = DedupeConfig::default();
             config.modified_before = Some(DateTime::from(Local::now() - Duration::days(1)));
-            let partitioned = partition(group, &config, &Log::new());
+            let partitioned = partition(group, &config, &StdLog::new());
             assert!(partitioned.is_err());
         })
     }
@@ -1235,7 +1236,7 @@ mod test {
 
             let mut config = DedupeConfig::default();
             config.priority = vec![Priority::MostRecentlyModified];
-            let partitioned = partition(group, &config, &Log::new()).unwrap();
+            let partitioned = partition(group, &config, &StdLog::new()).unwrap();
             assert!(partitioned
                 .to_drop
                 .iter()
@@ -1264,9 +1265,9 @@ mod test {
             let group = make_group(root, FileHash::from_str("00").unwrap());
             let mut config = DedupeConfig::default();
             config.priority = vec![Priority::Newest];
-            let partitioned_1 = partition(group.clone(), &config, &Log::new()).unwrap();
+            let partitioned_1 = partition(group.clone(), &config, &StdLog::new()).unwrap();
             config.priority = vec![Priority::Oldest];
-            let partitioned_2 = partition(group.clone(), &config, &Log::new()).unwrap();
+            let partitioned_2 = partition(group.clone(), &config, &StdLog::new()).unwrap();
 
             assert_ne!(
                 path_set(&partitioned_1.to_keep),
@@ -1290,9 +1291,9 @@ mod test {
 
             let mut config = DedupeConfig::default();
             config.priority = vec![Priority::MostRecentlyModified];
-            let partitioned_1 = partition(group.clone(), &config, &Log::new()).unwrap();
+            let partitioned_1 = partition(group.clone(), &config, &StdLog::new()).unwrap();
             config.priority = vec![Priority::LeastRecentlyModified];
-            let partitioned_2 = partition(group.clone(), &config, &Log::new()).unwrap();
+            let partitioned_2 = partition(group.clone(), &config, &StdLog::new()).unwrap();
 
             assert_ne!(
                 path_set(&partitioned_1.to_keep),
@@ -1312,13 +1313,13 @@ mod test {
             let mut config = DedupeConfig::default();
             config.priority = vec![Priority::LeastRecentlyModified];
             config.keep_name_patterns = vec![Pattern::glob("*_1").unwrap()];
-            let p = partition(group.clone(), &config, &Log::new()).unwrap();
+            let p = partition(group.clone(), &config, &StdLog::new()).unwrap();
             assert_eq!(p.to_keep.len(), 1);
             assert_eq!(&p.to_keep[0].path, &group.files[0]);
 
             config.keep_name_patterns = vec![];
             config.keep_path_patterns = vec![Pattern::glob("**/file_1").unwrap()];
-            let p = partition(group.clone(), &config, &Log::new()).unwrap();
+            let p = partition(group.clone(), &config, &StdLog::new()).unwrap();
             assert_eq!(p.to_keep.len(), 1);
             assert_eq!(&p.to_keep[0].path, &group.files[0]);
         })
@@ -1331,13 +1332,13 @@ mod test {
             let mut config = DedupeConfig::default();
             config.priority = vec![Priority::LeastRecentlyModified];
             config.name_patterns = vec![Pattern::glob("*_3").unwrap()];
-            let p = partition(group.clone(), &config, &Log::new()).unwrap();
+            let p = partition(group.clone(), &config, &StdLog::new()).unwrap();
             assert_eq!(p.to_drop.len(), 1);
             assert_eq!(&p.to_drop[0].path, &group.files[2]);
 
             config.name_patterns = vec![];
             config.path_patterns = vec![Pattern::glob("**/file_3").unwrap()];
-            let p = partition(group.clone(), &config, &Log::new()).unwrap();
+            let p = partition(group.clone(), &config, &StdLog::new()).unwrap();
             assert_eq!(p.to_drop.len(), 1);
             assert_eq!(&p.to_drop[0].path, &group.files[2]);
         })
@@ -1362,7 +1363,7 @@ mod test {
             let mut config = DedupeConfig::default();
             config.isolated_roots = vec![Path::from(&root1), Path::from(&root2)];
 
-            let p = partition(group.clone(), &config, &Log::new()).unwrap();
+            let p = partition(group.clone(), &config, &StdLog::new()).unwrap();
             assert_eq!(p.to_drop.len(), 3);
             assert!(p
                 .to_drop
@@ -1406,7 +1407,7 @@ mod test {
             };
 
             let config = DedupeConfig::default();
-            let p = partition(group.clone(), &config, &Log::new()).unwrap();
+            let p = partition(group.clone(), &config, &StdLog::new()).unwrap();
 
             // drop A files because file_a2 appears after file_b1 in the files vector
             assert_eq!(p.to_drop.len(), 2);
@@ -1425,7 +1426,7 @@ mod test {
     #[test]
     fn test_run_dedupe_script() {
         with_dir("dedupe/partition/run_dedupe_script", |root| {
-            let mut log = Log::new();
+            let mut log = StdLog::new();
             log.no_progress = true;
             log.log_stderr_to_stdout = true;
 
@@ -1444,7 +1445,7 @@ mod test {
     #[test]
     fn test_log_dedupe_script() {
         with_dir("dedupe/partition/log_dedupe_script", |root| {
-            let mut log = Log::new();
+            let mut log = StdLog::new();
             log.no_progress = true;
             log.log_stderr_to_stdout = true;
 
@@ -1477,7 +1478,7 @@ mod test {
     #[test]
     fn test_hard_link_merges_subgroups_of_hard_links() {
         with_dir("dedupe/merge_subgroups_of_hardlinks", |root| {
-            let mut log = Log::new();
+            let mut log = StdLog::new();
             log.no_progress = true;
             log.log_stderr_to_stdout = true;
 
@@ -1521,7 +1522,7 @@ mod test {
         use std::os::unix::fs;
 
         with_dir("dedupe/remove_subgroups_with_symlinks", |root| {
-            let mut log = Log::new();
+            let mut log = StdLog::new();
             log.no_progress = true;
             log.log_stderr_to_stdout = true;
 
