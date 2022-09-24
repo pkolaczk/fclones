@@ -1,6 +1,6 @@
 [package]
 name = "fclones"
-version = "0.28.0"
+version = "0.29.0"
 description = "Finds duplicate, unique, under- or over-replicated files"
 authors = ["Piotr Kołaczkowski <pkolaczk@gmail.com>"]
 homepage = "https://github.com/pkolaczk/fclones"
@@ -26,7 +26,7 @@ byteorder = "1.4"
 bytesize = "1.1"
 byte-unit = "4.0"
 chrono = { version = "0.4", features = ["serde", "clock"] }
-clap = "2.34"
+clap = { version = "4.0.0-rc.2", features = ["derive"] }
 console = "0.15"
 crossbeam-utils = "0.8"
 csv = "1.1"
@@ -38,7 +38,7 @@ fallible-iterator = "0.2"
 filetime = "0.2"
 hex = "0.4"
 ignore = "0.4.18"
-indicatif = { version = "0.14", features = ["with_rayon"] }
+indicatif = { version = "0.15" }
 indexmap = "1.8"
 indoc = "1.0"
 itertools = "0.10"
@@ -59,11 +59,10 @@ sha3 = { version = "0.10", optional = true }
 sled = "0.34"
 smallvec = "1.8"
 stfu8 = "0.2"
-structopt = "0.3"
-sysinfo = "0.23.10"
+sysinfo = "0.26"
 thread_local = "1.1"
 typed-sled = "0.2.0"
-uuid = { version = "0.8", features = ["v4"] }
+uuid = { version = "1.1", features = ["v4"] }
 xxhash-rust = { version = "0.8", features = ["xxh3"], optional = true }
 
 [features]

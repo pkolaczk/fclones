@@ -22,12 +22,12 @@ use crate::path::Path;
 use crate::transform::Transform;
 use crate::Error;
 
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize, clap::ValueEnum)]
 pub enum HashFn {
     #[default]
     Metro,
     #[cfg(feature = "xxhash")]
-    Xxh3,
+    Xxhash,
     #[cfg(feature = "blake3")]
     Blake3,
     #[cfg(feature = "sha2")]
@@ -67,7 +67,7 @@ impl FromStr for HashFn {
         match s.to_lowercase().as_str() {
             "metro" => Ok(Self::Metro),
             #[cfg(feature = "xxhash")]
-            "xxhash3" => Ok(Self::Xxh3),
+            "xxhash3" => Ok(Self::Xxhash),
             #[cfg(feature = "blake3")]
             "blake3" => Ok(Self::Blake3),
             #[cfg(feature = "sha2")]
@@ -263,7 +263,7 @@ impl FileHasher<'_> {
         let hash = match self.algorithm {
             HashFn::Metro => file_hash::<MetroHash128>(chunk, self.buf_len, progress),
             #[cfg(feature = "xxhash")]
-            HashFn::Xxh3 => file_hash::<Xxh3>(chunk, self.buf_len, progress),
+            HashFn::Xxhash => file_hash::<Xxh3>(chunk, self.buf_len, progress),
             #[cfg(feature = "blake3")]
             HashFn::Blake3 => file_hash::<blake3::Hasher>(chunk, self.buf_len, progress),
             #[cfg(feature = "sha2")]
@@ -331,7 +331,7 @@ impl FileHasher<'_> {
         let hash = match self.algorithm {
             HashFn::Metro => stream_hash::<MetroHash128>(stream, chunk.len, buf_len, |_| {}),
             #[cfg(feature = "xxhash")]
-            HashFn::Xxh3 => stream_hash::<Xxh3>(stream, chunk.len, buf_len, |_| {}),
+            HashFn::Xxhash => stream_hash::<Xxh3>(stream, chunk.len, buf_len, |_| {}),
             #[cfg(feature = "blake3")]
             HashFn::Blake3 => stream_hash::<blake3::Hasher>(stream, chunk.len, buf_len, |_| {}),
             #[cfg(feature = "sha2")]
