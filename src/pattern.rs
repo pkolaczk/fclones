@@ -31,6 +31,8 @@ impl Display for PatternError {
     }
 }
 
+impl std::error::Error for PatternError {}
+
 /// Pattern for matching paths and file names.
 /// Can be constructed from a glob pattern or a raw regular expression.
 #[derive(Clone, Debug)]

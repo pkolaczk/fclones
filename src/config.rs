@@ -1,7 +1,7 @@
 //! Main program configuration.
 
 use std::collections::HashMap;
-use std::ffi::OsString;
+use std::ffi::{OsStr, OsString};
 use std::fmt::{Display, Formatter};
 use std::io;
 use std::io::{stdin, BufRead, BufReader, ErrorKind};
@@ -10,8 +10,9 @@ use std::str::FromStr;
 use std::sync::Arc;
 
 use chrono::{DateTime, FixedOffset, Local};
-use clap::AppSettings;
-use structopt::StructOpt;
+use clap::builder::{TypedValueParser, ValueParserFactory};
+
+use clap::{command, Arg, Error};
 
 use crate::file::FileLen;
 use crate::group::FileGroupFilter;
@@ -22,7 +23,7 @@ use crate::pattern::{Pattern, PatternError, PatternOpts};
 use crate::selector::PathSelector;
 use crate::transform::Transform;
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, clap::ValueEnum)]
 pub enum OutputFormat {
     Default,
     Fdupes,
@@ -67,6 +68,32 @@ impl Default for OutputFormat {
     }
 }
 
+/// Allows to read command line arguments as crate::path::Path.
+#[derive(Clone)]
+pub struct PathParser;
+
+impl TypedValueParser for PathParser {
+    type Value = Path;
+
+    fn parse_ref(
+        &self,
+        _cmd: &clap::Command,
+        _arg: Option<&Arg>,
+        value: &OsStr,
+    ) -> Result<Self::Value, Error> {
+        Ok(Path::from(value))
+    }
+}
+
+/// Allows to read command line arguments as crate::path::Path.
+impl ValueParserFactory for Path {
+    type Parser = PathParser;
+
+    fn value_parser() -> Self::Parser {
+        PathParser
+    }
+}
+
 /// Parses date time string, accepts wide range of human-readable formats
 fn parse_date_time(s: &str) -> Result<DateTime<FixedOffset>, String> {
     match dtparse::parse(s) {
@@ -104,15 +131,6 @@ fn parse_thread_count_option(s: &str) -> Result<(OsString, Parallelism), String>
     Ok((key, Parallelism { random, sequential }))
 }
 
-fn is_positive_int(v: String) -> Result<(), String> {
-    if let Ok(f) = v.parse::<u64>() {
-        if f > 0 {
-            return Ok(());
-        }
-    }
-    Err(format!("Not a positive integer: {}", &*v))
-}
-
 #[derive(Clone, Copy, Debug)]
 pub struct Parallelism {
     pub random: usize,
@@ -120,25 +138,26 @@ pub struct Parallelism {
 }
 
 // Configuration of the `group` subcommand
-#[derive(Debug, StructOpt, Default)]
-#[structopt(
-    setting(AppSettings::ColoredHelp),
-    setting(AppSettings::DeriveDisplayOrder),
-    setting(AppSettings::DisableVersion)
-)]
+#[derive(clap::Parser, Debug, Default)]
+#[command(disable_version_flag = true)]
 pub struct GroupConfig {
     /// Writes the report to a file instead of the standard output
-    #[structopt(short = "o", long, value_name("path"))]
+    #[arg(short = 'o', long, value_name("path"))]
     pub output: Option<PathBuf>,
 
     /// Sets output file format
-    #[structopt(short = "f", long, possible_values = &OutputFormat::variants(),
-    case_insensitive = true, default_value="default")]
+    #[arg(
+        value_enum,
+        short = 'f',
+        long,
+        ignore_case = true,
+        default_value = "default"
+    )]
     pub format: OutputFormat,
 
     /// Reads the list of input paths from the standard input instead of the arguments.
     /// This flag is mostly useful together with Unix `find` utility.
-    #[structopt(long)]
+    #[arg(long)]
     pub stdin: bool,
 
     /// Limits recursion depth.
@@ -146,29 +165,29 @@ pub struct GroupConfig {
     /// 0 disables descending into directories.
     /// 1 descends into directories specified explicitly as input paths,
     /// but does not descend into subdirectories.
-    #[structopt(short = "d", long)]
+    #[arg(short = 'd', long)]
     pub depth: Option<usize>,
 
     /// Includes hidden files.
-    #[structopt(short = ".", long)]
+    #[arg(short = '.', long)]
     pub hidden: bool,
 
     /// Does not ignore files matching patterns listed in .gitignore and .fdignore.
-    #[structopt(short = "A", long)]
+    #[arg(short = 'A', long)]
     pub no_ignore: bool,
 
     /// Follows symbolic links.
     ///
     /// If this flag is set together with `--symbolic-links`, only links to
     /// directories are followed.
-    #[structopt(short = "L", long)]
+    #[arg(short = 'L', long)]
     pub follow_links: bool,
 
     /// Treats files reachable from multiple paths through links as duplicates.
     ///
     /// If `--symbolic-links` is not set, only hard links are matched.
     /// If `--symbolic-links` is set, both hard and symbolic links are matched.
-    #[structopt(short = "H", long)]
+    #[arg(short = 'H', long)]
     pub match_links: bool,
 
     /// Doesn't ignore symbolic links to files.
@@ -176,11 +195,11 @@ pub struct GroupConfig {
     /// Reports symbolic links, not their targets.
     /// Symbolic links are not treated as duplicates of their targets,
     /// unless `--match-links` is set.
-    #[structopt(short = "S", long)]
+    #[arg(short = 'S', long)]
     pub symbolic_links: bool,
 
     /// Don't count matching files found within the same directory argument as duplicates.
-    #[structopt(short("I"), long, conflicts_with("follow-links"))]
+    #[arg(short('I'), long, conflicts_with("follow_links"))]
     pub isolate: bool,
 
     /// Before matching, transforms each file by the specified program.
@@ -199,14 +218,14 @@ pub struct GroupConfig {
     /// specified by $OUT and will read output from there.
     /// If the program modifies the original file in-place without writing to the standard output
     /// nor a distinct file, use --in-place flag.
-    #[structopt(long, value_name("command"))]
+    #[arg(long, value_name("command"))]
     pub transform: Option<String>,
 
     /// Set this flag if the command given to --transform transforms the file in-place,
     /// i.e. it modifies the original input file instead of writing to the standard output
     /// or to a new file. This flag tells fclones to read output from the original file
     /// after the transform command exited.
-    #[structopt(long)]
+    #[arg(long)]
     pub in_place: bool,
 
     /// Doesn't copy the file to a temporary location before transforming,
@@ -215,54 +234,54 @@ pub struct GroupConfig {
     /// Caution:
     /// this option may speed up processing, but it may cause loss of data because it lets
     /// the transform command to work directly on the original file.
-    #[structopt(long)]
+    #[arg(long)]
     pub no_copy: bool,
 
     /// Searches for over-replicated files with replication factor above the specified value.
     /// Specifying neither `--rf-over` nor `--rf-under` is equivalent to `--rf-over 1` which would
     /// report duplicate files.
-    #[structopt(short("n"), long, conflicts_with("rf-under"), value_name("count"))]
+    #[arg(short('n'), long, conflicts_with("rf_under"), value_name("count"))]
     pub rf_over: Option<usize>,
 
     /// Searches for under-replicated files with replication factor below the specified value.
     /// Specifying `--rf-under 2` will report unique files.
-    #[structopt(long, conflicts_with("rf-over"), value_name("count"))]
+    #[arg(long, conflicts_with("rf_over"), value_name("count"))]
     pub rf_under: Option<usize>,
 
     /// Instead of searching for duplicates, searches for unique files.
-    #[structopt(long, conflicts_with_all(&["rf-over", "rf-under"]))]
+    #[arg(long, conflicts_with_all(&["rf_over", "rf_under"]))]
     pub unique: bool,
 
     /// Minimum file size in bytes. Units like KB, KiB, MB, MiB, GB, GiB are supported. Inclusive.
-    #[structopt(short = "s", long("min"), default_value = "1", value_name("bytes"))]
+    #[arg(short = 's', long("min"), default_value = "1", value_name("bytes"))]
     pub min_size: FileLen,
 
     /// Maximum file size in bytes. Units like KB, KiB, MB, MiB, GB, GiB are supported. Inclusive.
-    #[structopt(long("max"), value_name("bytes"))]
+    #[arg(long("max"), value_name("bytes"))]
     pub max_size: Option<FileLen>,
 
     /// Includes only file names matched fully by any of the given patterns.
-    #[structopt(long = "name", value_name("pattern"))]
+    #[arg(long = "name", value_name("pattern"))]
     pub name_patterns: Vec<String>,
 
     /// Includes only paths matched fully by any of the given patterns.
-    #[structopt(long = "path", value_name("pattern"))]
+    #[arg(long = "path", value_name("pattern"))]
     pub path_patterns: Vec<String>,
 
     /// Ignores paths matched fully by any of the given patterns.
-    #[structopt(long = "exclude", value_name("pattern"))]
+    #[arg(long = "exclude", value_name("pattern"))]
     pub exclude_patterns: Vec<String>,
 
     /// Makes pattern matching case-insensitive.
-    #[structopt(short = "i", long)]
+    #[arg(short = 'i', long)]
     pub ignore_case: bool,
 
     /// Expects patterns as Perl compatible regular expressions instead of Unix globs.
-    #[structopt(short = "x", long)]
+    #[arg(short = 'x', long)]
     pub regex: bool,
 
     /// Hash function.
-    #[structopt(long, default_value = "metro", possible_values = &HashFn::variants())]
+    #[arg(value_enum, long, default_value = "metro")]
     pub hash_fn: HashFn,
 
     /// Enables caching of file hashes.
@@ -271,7 +290,7 @@ pub struct GroupConfig {
     /// recomputations of hashes of the files that haven't changed since the last scan.
     /// Beware though, that this option relies on file modification times recorded by the
     /// file system. It also increases memory and storage space consumption.
-    #[structopt(long)]
+    #[arg(long)]
     pub cache: bool,
 
     /// Sets the sizes of thread-pools
@@ -289,16 +308,16 @@ pub struct GroupConfig {
     /// If `s` is not given, it is assumed to be the same as `r`.
     ///
     /// This parameter can be used multiple times to configure multiple thread pools.
-    #[structopt(
+    #[arg(
       short,
       long,
       value_name = "spec",
-      parse(try_from_str = parse_thread_count_option),
+      value_parser = parse_thread_count_option,
       verbatim_doc_comment)]
     pub threads: Vec<(OsString, Parallelism)>,
 
     /// Base directory to use when resolving relative input paths.
-    #[structopt(long, parse(from_os_str), default_value("."))]
+    #[arg(long, default_value("."))]
     pub base_dir: Path,
 
     /// A list of input paths.
@@ -306,7 +325,7 @@ pub struct GroupConfig {
     /// Accepts files and directories.
     /// By default descends into directories recursively, unless a recursion depth
     /// limit is specified with `--depth`.
-    #[structopt(parse(from_os_str), required_unless("stdin"))]
+    #[arg(required_unless_present("stdin"))]
     pub paths: Vec<Path>,
 }
 
@@ -486,7 +505,7 @@ impl GroupConfig {
 }
 
 /// Controls which files in a group should be removed / moved / replaced by links.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, clap::ValueEnum)]
 pub enum Priority {
     /// Gives higher priority to the files with the most recent creation time.
     Newest,
@@ -539,55 +558,59 @@ impl FromStr for Priority {
 }
 
 /// Configures which files should be removed
-#[derive(Debug, Default, StructOpt)]
-#[structopt(
-    setting(AppSettings::DeriveDisplayOrder),
-    setting(AppSettings::DisableVersion),
-    setting(AppSettings::ColoredHelp)
-)]
+#[derive(clap::Parser, Debug, Default)]
+#[command(disable_version_flag = true)]
 pub struct DedupeConfig {
     /// Doesn't perform any changes on the file-system, but writes a log of file operations
     /// to the standard output.
-    #[structopt(long)]
+    #[arg(long)]
     pub dry_run: bool,
 
     /// Writes the `dry_run` report to a file instead of the standard output.
-    #[structopt(short = "o", long, value_name = "path")]
+    #[arg(short = 'o', long, value_name = "path")]
     pub output: Option<PathBuf>,
 
     /// Deduplicates only the files that were modified before the given time.
     ///
     /// If any of the files in a group was modified later, the whole group is skipped.
-    #[structopt(long, short = "m", value_name = "timestamp", parse(try_from_str = parse_date_time))]
+    #[arg(
+        long,
+        short = 'm',
+        value_name = "timestamp",
+        value_parser(parse_date_time)
+    )]
     pub modified_before: Option<DateTime<FixedOffset>>,
 
     /// Keeps at least n replicas untouched.
     ///
     /// If not given, it is assumed to be the same as the
     /// `--rf-over` value in the earlier `fclones group` run.
-    #[structopt(short = "n", long, value_name = "count", validator(is_positive_int))]
+    #[arg(
+        short = 'n', long, value_name = "count",
+        value_parser = clap::value_parser!(u64).range(1..)
+    )]
     pub rf_over: Option<usize>,
 
     /// Restricts the set of files that can be removed or replaced by links to files
     /// with the name matching any given patterns.
-    #[structopt(long = "name", value_name = "pattern")]
+    #[arg(long = "name", value_name = "pattern")]
     pub name_patterns: Vec<Pattern>,
 
     /// Restricts the set of files that can be removed or replaced by links to files
     /// with the path matching any given patterns.
-    #[structopt(long = "path", value_name = "pattern")]
+    #[arg(long = "path", value_name = "pattern")]
     pub path_patterns: Vec<Pattern>,
 
     /// Sets the priority for files to be removed or replaced by links.
-    #[structopt(long, value_name = "priority", possible_values = &Priority::variants())]
+    #[arg(value_enum, long, value_name = "priority")]
     pub priority: Vec<Priority>,
 
     /// Keeps files with names matching any given patterns untouched.
-    #[structopt(long = "keep-name", value_name = "pattern")]
+    #[arg(long = "keep-name", value_name = "pattern")]
     pub keep_name_patterns: Vec<Pattern>,
 
     /// Keeps files with paths matching any given patterns untouched.
-    #[structopt(long = "keep-path", value_name = "pattern")]
+    #[arg(long = "keep-path", value_name = "pattern")]
     pub keep_path_patterns: Vec<Pattern>,
 
     /// Specifies a list of path prefixes.
@@ -597,15 +620,15 @@ pub struct DedupeConfig {
     ///
     /// By default, it is set to the input paths given as arguments to the earlier
     /// `fclones group` command, if `--isolate` option was present.
-    #[structopt(long = "isolate", value_name = "path", parse(from_os_str))]
+    #[arg(long = "isolate", value_name = "path")]
     pub isolated_roots: Vec<Path>,
 
     /// Treats files reachable from multiple paths through links as duplicates.
-    #[structopt(short = "H", long)]
+    #[arg(short = 'H', long)]
     pub match_links: bool,
 
     /// Doesn't lock files before performing an action on them.
-    #[structopt(long)]
+    #[arg(long)]
     pub no_lock: bool,
 
     /// Allows the size of a file to be different than the size recorded during grouping.
@@ -615,11 +638,11 @@ pub struct DedupeConfig {
     /// However, if `--transform` was used when grouping, the data sizes recorded in the `fclones group`
     /// report likely don't match the on-disk sizes of the files. Therefore,
     /// this flag is set automatically if `--transform` was used.
-    #[structopt(long)]
+    #[arg(long)]
     pub no_check_size: bool,
 }
 
-#[derive(Debug, StructOpt)]
+#[derive(clap::Subcommand, Debug)]
 pub enum Command {
     /// Produces a list of groups of identical files.
     ///
@@ -638,11 +661,11 @@ pub enum Command {
     /// the same file system. Soft links are always created to link files between
     /// different file systems.
     Link {
-        #[structopt(flatten)]
+        #[clap(flatten)]
         config: DedupeConfig,
 
         /// Creates soft links.
-        #[structopt(short, long)]
+        #[arg(short, long)]
         soft: bool,
     },
 
@@ -663,7 +686,7 @@ pub enum Command {
     /// Not all metadata is preserved on macOS.
     /// Unsupported on Windows.
     Dedupe {
-        #[structopt(flatten)]
+        #[clap(flatten)]
         config: DedupeConfig,
     },
 
@@ -678,11 +701,11 @@ pub enum Command {
     /// The list of groups earlier produced by `fclones group` should be submitted
     /// on the standard input.
     Move {
-        #[structopt(flatten)]
+        #[clap(flatten)]
         config: DedupeConfig,
 
         /// Target directory where the redundant files should be moved to.
-        #[structopt(parse(from_os_str))]
+        #[arg()]
         target: PathBuf,
     },
 }
@@ -697,30 +720,15 @@ impl Command {
 }
 
 /// Finds and cleans up redundant files
-#[derive(Debug, StructOpt)]
-#[structopt(
-    name = "fclones",
-    setting(AppSettings::ColoredHelp),
-    setting(AppSettings::DeriveDisplayOrder),
-    after_help = r#"EXAMPLES:
-
-First call "fclones group -o duplicates.txt directory/" to find all duplicates
-in a directory. See "fclones group --help" on how to modify this search.
-
-Then you may call "fclones SUBCOMMAND < duplicates.txt", where SUBCOMMAND is one
-of link, dedupe, remove or move. See the --help output of each subcommand
-for more information. All have a --dry-run flag to preview changes.
-
-It is also possible to combine the first and second step, e.g.:
-"fclones group dir1/ dir2/ | fclones SUBCOMMAND""#
-)]
+#[derive(clap::Parser, Debug)]
+#[command(name = "fclones")]
 pub struct Config {
     /// Suppresses progress reporting
-    #[structopt(short("-q"), long)]
+    #[arg(short('q'), long)]
     pub quiet: bool,
 
     /// Finds files
-    #[structopt(subcommand)]
+    #[command(subcommand)]
     pub command: Command,
 }
 
@@ -728,13 +736,15 @@ pub struct Config {
 mod test {
     use crate::config::{Command, Config};
     use crate::path::Path;
+
     use assert_matches::assert_matches;
+    use clap::Parser;
     use std::path::PathBuf;
-    use structopt::StructOpt;
 
     #[test]
     fn test_group_command() {
-        let config: Config = Config::from_iter(vec!["fclones", "group", "dir1", "dir2"]);
+        let config: Config =
+            Config::try_parse_from(vec!["fclones", "group", "dir1", "dir2"]).unwrap();
         assert_matches!(
             config.command,
             Command::Group(g) if g.paths == vec![Path::from("dir1"), Path::from("dir2")]);
@@ -742,25 +752,25 @@ mod test {
 
     #[test]
     fn test_dedupe_command() {
-        let config: Config = Config::from_iter(vec!["fclones", "dedupe"]);
+        let config: Config = Config::try_parse_from(vec!["fclones", "dedupe"]).unwrap();
         assert_matches!(config.command, Command::Dedupe { .. });
     }
 
     #[test]
     fn test_remove_command() {
-        let config: Config = Config::from_iter(vec!["fclones", "remove"]);
+        let config: Config = Config::try_parse_from(vec!["fclones", "remove"]).unwrap();
         assert_matches!(config.command, Command::Remove { .. });
     }
 
     #[test]
     fn test_link_command() {
-        let config: Config = Config::from_iter(vec!["fclones", "link"]);
+        let config: Config = Config::try_parse_from(vec!["fclones", "link"]).unwrap();
         assert_matches!(config.command, Command::Link { .. });
     }
 
     #[test]
     fn test_move_command() {
-        let config: Config = Config::from_iter(vec!["fclones", "move", "target"]);
+        let config: Config = Config::try_parse_from(vec!["fclones", "move", "target"]).unwrap();
         assert_matches!(
             config.command,
             Command::Move { target, .. } if target == PathBuf::from("target"));

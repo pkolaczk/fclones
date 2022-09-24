@@ -6,11 +6,11 @@ use std::process::exit;
 use std::sync::Arc;
 use std::{fs, io};
 
+use clap::Parser;
 use console::style;
 use fallible_iterator::FallibleIterator;
 use itertools::Itertools;
 use regex::Regex;
-use structopt::StructOpt;
 
 use fclones::config::{Command, Config, DedupeConfig, GroupConfig, Parallelism};
 use fclones::log::{Log, LogExt, ProgressBarLength, StdLog};
@@ -139,8 +139,8 @@ fn get_output_writer(config: &DedupeConfig) -> Result<Box<dyn Write + Send>, Err
 /// Returns the configuration of a previously executed fclones command,
 /// stored in the report header.
 fn get_command_config(header: &ReportHeader) -> Result<Config, Error> {
-    let mut command: Config = Config::from_iter_safe(&header.command).map_err(|e| {
-        let message: String = extract_error_cause(&e.message);
+    let mut command: Config = Config::try_parse_from(&header.command).map_err(|e| {
+        let message: String = extract_error_cause(&e.to_string());
         format!("Unrecognized earlier fclones configuration: {}", message)
     })?;
 
@@ -244,7 +244,7 @@ pub fn run_dedupe(op: DedupeOp, config: DedupeConfig, log: &dyn Log) -> Result<(
 }
 
 fn main() {
-    let config: Config = Config::from_args();
+    let config: Config = Config::parse();
     if let Err(e) = config.command.validate() {
         eprintln!("{} {}", style("error:").for_stderr().bold().red(), e);
         exit(1);
