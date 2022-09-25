@@ -60,7 +60,7 @@ pub fn reflink(src: &PathAndMetadata, dest: &PathAndMetadata, log: &dyn Log) -> 
 fn linux_reflink(
     _target: &PathAndMetadata,
     _link: &PathAndMetadata,
-    _log: &StdLog,
+    _log: &dyn Log,
 ) -> io::Result<()> {
     unreachable!()
 }
