@@ -138,7 +138,6 @@ Please report successes as well as failures.
 [Snap store](https://snapcraft.io/fclones) (Linux):
 
     snap install fclones
-    snap connect fclones:removable-media
 
 [Homebrew](https://formulae.brew.sh/formula/fclones) (macOS and Linux)
 
