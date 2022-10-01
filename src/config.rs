@@ -138,14 +138,13 @@ pub struct Parallelism {
 }
 
 // Configuration of the `group` subcommand
-#[derive(clap::Parser, Debug, Default)]
-#[command(disable_version_flag = true)]
+#[derive(clap::Args, Debug, Default)]
 pub struct GroupConfig {
-    /// Writes the report to a file instead of the standard output
-    #[arg(short = 'o', long, value_name("path"))]
+    /// Write the report to a file instead of the standard output
+    #[arg(short = 'o', long, value_name = "PATH")]
     pub output: Option<PathBuf>,
 
-    /// Sets output file format
+    /// Set output file format
     #[arg(
         value_enum,
         short = 'f',
@@ -155,42 +154,43 @@ pub struct GroupConfig {
     )]
     pub format: OutputFormat,
 
-    /// Reads the list of input paths from the standard input instead of the arguments.
+    /// Read the list of input paths from the standard input instead of the arguments.
+    ///
     /// This flag is mostly useful together with Unix `find` utility.
     #[arg(long)]
     pub stdin: bool,
 
-    /// Limits recursion depth.
+    /// Limit the recursion depth.
     ///
     /// 0 disables descending into directories.
     /// 1 descends into directories specified explicitly as input paths,
     /// but does not descend into subdirectories.
-    #[arg(short = 'd', long)]
+    #[arg(short = 'd', long, value_name = "NUMBER")]
     pub depth: Option<usize>,
 
-    /// Includes hidden files.
+    /// Include hidden files.
     #[arg(short = '.', long)]
     pub hidden: bool,
 
-    /// Does not ignore files matching patterns listed in .gitignore and .fdignore.
+    /// Do not ignore files matching patterns listed in `.gitignore` and `.fdignore`.
     #[arg(short = 'A', long)]
     pub no_ignore: bool,
 
-    /// Follows symbolic links.
+    /// Follow symbolic links.
     ///
     /// If this flag is set together with `--symbolic-links`, only links to
     /// directories are followed.
     #[arg(short = 'L', long)]
     pub follow_links: bool,
 
-    /// Treats files reachable from multiple paths through links as duplicates.
+    /// Treat files reachable from multiple paths through links as duplicates.
     ///
     /// If `--symbolic-links` is not set, only hard links are matched.
     /// If `--symbolic-links` is set, both hard and symbolic links are matched.
     #[arg(short = 'H', long)]
     pub match_links: bool,
 
-    /// Doesn't ignore symbolic links to files.
+    /// Don't ignore symbolic links to files.
     ///
     /// Reports symbolic links, not their targets.
     /// Symbolic links are not treated as duplicates of their targets,
@@ -202,89 +202,102 @@ pub struct GroupConfig {
     #[arg(short('I'), long, conflicts_with("follow_links"))]
     pub isolate: bool,
 
-    /// Before matching, transforms each file by the specified program.
+    /// Transform each file by the specified program before matching.
+    ///
     /// The value of this parameter should contain a command: the path to the program
     /// and optionally a list of space-separated arguments.
     ///
     /// By default, the file to process will be piped to the standard input of the program and the
     /// processed data will be read from the standard output.
     /// If the program does not support piping, but requires its input and/or output file path(s)
-    /// to be specified in the argument list, denote these paths by $IN and $OUT special variables.
-    /// If $IN is specified in the command string, the file will not be piped to the standard input,
-    /// but copied first to a temporary location and that temporary location will be substituted
-    /// as the value of $IN when launching the transform command.
-    /// Similarly, if $OUT is specified in the command string, the result will not be read from
+    /// to be specified in the argument list, denote these paths by `$IN` and `$OUT` special
+    /// variables.
+    ///
+    /// If `$IN` is specified in the command string, the file will not be piped to the standard
+    /// input, but copied first to a temporary location and that temporary location will be
+    /// substituted as the value of `$IN` when launching the transform command.
+    /// Similarly, if `$OUT` is specified in the command string, the result will not be read from
     /// the standard output, but fclones will expect the program to write to a named pipe
-    /// specified by $OUT and will read output from there.
+    /// specified by `$OUT` and will read output from there.
+    ///
     /// If the program modifies the original file in-place without writing to the standard output
-    /// nor a distinct file, use --in-place flag.
-    #[arg(long, value_name("command"))]
+    /// nor a distinct file, use `--in-place` flag.
+    #[arg(long, value_name("COMMAND"))]
     pub transform: Option<String>,
 
-    /// Set this flag if the command given to --transform transforms the file in-place,
+    /// Read the transform output from the same path as the transform input file.
+    ///
+    /// Set this flag if the command given to `--transform` transforms the file in-place,
     /// i.e. it modifies the original input file instead of writing to the standard output
     /// or to a new file. This flag tells fclones to read output from the original file
     /// after the transform command exited.
     #[arg(long)]
     pub in_place: bool,
 
-    /// Doesn't copy the file to a temporary location before transforming,
+    /// Don't copy the file to a temporary location before transforming,
     /// when `$IN` parameter is specified in the `--transform` command.
+    ///
     /// If this flag is present, `$IN` will point to the original file.
     /// Caution:
     /// this option may speed up processing, but it may cause loss of data because it lets
-    /// the transform command to work directly on the original file.
+    /// the transform command work directly on the original file.
     #[arg(long)]
     pub no_copy: bool,
 
-    /// Searches for over-replicated files with replication factor above the specified value.
+    /// Search for over-replicated files with replication factor above the specified value.
+    ///
     /// Specifying neither `--rf-over` nor `--rf-under` is equivalent to `--rf-over 1` which would
     /// report duplicate files.
-    #[arg(short('n'), long, conflicts_with("rf_under"), value_name("count"))]
+    #[arg(short('n'), long, conflicts_with("rf_under"), value_name("COUNT"))]
     pub rf_over: Option<usize>,
 
-    /// Searches for under-replicated files with replication factor below the specified value.
+    /// Search for under-replicated files with replication factor below the specified value.
+    ///
     /// Specifying `--rf-under 2` will report unique files.
-    #[arg(long, conflicts_with("rf_over"), value_name("count"))]
+    #[arg(long, conflicts_with("rf_over"), value_name("COUNT"))]
     pub rf_under: Option<usize>,
 
-    /// Instead of searching for duplicates, searches for unique files.
+    /// Instead of searching for duplicates, search for unique files.
     #[arg(long, conflicts_with_all(&["rf_over", "rf_under"]))]
     pub unique: bool,
 
-    /// Minimum file size in bytes. Units like KB, KiB, MB, MiB, GB, GiB are supported. Inclusive.
-    #[arg(short = 's', long("min"), default_value = "1", value_name("bytes"))]
+    /// Minimum file size in bytes (inclusive).
+    ///
+    /// Units like KB, KiB, MB, MiB, GB, GiB are supported.
+    #[arg(short = 's', long("min"), default_value = "1", value_name("BYTES"))]
     pub min_size: FileLen,
 
-    /// Maximum file size in bytes. Units like KB, KiB, MB, MiB, GB, GiB are supported. Inclusive.
-    #[arg(long("max"), value_name("bytes"))]
+    /// Maximum file size in bytes (inclusive).
+    ///
+    /// Units like KB, KiB, MB, MiB, GB, GiB are supported.
+    #[arg(long("max"), value_name("BYTES"))]
     pub max_size: Option<FileLen>,
 
-    /// Includes only file names matched fully by any of the given patterns.
-    #[arg(long = "name", value_name("pattern"))]
+    /// Include only file names matched fully by any of the given patterns.
+    #[arg(long = "name", value_name("PATTERN"))]
     pub name_patterns: Vec<String>,
 
-    /// Includes only paths matched fully by any of the given patterns.
-    #[arg(long = "path", value_name("pattern"))]
+    /// Include only paths matched fully by any of the given patterns.
+    #[arg(long = "path", value_name("PATTERN"))]
     pub path_patterns: Vec<String>,
 
-    /// Ignores paths matched fully by any of the given patterns.
-    #[arg(long = "exclude", value_name("pattern"))]
+    /// Ignore paths matched fully by any of the given patterns.
+    #[arg(long = "exclude", value_name("PATTERN"))]
     pub exclude_patterns: Vec<String>,
 
-    /// Makes pattern matching case-insensitive.
+    /// Make pattern matching case-insensitive.
     #[arg(short = 'i', long)]
     pub ignore_case: bool,
 
-    /// Expects patterns as Perl compatible regular expressions instead of Unix globs.
+    /// Expect patterns as Perl compatible regular expressions instead of Unix globs.
     #[arg(short = 'x', long)]
     pub regex: bool,
 
-    /// Hash function.
-    #[arg(value_enum, long, default_value = "metro")]
+    /// A hash function to use for computing file digests.
+    #[arg(value_enum, long, value_name = "NAME", default_value = "metro")]
     pub hash_fn: HashFn,
 
-    /// Enables caching of file hashes.
+    /// Enable caching of file hashes.
     ///
     /// Caching can significantly speed up subsequent runs of `fclones group` by avoiding
     /// recomputations of hashes of the files that haven't changed since the last scan.
@@ -293,7 +306,7 @@ pub struct GroupConfig {
     #[arg(long)]
     pub cache: bool,
 
-    /// Sets the sizes of thread-pools
+    /// Set the sizes of thread-pools
     ///
     /// The spec has the following format: `[<name>:]<r>[,<s>]`.
     /// The name can be one of:
@@ -303,21 +316,21 @@ pub struct GroupConfig {
     /// If the name is not given, this option sets the size of the main thread pool
     /// and thread pools dedicated to SSD devices.
     ///
-    /// The values `r` and `s` are integers denoting the sizes of the
-    /// thread-pools used respectively for random access I/O and sequential I/O.
-    /// If `s` is not given, it is assumed to be the same as `r`.
+    /// The values `r` and `s` are integers denoting the sizes of the thread-pools used
+    /// respectively for random access I/O and sequential I/O. If `s` is not given, it is
+    /// assumed to be the same as `r`.
     ///
     /// This parameter can be used multiple times to configure multiple thread pools.
     #[arg(
       short,
       long,
-      value_name = "spec",
+      value_name = "SPEC",
       value_parser = parse_thread_count_option,
       verbatim_doc_comment)]
     pub threads: Vec<(OsString, Parallelism)>,
 
     /// Base directory to use when resolving relative input paths.
-    #[arg(long, default_value("."))]
+    #[arg(long, value_name = "PATH", default_value("."))]
     pub base_dir: Path,
 
     /// A list of input paths.
@@ -507,21 +520,21 @@ impl GroupConfig {
 /// Controls which files in a group should be removed / moved / replaced by links.
 #[derive(Clone, Debug, clap::ValueEnum)]
 pub enum Priority {
-    /// Gives higher priority to the files with the most recent creation time.
+    /// Give higher priority to the files with the most recent creation time.
     Newest,
-    /// Gives higher priority to the files with the least recent creation time.
+    /// Give higher priority to the files with the least recent creation time.
     Oldest,
-    /// Gives higher priority to the files with the most recent modification time.
+    /// Give higher priority to the files with the most recent modification time.
     MostRecentlyModified,
-    /// Gives higher priority to the files with the least recent modification time.
+    /// Give higher priority to the files with the least recent modification time.
     LeastRecentlyModified,
-    /// Gives higher priority to the files with the most recent access time.
+    /// Give higher priority to the files with the most recent access time.
     MostRecentlyAccessed,
-    /// Gives higher priority to the files with the least recent access time.
+    /// Give higher priority to the files with the least recent access time.
     LeastRecentlyAccessed,
-    /// Gives higher priority to the files nested deeper in the directory tree.
+    /// Give higher priority to the files nested deeper in the directory tree.
     MostNested,
-    /// Gives higher priority to the files nested shallower in the directory tree.
+    /// Give higher priority to the files nested shallower in the directory tree.
     LeastNested,
 }
 
@@ -558,19 +571,19 @@ impl FromStr for Priority {
 }
 
 /// Configures which files should be removed
-#[derive(clap::Parser, Debug, Default)]
+#[derive(clap::Args, Debug, Default)]
 #[command(disable_version_flag = true)]
 pub struct DedupeConfig {
-    /// Doesn't perform any changes on the file-system, but writes a log of file operations
+    /// Don't perform any changes on the file-system, but writes a log of file operations
     /// to the standard output.
     #[arg(long)]
     pub dry_run: bool,
 
-    /// Writes the `dry_run` report to a file instead of the standard output.
+    /// Write the `dry_run` report to a file instead of the standard output.
     #[arg(short = 'o', long, value_name = "path")]
     pub output: Option<PathBuf>,
 
-    /// Deduplicates only the files that were modified before the given time.
+    /// Deduplicate only the files that were modified before the given time.
     ///
     /// If any of the files in a group was modified later, the whole group is skipped.
     #[arg(
@@ -581,57 +594,57 @@ pub struct DedupeConfig {
     )]
     pub modified_before: Option<DateTime<FixedOffset>>,
 
-    /// Keeps at least n replicas untouched.
+    /// Keep at least n replicas untouched.
     ///
     /// If not given, it is assumed to be the same as the
     /// `--rf-over` value in the earlier `fclones group` run.
     #[arg(
-        short = 'n', long, value_name = "count",
+        short = 'n', long, value_name = "COUNT",
         value_parser = clap::value_parser!(u64).range(1..)
     )]
     pub rf_over: Option<usize>,
 
-    /// Restricts the set of files that can be removed or replaced by links to files
+    /// Restrict the set of files that can be removed or replaced by links to files
     /// with the name matching any given patterns.
-    #[arg(long = "name", value_name = "pattern")]
+    #[arg(long = "name", value_name = "PATTERN")]
     pub name_patterns: Vec<Pattern>,
 
-    /// Restricts the set of files that can be removed or replaced by links to files
+    /// Restrict the set of files that can be removed or replaced by links to files
     /// with the path matching any given patterns.
-    #[arg(long = "path", value_name = "pattern")]
+    #[arg(long = "path", value_name = "PATTERN")]
     pub path_patterns: Vec<Pattern>,
 
-    /// Sets the priority for files to be removed or replaced by links.
-    #[arg(value_enum, long, value_name = "priority")]
+    /// Set the priority for files to be removed or replaced by links.
+    #[arg(value_enum, long, value_name = "PRIORITY")]
     pub priority: Vec<Priority>,
 
-    /// Keeps files with names matching any given patterns untouched.
-    #[arg(long = "keep-name", value_name = "pattern")]
+    /// Keep files with names matching any given patterns untouched.
+    #[arg(long = "keep-name", value_name = "PATTERN")]
     pub keep_name_patterns: Vec<Pattern>,
 
-    /// Keeps files with paths matching any given patterns untouched.
-    #[arg(long = "keep-path", value_name = "pattern")]
+    /// Keep files with paths matching any given patterns untouched.
+    #[arg(long = "keep-path", value_name = "PATTERN")]
     pub keep_path_patterns: Vec<Pattern>,
 
-    /// Specifies a list of path prefixes.
+    /// Specify a list of path prefixes.
     /// If non-empty, all duplicates having the same path prefix (root) are treated as one.
     /// This also means that the files sharing the same root can be either all
     /// dropped or all retained.
     ///
     /// By default, it is set to the input paths given as arguments to the earlier
     /// `fclones group` command, if `--isolate` option was present.
-    #[arg(long = "isolate", value_name = "path")]
+    #[arg(long = "isolate", value_name = "PATH")]
     pub isolated_roots: Vec<Path>,
 
-    /// Treats files reachable from multiple paths through links as duplicates.
+    /// Treat files reachable from multiple paths through links as duplicates.
     #[arg(short = 'H', long)]
     pub match_links: bool,
 
-    /// Doesn't lock files before performing an action on them.
+    /// Don't lock files before performing an action on them.
     #[arg(long)]
     pub no_lock: bool,
 
-    /// Allows the size of a file to be different than the size recorded during grouping.
+    /// Allow the size of a file to be different than the size recorded during grouping.
     ///
     /// By default, files are checked for size to prevent accidentally removing a file
     /// that was modified since grouping.
@@ -644,7 +657,7 @@ pub struct DedupeConfig {
 
 #[derive(clap::Subcommand, Debug)]
 pub enum Command {
-    /// Produces a list of groups of identical files.
+    /// Produce a list of groups of identical files.
     ///
     /// Scans the given directories recursively, computes hashes of files and groups
     /// files with the same hash together.
@@ -652,7 +665,7 @@ pub enum Command {
     /// is specified. This command is safe and does not modify the filesystem.
     Group(GroupConfig),
 
-    /// Replaces redundant files with links.
+    /// Replace redundant files with links.
     ///
     /// The list of groups earlier produced by `fclones group` should be submitted
     /// on the standard input.
@@ -664,12 +677,12 @@ pub enum Command {
         #[clap(flatten)]
         config: DedupeConfig,
 
-        /// Creates soft links.
+        /// Create soft links.
         #[arg(short, long)]
         soft: bool,
     },
 
-    /// Deduplicates file data using native filesystem deduplication capabilities.
+    /// Deduplicate file data using native filesystem deduplication capabilities.
     ///
     /// The list of groups earlier produced by `fclones group` should be submitted
     /// on the standard input.
@@ -690,13 +703,13 @@ pub enum Command {
         config: DedupeConfig,
     },
 
-    /// Removes redundant files.
+    /// Remove redundant files.
     ///
     /// The list of groups earlier produced by `fclones group` should be submitted
     /// on the standard input.
     Remove(DedupeConfig),
 
-    /// Moves redundant files to the given directory.
+    /// Move redundant files to the given directory.
     ///
     /// The list of groups earlier produced by `fclones group` should be submitted
     /// on the standard input.
@@ -719,15 +732,20 @@ impl Command {
     }
 }
 
+const fn after_help() -> &'static str {
+    "Written by Piotr Kołaczkowski and contributors.\n\
+     Licensed under MIT license."
+}
+
 /// Finds and cleans up redundant files
 #[derive(clap::Parser, Debug)]
-#[command(name = "fclones")]
+#[command(about, author, version, after_help = after_help(), max_term_width = 100)]
 pub struct Config {
-    /// Suppresses progress reporting
+    /// Suppress progress reporting
     #[arg(short('q'), long)]
     pub quiet: bool,
 
-    /// Finds files
+    /// Find files
     #[command(subcommand)]
     pub command: Command,
 }
