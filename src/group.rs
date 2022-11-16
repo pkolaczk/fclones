@@ -12,7 +12,7 @@ use std::io;
 use std::io::BufWriter;
 use std::iter::FromIterator;
 use std::marker::PhantomData;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::Arc;
 
@@ -615,7 +615,7 @@ where
 /// Walks the directory tree and collects matching files in parallel into a vector
 fn scan_files(ctx: &GroupCtx<'_>) -> Vec<Vec<FileInfo>> {
     let file_collector = ThreadLocal::new();
-    let file_count = AtomicU64::new(0);
+    let file_count = AtomicUsize::new(0);
     let spinner = ctx
         .log
         .progress_bar(&ctx.phases.format(Phase::Walk), ProgressBarLength::Unknown);
