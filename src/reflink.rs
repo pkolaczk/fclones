@@ -33,7 +33,7 @@ pub fn reflink(src: &PathAndMetadata, dest: &PathAndMetadata, log: &dyn Log) -> 
     .map_err(|e| {
         io::Error::new(
             e.kind(),
-            format!("Failed to deduplicate {} -> {}: {}", dest, src, e),
+            format!("Failed to deduplicate {dest} -> {src}: {e}"),
         )
     });
 
@@ -116,13 +116,10 @@ fn reflink_overwrite(target: &std::path::Path, link: &std::path::Path) -> io::Re
     use nix::request_code_write;
     use std::os::unix::prelude::AsRawFd;
 
-    let src = fs::File::open(&target)?;
+    let src = fs::File::open(target)?;
 
     // This operation does not require `.truncate(true)` because the files are already of the same size.
-    let dest = fs::OpenOptions::new()
-        .create(true)
-        .write(true)
-        .open(&link)?;
+    let dest = fs::OpenOptions::new().create(true).write(true).open(link)?;
 
     // From /usr/include/linux/fs.h:
     // #define FICLONE		_IOW(0x94, 9, int)
@@ -193,7 +190,7 @@ fn restore_metadata(path: &std::path::Path, metadata: &Metadata) -> io::Result<(
         )
     })?;
 
-    fs::set_permissions(&path, metadata.permissions()).map_err(|e| {
+    fs::set_permissions(path, metadata.permissions()).map_err(|e| {
         io::Error::new(
             e.kind(),
             format!("Failed to set permissions for {}: {}", path.display(), e),
@@ -282,8 +279,8 @@ fn restore_xattrs(path: &std::path::Path, xattrs: Vec<XAttr>) -> io::Result<()> 
 // Reflink which expects the destination to not exist.
 #[cfg(any(not(any(target_os = "linux", target_os = "android")), test))]
 fn copy_by_reflink(src: &crate::path::Path, dest: &crate::path::Path) -> io::Result<()> {
-    reflink::reflink(&src.to_path_buf(), &dest.to_path_buf())
-        .map_err(|e| io::Error::new(e.kind(), format!("Failed to reflink: {}", e)))
+    reflink::reflink(src.to_path_buf(), dest.to_path_buf())
+        .map_err(|e| io::Error::new(e.kind(), format!("Failed to reflink: {e}")))
 }
 
 // Create a reflink by removing the file and making a reflink copy of the original.
@@ -382,15 +379,15 @@ pub mod test {
         let test_root = "/dev/shm/tmp.fclones.reflink.testfailure";
 
         // Usually /dev/shm is mounted as a tmpfs which does not support reflinking, so test there.
-        with_dir(&test_root, |root| {
+        with_dir(test_root, |root| {
             // Always clean up files in /dev/shm, even after failure
             struct CleanupGuard<'a>(&'a str);
             impl<'a> Drop for CleanupGuard<'a> {
                 fn drop(&mut self) {
-                    fs::remove_dir_all(&self.0).unwrap();
+                    fs::remove_dir_all(self.0).unwrap();
                 }
             }
-            let _guard = CleanupGuard(&test_root);
+            let _guard = CleanupGuard(test_root);
 
             let log = StdLog::new();
             let file_path_1 = root.join("file_1");

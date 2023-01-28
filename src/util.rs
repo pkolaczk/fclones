@@ -133,8 +133,8 @@ pub mod test {
         let mut delay = std::time::Duration::from_millis(1);
         loop {
             thread::sleep(delay);
-            create_file(&f);
-            let ctime = fs::metadata(&f).unwrap().modified().unwrap();
+            create_file(f);
+            let ctime = fs::metadata(f).unwrap().modified().unwrap();
             if ctime != time {
                 return ctime;
             }
@@ -146,13 +146,13 @@ pub mod test {
     /// Panics on errors.
     pub fn write_file(path: &std::path::Path, content: &str) {
         let mut f = File::create(path).unwrap();
-        write!(&mut f, "{}", content).unwrap();
+        write!(&mut f, "{content}").unwrap();
     }
 
     /// Reads contents of a file to a string.
     /// Panics on errors.
     pub fn read_file(path: &std::path::Path) -> String {
-        let f = File::open(&path).unwrap();
+        let f = File::open(path).unwrap();
         let mut r = BufReader::new(f);
         let mut result = String::new();
         r.read_to_string(&mut result).unwrap();

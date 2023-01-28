@@ -54,7 +54,7 @@ fn check_input_paths_exist(config: &GroupConfig, log: &dyn Log) -> Result<(), Er
     let depth = config.depth;
     let input_paths = config
         .input_paths()
-        .filter(|p| match fs::metadata(&p.to_path_buf()) {
+        .filter(|p| match fs::metadata(p.to_path_buf()) {
             Ok(m) if m.is_dir() && depth == Some(0) => {
                 log.warn(format!(
                     "Skipping directory {} because recursive scan is disabled.",
@@ -119,7 +119,7 @@ fn run_group(mut config: GroupConfig, log: &dyn Log) -> Result<(), Error> {
     let results = group_files(&config, log).map_err(|e| Error::new(e.message))?;
 
     write_report(&config, log, &results)
-        .map_err(|e| Error::new(format!("Failed to write report: {}", e)))
+        .map_err(|e| Error::new(format!("Failed to write report: {e}")))
 }
 
 /// Depending on the `output` configuration field, returns either a reference to the standard
@@ -141,7 +141,7 @@ fn get_output_writer(config: &DedupeConfig) -> Result<Box<dyn Write + Send>, Err
 fn get_command_config(header: &ReportHeader) -> Result<Config, Error> {
     let mut command: Config = Config::try_parse_from(&header.command).map_err(|e| {
         let message: String = extract_error_cause(&e.to_string());
-        format!("Unrecognized earlier fclones configuration: {}", message)
+        format!("Unrecognized earlier fclones configuration: {message}")
     })?;
 
     // Configure the same base directory as set when running the previous command.
@@ -153,7 +153,7 @@ fn get_command_config(header: &ReportHeader) -> Result<Config, Error> {
 }
 
 pub fn run_dedupe(op: DedupeOp, config: DedupeConfig, log: &dyn Log) -> Result<(), Error> {
-    let input_error = |e: io::Error| format!("Input error: {}", e);
+    let input_error = |e: io::Error| format!("Input error: {e}");
     let mut dedupe_config = config;
     let mut reader = open_report(stdin()).map_err(input_error)?;
     let header = reader.read_header().map_err(input_error)?;
@@ -228,7 +228,7 @@ pub fn run_dedupe(op: DedupeOp, config: DedupeConfig, log: &dyn Log) -> Result<(
     let script = dedupe(groups, op, &dedupe_config, log);
     if dedupe_config.dry_run {
         let out = get_output_writer(&dedupe_config)?;
-        let result = log_script(script, out).map_err(|e| format!("Output error: {}", e))?;
+        let result = log_script(script, out).map_err(|e| format!("Output error: {e}"))?;
         log.info(format!(
             "Would process {} files and reclaim {}{} space",
             result.processed_count, upto, result.reclaimed_space
@@ -240,7 +240,7 @@ pub fn run_dedupe(op: DedupeOp, config: DedupeConfig, log: &dyn Log) -> Result<(
             result.processed_count, upto, result.reclaimed_space
         ));
     };
-    result.map_err(|e| Error::new(format!("Failed to read file list: {}", e)))
+    result.map_err(|e| Error::new(format!("Failed to read file list: {e}")))
 }
 
 fn main() {
@@ -258,7 +258,7 @@ fn main() {
     let cwd = match std::env::current_dir() {
         Ok(cwd) => cwd,
         Err(e) => {
-            log.err(format!("Cannot determine current working directory: {}", e));
+            log.err(format!("Cannot determine current working directory: {e}"));
             exit(1);
         }
     };

@@ -133,13 +133,13 @@ impl<'a> GroupCtx<'a> {
         let transform = match config.transform() {
             None => None,
             Some(Ok(transform)) => Some(transform),
-            Some(Err(e)) => return Err(Error::new(format!("Invalid transform: {}", e))),
+            Some(Err(e)) => return Err(Error::new(format!("Invalid transform: {e}"))),
         };
         let base_dir = Path::from(current_dir().unwrap_or_default());
         let group_filter = config.group_filter();
         let path_selector = config
             .path_selector(&base_dir)
-            .map_err(|e| format!("Invalid pattern: {}", e))?;
+            .map_err(|e| format!("Invalid pattern: {e}"))?;
         let hasher = if config.cache {
             FileHasher::new_cached(config.hash_fn, transform, log)?
         } else {
@@ -171,12 +171,11 @@ impl<'a> GroupCtx<'a> {
             let name = name.to_string_lossy();
             match name.strip_prefix("dev:") {
                 Some(name) if devices.get_by_name(OsStr::new(name)).is_none() => {
-                    return Err(Error::new(format!("Unknown device: {}", name)));
+                    return Err(Error::new(format!("Unknown device: {name}")));
                 }
                 None if !allowed_pool_names.contains(&name.as_ref()) => {
                     return Err(Error::new(format!(
-                        "Unknown thread pool or device type: {}",
-                        name
+                        "Unknown thread pool or device type: {name}"
                     )));
                 }
                 _ => {}
@@ -1499,7 +1498,7 @@ mod test {
                     },
                     len: FileLen(0),
                     location: i as u64,
-                    path: Path::from(format!("file{}", i)),
+                    path: Path::from(format!("file{i}")),
                 }],
             })
         }
@@ -1539,8 +1538,10 @@ mod test {
             write_test_file(&file2, b"aaa", b"", b"");
 
             let log = test_log();
-            let mut config = GroupConfig::default();
-            config.paths = vec![file1.into(), file2.into()];
+            let config = GroupConfig {
+                paths: vec![file1.into(), file2.into()],
+                ..GroupConfig::default()
+            };
             let results = group_files(&config, &log).unwrap();
             assert_eq!(results.len(), 1);
             assert_eq!(results[0].file_len, FileLen(3));
@@ -1557,9 +1558,10 @@ mod test {
             write_test_file(&file2, &[0; MAX_PREFIX_LEN], &[1; 4096], &[2; 4096]);
 
             let log = test_log();
-            let mut config = GroupConfig::default();
-            config.paths = vec![file1.into(), file2.into()];
-
+            let config = GroupConfig {
+                paths: vec![file1.into(), file2.into()],
+                ..GroupConfig::default()
+            };
             let results = group_files(&config, &log).unwrap();
             assert_eq!(results.len(), 1);
             assert_eq!(results[0].files.len(), 2);
@@ -1578,14 +1580,16 @@ mod test {
             let file2 = Path::from(file2);
 
             let log = test_log();
-            let mut config = GroupConfig::default();
-            config.paths = vec![file1.clone(), file2.clone()];
-            config.rf_over = Some(0);
+            let config = GroupConfig {
+                paths: vec![file1.clone(), file2.clone()],
+                rf_over: Some(0),
+                ..GroupConfig::default()
+            };
 
             let results = group_files(&config, &log).unwrap();
             assert_eq!(results.len(), 2);
-            assert_eq!(results[0].paths(), vec![Path::from(file1.canonicalize())]);
-            assert_eq!(results[1].paths(), vec![Path::from(file2.canonicalize())]);
+            assert_eq!(results[0].paths(), vec![file1.canonicalize()]);
+            assert_eq!(results[1].paths(), vec![file2.canonicalize()]);
         });
     }
 
@@ -1598,9 +1602,11 @@ mod test {
             write_test_file(&file2, b"bbb", b"", b"");
 
             let log = test_log();
-            let mut config = GroupConfig::default();
-            config.paths = vec![file1.into(), file2.into()];
-            config.unique = true;
+            let config = GroupConfig {
+                paths: vec![file1.into(), file2.into()],
+                unique: true,
+                ..GroupConfig::default()
+            };
 
             let results = group_files(&config, &log).unwrap();
             assert_eq!(results.len(), 2);
@@ -1620,9 +1626,11 @@ mod test {
             write_test_file(&file2, &prefix, &mid, b"suffix2");
 
             let log = test_log();
-            let mut config = GroupConfig::default();
-            config.paths = vec![file1.into(), file2.into()];
-            config.unique = true;
+            let config = GroupConfig {
+                paths: vec![file1.into(), file2.into()],
+                unique: true,
+                ..GroupConfig::default()
+            };
 
             let results = group_files(&config, &log).unwrap();
             assert_eq!(results.len(), 2);
@@ -1642,9 +1650,11 @@ mod test {
             write_test_file(&file2, &prefix, b"middle2", &suffix);
 
             let log = test_log();
-            let mut config = GroupConfig::default();
-            config.paths = vec![file1.into(), file2.into()];
-            config.unique = true;
+            let config = GroupConfig {
+                paths: vec![file1.into(), file2.into()],
+                unique: true,
+                ..GroupConfig::default()
+            };
 
             let results = group_files(&config, &log).unwrap();
             assert_eq!(results.len(), 2);
@@ -1662,10 +1672,11 @@ mod test {
             hard_link(&file1, &file2).unwrap();
 
             let log = test_log();
-
-            let mut config = GroupConfig::default();
-            config.paths = vec![file1.into(), file2.into()];
-            config.unique = true; // hardlinks to a common file should be treated as one file
+            let config = GroupConfig {
+                paths: vec![file1.into(), file2.into()],
+                unique: true, // hardlinks to a common file should be treated as one file
+                ..GroupConfig::default()
+            };
 
             let results = group_files(&config, &log).unwrap();
             assert_eq!(results.len(), 1);
@@ -1683,13 +1694,14 @@ mod test {
             std::os::unix::fs::symlink(&file1, &file2).unwrap();
 
             let log = test_log();
-            let mut config = GroupConfig::default();
-
-            // If both hard_links and symbolic_links is set to true, symbolic links should
-            // be treated as duplicates.
-            config.paths = vec![file1.into(), file2.into()];
-            config.match_links = true;
-            config.symbolic_links = true;
+            let mut config = GroupConfig {
+                paths: vec![file1.into(), file2.into()],
+                // If both hard_links and symbolic_links is set to true, symbolic links should
+                // be treated as duplicates.
+                match_links: true,
+                symbolic_links: true,
+                ..GroupConfig::default()
+            };
 
             let results = group_files(&config, &log).unwrap();
             assert_eq!(results.len(), 1);
@@ -1718,11 +1730,14 @@ mod test {
             let file1 = root.join("file1");
             write_test_file(&file1, b"foo", b"", b"");
             let log = test_log();
-            let mut config = GroupConfig::default();
+
             let file1 = Path::from(file1);
-            config.paths = vec![file1.clone(), file1.clone(), file1.clone()];
-            config.unique = true;
-            config.match_links = true;
+            let config = GroupConfig {
+                paths: vec![file1.clone(), file1.clone(), file1],
+                match_links: true,
+                unique: true,
+                ..GroupConfig::default()
+            };
 
             let results = group_files(&config, &log).unwrap();
             assert_eq!(results.len(), 1);
@@ -1737,17 +1752,19 @@ mod test {
 
         with_dir("main/duplicate_input_files_non_canonical", |root| {
             let dir = root.join("dir");
-            symlink(&root, &dir).unwrap();
+            symlink(root, dir).unwrap();
 
             let file1 = root.join("file1");
             let file2 = root.join("dir/file1");
             write_test_file(&file1, b"foo", b"", b"");
 
             let log = test_log();
-            let mut config = GroupConfig::default();
-            config.paths = vec![file1.into(), file2.into()];
-            config.unique = true;
-            config.match_links = true;
+            let config = GroupConfig {
+                paths: vec![file1.into(), file2.into()],
+                match_links: true,
+                unique: true,
+                ..GroupConfig::default()
+            };
 
             let results = group_files(&config, &log).unwrap();
             assert_eq!(results.len(), 1);
@@ -1770,9 +1787,11 @@ mod test {
             write_test_file(&file2, b"foo", b"", b"");
 
             let log = test_log();
-            let mut config = GroupConfig::default();
-            config.paths = vec![root1.into(), root2.into()];
-            config.isolate = true;
+            let mut config = GroupConfig {
+                paths: vec![root1.into(), root2.into()],
+                isolate: true,
+                ..GroupConfig::default()
+            };
 
             let results = group_files(&config, &log).unwrap();
             assert_eq!(results.len(), 0);
@@ -1796,10 +1815,12 @@ mod test {
             write_file(&input_path_2, "aa|23456");
 
             let log = test_log();
-            let mut config = GroupConfig::default();
-            config.paths = vec![input_path_1.into(), input_path_2.into()];
-            // a transform that takes only the first two bytes of each file
-            config.transform = Some("dd count=2 bs=1".to_string());
+            let config = GroupConfig {
+                paths: vec![input_path_1.into(), input_path_2.into()],
+                // a transform that takes only the first two bytes of each file
+                transform: Some("dd count=2 bs=1".to_string()),
+                ..GroupConfig::default()
+            };
 
             let results = group_files(&config, &log).unwrap();
             assert_eq!(results.len(), 1);
@@ -1820,9 +1841,11 @@ mod test {
             let file3 = Path::from(file3);
 
             let log = test_log();
-            let mut config = GroupConfig::default();
-            config.unique = true;
-            config.paths = vec![file1.into(), file2.into(), file3.clone()];
+            let config = GroupConfig {
+                unique: true,
+                paths: vec![file1.into(), file2.into(), file3.clone()],
+                ..GroupConfig::default()
+            };
             let results = group_files(&config, &log).unwrap();
             assert_eq!(results.len(), 1);
             assert_eq!(results[0].files[0].path, file3);
@@ -1837,10 +1860,13 @@ mod test {
 
             let report_file = root.join("report.txt");
             let log = test_log();
-            let mut config = GroupConfig::default();
-            config.paths = vec![file.into()];
-            config.unique = true;
-            config.output = Some(report_file.clone());
+
+            let config = GroupConfig {
+                paths: vec![file.into()],
+                unique: true,
+                output: Some(report_file.clone()),
+                ..GroupConfig::default()
+            };
 
             let results = group_files(&config, &log).unwrap();
             write_report(&config, &log, &results).unwrap();
@@ -1865,7 +1891,7 @@ mod test {
                     device: 0,
                 },
                 len: FileLen(1024),
-                location: id as u64 * 1024,
+                location: id * 1024,
             }
         }
 
@@ -1900,11 +1926,11 @@ mod test {
         let mut file = OpenOptions::new()
             .write(true)
             .create(true)
-            .open(&path)
+            .open(path)
             .unwrap();
-        file.write(prefix).unwrap();
-        file.write(mid).unwrap();
-        file.write(suffix).unwrap();
+        file.write_all(prefix).unwrap();
+        file.write_all(mid).unwrap();
+        file.write_all(suffix).unwrap();
     }
 
     fn test_log() -> StdLog {

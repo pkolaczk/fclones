@@ -51,7 +51,7 @@ impl Entry {
     }
 
     pub fn from_path(path: Path) -> io::Result<Entry> {
-        symlink_metadata(&path.to_path_buf()).map(|meta| Entry::new(meta.file_type(), path))
+        symlink_metadata(path.to_path_buf()).map(|meta| Entry::new(meta.file_type(), path))
     }
 
     pub fn from_dir_entry(base: &Arc<Path>, dir_entry: DirEntry) -> io::Result<Entry> {
@@ -69,7 +69,7 @@ impl IgnoreStack {
         let gitignore = GitignoreBuilder::new("/").build_global();
         if let Some(err) = gitignore.1 {
             if let Some(log) = log {
-                log.warn(format!("Error loading global gitignore rules: {}", err))
+                log.warn(format!("Error loading global gitignore rules: {err}"))
             }
         }
         IgnoreStack(Arc::new(vec![gitignore.0]))
@@ -476,7 +476,7 @@ mod test {
             let file = test_root.join("file.txt");
             let link1 = test_root.join("link1");
             let link2 = test_root.join("link2");
-            File::create(&file).unwrap();
+            File::create(file).unwrap();
             symlink(PathBuf::from("file.txt"), &link1).unwrap(); // link1 -> file.txt
             symlink(PathBuf::from("link1"), &link2).unwrap(); // link2 -> link1
 
@@ -541,7 +541,7 @@ mod test {
             create_dir(&dir).unwrap();
             File::create(&file).unwrap();
             // create a link back to the top level, so a cycle is formed
-            symlink(test_root.canonicalize().unwrap(), &link).unwrap();
+            symlink(test_root.canonicalize().unwrap(), link).unwrap();
 
             let mut walk = Walk::new();
             walk.follow_links = true;
@@ -556,8 +556,8 @@ mod test {
             create_dir(&hidden_dir).unwrap();
             let hidden_file_1 = hidden_dir.join("file.txt");
             let hidden_file_2 = test_root.join(".file.txt");
-            File::create(&hidden_file_1).unwrap();
-            File::create(&hidden_file_2).unwrap();
+            File::create(hidden_file_1).unwrap();
+            File::create(hidden_file_2).unwrap();
 
             let mut walk = Walk::new();
             walk.hidden = false;
@@ -578,11 +578,11 @@ mod test {
             writeln!(gitignore, "**/bar").unwrap();
             drop(gitignore);
 
-            create_dir(&test_root.join("foo")).unwrap();
+            create_dir(test_root.join("foo")).unwrap();
             create_file(&test_root.join("foo").join("bar"));
             create_file(&test_root.join("bar.log"));
-            create_dir(&test_root.join("dir")).unwrap();
-            create_dir(&test_root.join("dir").join("bar")).unwrap();
+            create_dir(test_root.join("dir")).unwrap();
+            create_dir(test_root.join("dir").join("bar")).unwrap();
             create_file(&test_root.join("dir").join("bar").join("file"));
 
             let walk = Walk::new();

@@ -201,7 +201,7 @@ impl FileId {
     #[cfg(unix)]
     pub fn new(file: &Path) -> io::Result<FileId> {
         use std::os::unix::fs::MetadataExt;
-        match fs::metadata(&file.to_path_buf()) {
+        match fs::metadata(file.to_path_buf()) {
             Ok(metadata) => Ok(FileId {
                 inode: metadata.ino(),
                 device: metadata.dev(),
@@ -293,7 +293,7 @@ pub struct FileMetadata {
 impl FileMetadata {
     pub fn new(path: &Path) -> io::Result<FileMetadata> {
         let path_buf = path.to_path_buf();
-        let metadata = fs::metadata(&path_buf).map_err(|e| {
+        let metadata = fs::metadata(path_buf).map_err(|e| {
             io::Error::new(
                 e.kind(),
                 format!("Failed to read metadata of {}: {}", path.display(), e),
@@ -363,7 +363,7 @@ impl FileInfo {
             path,
             id,
             len: file_len,
-            location: device_index << 48 | inode_id as u64 & OFFSET_MASK,
+            location: device_index << 48 | inode_id & OFFSET_MASK,
         })
     }
 
@@ -420,7 +420,7 @@ pub(crate) fn file_info_or_log_err(
 /// Returns the physical offset of the first data block of the file
 #[cfg(target_os = "linux")]
 pub(crate) fn get_physical_file_location(path: &Path) -> io::Result<Option<u64>> {
-    let mut extents = fiemap::fiemap(&path.to_path_buf())?;
+    let mut extents = fiemap::fiemap(path.to_path_buf())?;
     match extents.next() {
         Some(fe) => Ok(Some(fe?.fe_physical)),
         None => Ok(None),
@@ -582,7 +582,7 @@ mod test {
     #[test]
     fn test_format_bytes() {
         let file_len = FileLen(16000);
-        let human_readable = format!("{}", file_len);
+        let human_readable = format!("{file_len}");
         assert_eq!(human_readable, "16.0 KB");
     }
 }
