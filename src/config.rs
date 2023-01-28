@@ -57,7 +57,7 @@ impl FromStr for OutputFormat {
             "fdupes" => Ok(OutputFormat::Fdupes),
             "csv" => Ok(OutputFormat::Csv),
             "json" => Ok(OutputFormat::Json),
-            s => Err(format!("Unrecognized output format: {}", s)),
+            s => Err(format!("Unrecognized output format: {s}")),
         }
     }
 }
@@ -102,7 +102,7 @@ fn parse_date_time(s: &str) -> Result<DateTime<FixedOffset>, String> {
             let local_offset = *Local::now().offset();
             Ok(DateTime::from_utc(dt, local_offset))
         }
-        Err(e) => Err(format!("Failed to parse {} as date: {}", s, e)),
+        Err(e) => Err(format!("Failed to parse {s} as date: {e}")),
     }
 }
 
@@ -118,7 +118,7 @@ fn parse_thread_count_option(s: &str) -> Result<(OsString, Parallelism), String>
     let value = value.to_string();
     let mut pool_sizes = value
         .split(',')
-        .map(|v| v.parse::<usize>().map_err(|e| format!("{}: {}", e, v)));
+        .map(|v| v.parse::<usize>().map_err(|e| format!("{e}: {v}")));
 
     let random = match pool_sizes.next() {
         Some(v) => v?,
@@ -565,7 +565,7 @@ impl FromStr for Priority {
             "least-recently-accessed" | "lra" => Ok(Priority::LeastRecentlyAccessed),
             "most-nested" => Ok(Priority::MostNested),
             "least-nested" => Ok(Priority::LeastNested),
-            _ => Err(format!("Unrecognized priority: {}", s)),
+            _ => Err(format!("Unrecognized priority: {s}")),
         }
     }
 }

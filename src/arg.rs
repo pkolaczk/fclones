@@ -144,7 +144,7 @@ pub fn quote(s: OsString) -> String {
     {
         format!("$'{}'", to_stfu8(s).replace('\'', "\\'"))
     } else if lossy.chars().any(|c| SPECIAL_CHARS.contains(&c)) {
-        format!("'{}'", lossy)
+        format!("'{lossy}'")
     } else {
         lossy.to_string()
     }
@@ -351,7 +351,7 @@ pub fn split(s: &str) -> Result<Vec<Arg>, ParseError> {
                 Some('\'') => {
                     let quoted_slice = &s[dollar_quote_start..pos].replace("\\'", "'");
                     let decoded = from_stfu8(quoted_slice).map_err(|e| {
-                        ParseError::new(format!("Failed to decode STFU-8 chunk: {}", e).as_str())
+                        ParseError::new(format!("Failed to decode STFU-8 chunk: {e}").as_str())
                     })?;
                     word.push(decoded.as_os_str());
                     Unquoted

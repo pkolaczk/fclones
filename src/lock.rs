@@ -61,7 +61,7 @@ impl FileLock {
             .read(false)
             .write(true)
             .create(false)
-            .open(&path_buf)
+            .open(path_buf)
             .map_err(|e| {
                 io::Error::new(
                     error_kind(&e),

@@ -78,7 +78,7 @@ impl FromStr for HashFn {
             "sha3-256" => Ok(Self::Sha3_256),
             #[cfg(feature = "sha3")]
             "sha3-512" => Ok(Self::Sha3_512),
-            _ => Err(format!("Unknown hash algorithm: {}", s)),
+            _ => Err(format!("Unknown hash algorithm: {s}")),
         }
     }
 }
@@ -409,8 +409,7 @@ impl FileHasher<'_> {
                 Ok(len_and_hash) => len_and_hash,
                 Err(e) => {
                     self.log.warn(format!(
-                        "Failed to load hash of file id = {} from the cache: {}",
-                        key, e
+                        "Failed to load hash of file id = {key} from the cache: {e}"
                     ));
                     None
                 }
@@ -431,8 +430,7 @@ impl FileHasher<'_> {
         {
             if let Err(e) = cache.put(key, metadata, data_len, hash) {
                 self.log.warn(format!(
-                    "Failed to store hash of file {} in the cache: {}",
-                    key, e
+                    "Failed to store hash of file {key} in the cache: {e}"
                 ))
             }
         };
@@ -444,7 +442,7 @@ fn format_output_stream(output: &str) -> String {
     if output.is_empty() {
         output
     } else {
-        format!("\n{}\n", output)
+        format!("\n{output}\n")
     }
 }
 

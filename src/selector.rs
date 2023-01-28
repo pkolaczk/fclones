@@ -205,7 +205,7 @@ mod test {
             .include_paths(vec![Pattern::glob("**/public-?.jpg").unwrap()])
             .exclude_paths(vec![Pattern::glob("**/private-?.jpg").unwrap()]);
 
-        println!("{:?}", selector);
+        println!("{selector:?}");
 
         // matching absolute:
         assert!(selector.matches_full_path(&Path::from("/public-1.jpg")));

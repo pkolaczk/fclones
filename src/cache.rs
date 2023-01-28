@@ -49,14 +49,14 @@ impl HashCache {
         transform: Option<&str>,
         algorithm: HashFn,
     ) -> Result<HashCache, Error> {
-        create_dir_all(&database_path.to_path_buf()).map_err(|e| {
+        create_dir_all(database_path.to_path_buf()).map_err(|e| {
             format!(
                 "Count not create hash database directory {}: {}",
                 database_path.to_escaped_string(),
                 e
             )
         })?;
-        let db = sled::open(&database_path.to_path_buf()).map_err(|e| {
+        let db = sled::open(database_path.to_path_buf()).map_err(|e| {
             format!(
                 "Failed to open hash database at {}: {}",
                 database_path.to_escaped_string(),
@@ -89,7 +89,7 @@ impl HashCache {
         let value = CachedFileInfo {
             modified_timestamp_ms: file
                 .modified()
-                .map_err(|e| format!("Unable to get file modification timestamp: {}", e))?
+                .map_err(|e| format!("Unable to get file modification timestamp: {e}"))?
                 .duration_since(UNIX_EPOCH)
                 .unwrap_or(Duration::ZERO)
                 .as_millis() as u64,
@@ -100,7 +100,7 @@ impl HashCache {
 
         self.cache
             .insert(key, &value)
-            .map_err(|e| format!("Failed to write entry to cache: {}", e))?;
+            .map_err(|e| format!("Failed to write entry to cache: {e}"))?;
         Ok(())
     }
 
@@ -117,7 +117,7 @@ impl HashCache {
         let value = self
             .cache
             .get(key)
-            .map_err(|e| format!("Failed to retrieve entry from cache: {}", e))?;
+            .map_err(|e| format!("Failed to retrieve entry from cache: {e}"))?;
         let value = match value {
             Some(v) => v,
             None => return Ok(None), // not found in cache
@@ -125,7 +125,7 @@ impl HashCache {
 
         let modified = metadata
             .modified()
-            .map_err(|e| format!("Unable to get file modification timestamp: {}", e))?
+            .map_err(|e| format!("Unable to get file modification timestamp: {e}"))?
             .duration_since(UNIX_EPOCH)
             .unwrap_or(Duration::ZERO)
             .as_millis() as u64;

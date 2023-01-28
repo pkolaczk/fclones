@@ -165,7 +165,7 @@ impl Path {
             self_components.next();
             other_components.next();
         }
-        self_components.peek() == None
+        self_components.peek().is_none()
     }
 
     /// Converts this path to a standard library path buffer.
@@ -351,7 +351,7 @@ impl Visitor<'_> for PathVisitor {
     where
         E: Error,
     {
-        Path::from_escaped_string(v).map_err(|e| E::custom(format!("Invalid path: {}", e)))
+        Path::from_escaped_string(v).map_err(|e| E::custom(format!("Invalid path: {e}")))
     }
 }
 

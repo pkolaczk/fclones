@@ -134,9 +134,9 @@ impl StdLog {
     /// Does not interfere with progress bar.
     fn eprintln<I: Display>(&self, msg: I) {
         match self.progress_bar.lock().unwrap().upgrade() {
-            Some(pb) if pb.is_visible() => pb.println(format!("{}", msg)),
-            _ if self.log_stderr_to_stdout => println!("{}", msg),
-            _ => eprintln!("{}", msg),
+            Some(pb) if pb.is_visible() => pb.println(format!("{msg}")),
+            _ if self.log_stderr_to_stdout => println!("{msg}"),
+            _ => eprintln!("{msg}"),
         }
     }
 

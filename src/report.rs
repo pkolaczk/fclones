@@ -87,9 +87,7 @@ impl<W: Write> ReportWriter<W> {
         writeln!(
             self.out,
             "{}",
-            style(format!("# {}", line))
-                .cyan()
-                .force_styling(self.color)
+            style(format!("# {line}")).cyan().force_styling(self.color)
         )
     }
 
@@ -131,7 +129,7 @@ impl<W: Write> ReportWriter<W> {
             "Timestamp: {}",
             header.timestamp.format(TIMESTAMP_FMT)
         ))?;
-        self.write_header_line(&format!("Command: {}", command))?;
+        self.write_header_line(&format!("Command: {command}"))?;
         self.write_header_line(&format!(
             "Base dir: {}",
             header.base_dir.to_escaped_string()
@@ -212,7 +210,7 @@ impl<W: Write> ReportWriter<W> {
             .flexible(true)
             .from_writer(&mut self.out);
 
-        wtr.write_record(&["size", "hash", "count", "files"])?;
+        wtr.write_record(["size", "hash", "count", "files"])?;
         for g in groups {
             let g = g.as_ref();
             let mut record = csv::StringRecord::new();
@@ -387,7 +385,7 @@ where
         let captures = GROUP_HEADER_RE.captures(header_str).ok_or_else(|| {
             Error::new(
                 ErrorKind::InvalidData,
-                format!("Malformed group header: {}", header_str),
+                format!("Malformed group header: {header_str}"),
             )
         })?;
 
@@ -413,13 +411,13 @@ where
             if !path_str.starts_with("    ") || path_str.trim().is_empty() {
                 return Err(Error::new(
                     ErrorKind::InvalidData,
-                    format!("Path expected: {}", path_str),
+                    format!("Path expected: {path_str}"),
                 ));
             }
             let path = Path::from_escaped_string(path_str.trim()).map_err(|e| {
                 Error::new(
                     ErrorKind::InvalidData,
-                    format!("Invalid path {}: {}", path_str, e),
+                    format!("Invalid path {path_str}: {e}"),
                 )
             })?;
             paths.push(path);
@@ -482,7 +480,7 @@ impl<R: BufRead> TextReportReader<R> {
             .ok_or_else(|| {
                 Error::new(
                     ErrorKind::InvalidData,
-                    format!("Malformed header: Missing {}", name),
+                    format!("Malformed header: Missing {name}"),
                 )
             })?
             .iter()
@@ -496,8 +494,7 @@ impl<R: BufRead> TextReportReader<R> {
             Error::new(
                 ErrorKind::InvalidData,
                 format!(
-                    "Malformed header: Failed to parse {}: {}. Expected timestamp format: {}",
-                    name, e, TIMESTAMP_FMT
+                    "Malformed header: Failed to parse {name}: {e}. Expected timestamp format: {TIMESTAMP_FMT}"
                 ),
             )
         })
@@ -509,14 +506,13 @@ impl<R: BufRead> TextReportReader<R> {
                 Error::new(
                     ErrorKind::InvalidData,
                     format!(
-                        "Malformed header: Failed to parse {}: {}. Expected integer value.",
-                        name, e
+                        "Malformed header: Failed to parse {name}: {e}. Expected integer value."
                     ),
                 )
             }),
             None => Err(Error::new(
                 ErrorKind::InvalidData,
-                format!("Malformed header: Missing {}", name),
+                format!("Malformed header: Missing {name}"),
             )),
         }
     }
@@ -559,7 +555,7 @@ impl<R: BufRead + Send + 'static> ReportReader for TextReportReader<R> {
         let command = arg::split(&command).map_err(|e| {
             Error::new(
                 ErrorKind::InvalidData,
-                format!("Malformed header: Failed to parse command arguments: {}", e),
+                format!("Malformed header: Failed to parse command arguments: {e}"),
             )
         })?;
         let base_dir = self.read_extract(&BASE_DIR_RE, "base dir")?.swap_remove(0);
@@ -614,7 +610,7 @@ impl JsonReportReader {
         let report: DeserializedReport = serde_json::from_reader(stream).map_err(|e| {
             Error::new(
                 ErrorKind::InvalidData,
-                format!("Failed to deserialize JSON report: {}", e),
+                format!("Failed to deserialize JSON report: {e}"),
             )
         })?;
         Ok(JsonReportReader { report })
@@ -638,7 +634,7 @@ impl ReportReader for JsonReportReader {
                         Path::from_escaped_string(s.as_str()).map_err(|e| {
                             io::Error::new(
                                 io::ErrorKind::InvalidData,
-                                format!("Invalid path {}: {}", s, e),
+                                format!("Invalid path {s}: {e}"),
                             )
                         })
                     })
@@ -727,7 +723,7 @@ mod test {
         let input = output.reopen().unwrap();
 
         let mut writer = ReportWriter::new(output, false);
-        writer.write_as_text(&header, groups.iter()).unwrap();
+        writer.write_as_text(header, groups.iter()).unwrap();
         let mut reader = Box::new(TextReportReader::new(BufReader::new(input)));
         reader.read_header().unwrap();
 
@@ -860,7 +856,7 @@ mod test {
         let input = output.reopen().unwrap();
 
         let mut writer = ReportWriter::new(output, false);
-        writer.write_as_json(&header, groups.iter()).unwrap();
+        writer.write_as_json(header, groups.iter()).unwrap();
         let mut reader = Box::new(JsonReportReader::new(input).unwrap());
         reader.read_header().unwrap();
 

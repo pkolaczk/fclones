@@ -304,7 +304,7 @@ mod test {
     }
 
     fn native_dir_sep(str: &str) -> String {
-        str.replace("/", MAIN_SEPARATOR.to_string().as_str())
+        str.replace('/', MAIN_SEPARATOR.to_string().as_str())
     }
 
     #[test]

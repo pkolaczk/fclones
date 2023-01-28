@@ -175,7 +175,7 @@ impl Transform {
             Err(e) => {
                 return Err(io::Error::new(
                     e.kind(),
-                    format!("Cannot launch {}: {}", program, e),
+                    format!("Cannot launch {program}: {e}"),
                 ))
             }
         }
@@ -364,7 +364,7 @@ fn execute(command: &mut Command, input: Input, output: Output) -> io::Result<Ex
             // However if waiting fails here, the child process likely doesn't run, so that's not
             // a problem.
             let _ignore = child_ref.lock().unwrap().wait();
-            let _ignore = OpenOptions::new().write(true).open(&output_pipe);
+            let _ignore = OpenOptions::new().write(true).open(output_pipe);
         }
         str
     });
@@ -463,7 +463,7 @@ mod test {
             let input_path = root.join("input.txt");
             let mut input = File::create(&input_path).unwrap();
             let content = b"content";
-            input.write(content).unwrap();
+            input.write_all(content).unwrap();
             drop(input);
 
             let log = StdLog::default();
@@ -485,7 +485,7 @@ mod test {
             let input_path = root.join("input.txt");
             let mut input = File::create(&input_path).unwrap();
             let content = b"content";
-            input.write(content).unwrap();
+            input.write_all(content).unwrap();
             drop(input);
 
             let log = StdLog::default();
