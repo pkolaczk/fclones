@@ -140,11 +140,11 @@ pub fn quote(s: OsString) -> String {
     let lossy = s.to_string_lossy();
     if lossy
         .chars()
-        .any(|c| c < '\u{20}' || c == '\u{7f}' || c == '\u{fffd}')
+        .any(|c| c < '\u{20}' || c == '\u{7f}' || c == '\u{fffd}' || c == '\'')
     {
-        format!("$'{}'", to_stfu8(s))
+        format!("$'{}'", to_stfu8(s).replace('\'', "\\'"))
     } else if lossy.chars().any(|c| SPECIAL_CHARS.contains(&c)) {
-        format!("'{}'", lossy.replace('\'', "\\'"))
+        format!("'{}'", lossy)
     } else {
         lossy.to_string()
     }
@@ -349,7 +349,7 @@ pub fn split(s: &str) -> Result<Vec<Arg>, ParseError> {
                 None => return Err(ParseError::new("Unclosed single quote")),
                 Some('\\') => DollarQuotedBackslash,
                 Some('\'') => {
-                    let quoted_slice = &s[dollar_quote_start..pos];
+                    let quoted_slice = &s[dollar_quote_start..pos].replace("\\'", "'");
                     let decoded = from_stfu8(quoted_slice).map_err(|e| {
                         ParseError::new(format!("Failed to decode STFU-8 chunk: {}", e).as_str())
                     })?;
@@ -407,6 +407,12 @@ mod test {
     }
 
     #[test]
+    fn quote_path_with_single_quotes() {
+        assert_eq!(quote(OsString::from("a'b")), "$'a\\'b'");
+        assert_eq!(quote(OsString::from("a'b'")), "$'a\\'b\\''");
+    }
+
+    #[test]
     fn split_unquoted_args() {
         assert_eq!(
             split("arg1 arg2").unwrap(),
@@ -436,6 +442,14 @@ mod test {
             split("\"escaped \\\" quotes\"").unwrap(),
             vec![Arg::from("escaped \" quotes")]
         )
+    }
+
+    #[test]
+    fn split_escaped_single_quote() {
+        assert_eq!(
+            split("$'single\\'quote'").unwrap(),
+            vec![Arg::from("single'quote")]
+        );
     }
 
     #[test]
