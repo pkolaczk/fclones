@@ -633,29 +633,19 @@ fn file_hash<H: StreamHasher>(
 #[cfg(test)]
 mod test {
     use metrohash::MetroHash128;
-    use std::fs::{create_dir_all, File};
     use std::io::Write;
-    use std::path::PathBuf;
+    use tempfile::NamedTempFile;
 
     use crate::file::{FileChunk, FileLen, FilePos};
     use crate::hasher::{file_hash, StreamHasher};
     use crate::path::Path;
 
     fn test_file_hash<H: StreamHasher>() {
-        let test_root = PathBuf::from("target/test/file_hash/");
-        create_dir_all(&test_root).unwrap();
+        let mut file1 = NamedTempFile::new().unwrap();
+        file1.write_all(b"Test file 1").unwrap();
 
-        let file1 = test_root.join("file1");
-        File::create(&file1)
-            .unwrap()
-            .write_all(b"Test file 1")
-            .unwrap();
-
-        let file2 = test_root.join("file2");
-        File::create(&file2)
-            .unwrap()
-            .write_all(b"Test file 2")
-            .unwrap();
+        let mut file2 = NamedTempFile::new().unwrap();
+        file2.write_all(b"Test file 2").unwrap();
 
         let file1 = Path::from(&file1);
         let file2 = Path::from(&file2);
