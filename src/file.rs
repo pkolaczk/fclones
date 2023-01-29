@@ -359,11 +359,12 @@ impl FileInfo {
         let file_len = metadata.len();
         let id = metadata.id;
         let inode_id = metadata.inode_id();
+        #[allow(clippy::unnecessary_cast)] // cast needed when inode_id > 64 bits on some platforms
         Ok(FileInfo {
             path,
             id,
             len: file_len,
-            location: device_index << 48 | inode_id & OFFSET_MASK,
+            location: device_index << 48 | (inode_id as u64) & OFFSET_MASK,
         })
     }
 
