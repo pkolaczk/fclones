@@ -220,7 +220,6 @@ fn get_xattrs(path: &std::path::Path) -> io::Result<Vec<XAttr>> {
                 ),
             )
         })?
-        .into_iter()
         .map(|name| {
             Ok(XAttr {
                 value: file.get_xattr(name.as_os_str()).map_err(|e| {

@@ -23,8 +23,9 @@ use crate::pattern::{Pattern, PatternError, PatternOpts};
 use crate::selector::PathSelector;
 use crate::transform::Transform;
 
-#[derive(Debug, Clone, Copy, clap::ValueEnum)]
+#[derive(Debug, Clone, Copy, clap::ValueEnum, Default)]
 pub enum OutputFormat {
+    #[default]
     Default,
     Fdupes,
     Csv,
@@ -59,12 +60,6 @@ impl FromStr for OutputFormat {
             "json" => Ok(OutputFormat::Json),
             s => Err(format!("Unrecognized output format: {s}")),
         }
-    }
-}
-
-impl Default for OutputFormat {
-    fn default() -> OutputFormat {
-        OutputFormat::Default
     }
 }
 
