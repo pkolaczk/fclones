@@ -93,9 +93,10 @@ impl FastProgressBar {
         inner.set_style(
             ProgressStyle::default_spinner()
                 .template(template.as_str())
+                .unwrap()
                 .tick_strings(tick_strings.as_slice()),
         );
-        inner.set_message(msg);
+        inner.set_message(msg.to_string());
         Self::wrap(inner)
     }
 
@@ -108,9 +109,10 @@ impl FastProgressBar {
         inner.set_style(
             ProgressStyle::default_bar()
                 .template(template.as_str())
+                .unwrap()
                 .progress_chars(Self::PROGRESS_CHARS),
         );
-        inner.set_message(msg);
+        inner.set_message(msg.to_string());
         FastProgressBar::wrap(inner)
     }
 
@@ -125,9 +127,10 @@ impl FastProgressBar {
         inner.set_style(
             ProgressStyle::default_bar()
                 .template(template.as_str())
+                .unwrap()
                 .progress_chars(Self::PROGRESS_CHARS),
         );
-        inner.set_message(msg);
+        inner.set_message(msg.to_string());
 
         FastProgressBar::wrap(inner)
     }
@@ -154,7 +157,7 @@ impl FastProgressBar {
         !self.progress_bar.is_hidden()
     }
 
-    pub fn println<I: Into<String>>(&self, msg: I) {
+    pub fn println<I: AsRef<str>>(&self, msg: I) {
         self.progress_bar.println(msg);
     }
 
