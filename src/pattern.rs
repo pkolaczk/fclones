@@ -6,7 +6,7 @@ use nom::branch::alt;
 use nom::bytes::complete::tag;
 use nom::character::complete::{anychar, none_of};
 use nom::combinator::{cond, map};
-use nom::multi::{many0, separated_list};
+use nom::multi::{many0, separated_list0};
 use nom::sequence::tuple;
 use nom::IResult;
 use regex::escape;
@@ -187,34 +187,36 @@ impl Pattern {
         let p_alt = map(
             tuple((
                 tag("{"),
-                separated_list(tag(","), |g| Self::glob_to_regex(Scope::CurlyBrackets, g)),
+                separated_list0(tag(","), |g| Self::glob_to_regex(Scope::CurlyBrackets, g)),
                 tag("}"),
             )),
             |(_, list, _)| mk_string(list, "(", "|", ")"),
         );
 
-        let p_ext_glob = map(
-            tuple((
-                tag("("),
-                separated_list(tag("|"), |g| Self::glob_to_regex(Scope::RoundBrackets, g)),
-                tag(")"),
-            )),
-            |(_, list, _)| list,
-        );
+        let p_ext_glob = |s| {
+            map(
+                tuple((
+                    tag("("),
+                    separated_list0(tag("|"), |g| Self::glob_to_regex(Scope::RoundBrackets, g)),
+                    tag(")"),
+                )),
+                |(_, list, _)| list,
+            )(s)
+        };
 
-        let p_ext_optional = map(tuple((tag("?"), &p_ext_glob)), |(_, g)| {
+        let p_ext_optional = map(tuple((tag("?"), p_ext_glob)), |(_, g)| {
             mk_string(g, "(", "|", ")?")
         });
-        let p_ext_many = map(tuple((tag("*"), &p_ext_glob)), |(_, g)| {
+        let p_ext_many = map(tuple((tag("*"), p_ext_glob)), |(_, g)| {
             mk_string(g, "(", "|", ")*")
         });
-        let p_ext_at_least_once = map(tuple((tag("+"), &p_ext_glob)), |(_, g)| {
+        let p_ext_at_least_once = map(tuple((tag("+"), p_ext_glob)), |(_, g)| {
             mk_string(g, "(", "|", ")+")
         });
-        let p_ext_exactly_once = map(tuple((tag("@"), &p_ext_glob)), |(_, g)| {
+        let p_ext_exactly_once = map(tuple((tag("@"), p_ext_glob)), |(_, g)| {
             mk_string(g, "(", "|", ")")
         });
-        let p_ext_never = map(tuple((tag("!"), &p_ext_glob)), |(_, g)| {
+        let p_ext_never = map(tuple((tag("!"), p_ext_glob)), |(_, g)| {
             mk_string(g, "(?!", "|", ")")
         });
 
@@ -224,10 +226,12 @@ impl Pattern {
         let escaped_sep = escape(MAIN_SEPARATOR.to_string().as_str());
 
         // * -> [^/]*
-        let p_single_star = map(tag("*"), |_| "[^".to_string() + &escaped_sep + "]*");
+        let p_single_star =
+            |s| map(tag("*"), |_| "[^".to_string() + escaped_sep.as_str() + "]*")(s);
 
         // ? -> .
-        let p_question_mark = map(tag("?"), |_| "[^".to_string() + &escaped_sep + "]");
+        let p_question_mark =
+            |s| map(tag("?"), |_| "[^".to_string() + escaped_sep.as_str() + "]")(s);
 
         // [ characters ] -> [ characters ]
         let p_neg_character_set = map(
@@ -274,7 +278,7 @@ impl Pattern {
             p_any_char,
         ));
 
-        let parse_all = map(many0(p_token), |s| s.join(""));
+        let mut parse_all = map(many0(p_token), |s| s.join(""));
         (parse_all)(glob)
     }
 }
