@@ -463,7 +463,6 @@ dependencies = [
  "ignore",
  "indexmap",
  "indicatif",
- "indoc",
  "itertools",
  "lazy-init",
  "lazy_static",
@@ -666,12 +665,6 @@ dependencies = [
  "number_prefix",
  "regex",
 ]
-
-[[package]]
-name = "indoc"
-version = "1.0.7"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "adab1eaa3408fb7f0c777a73e7465fd5656136fc93b670eb6df3c88c2c1344e3"
 
 [[package]]
 name = "instant"
@@ -1325,9 +1318,9 @@ dependencies = [
 
 [[package]]
 name = "sysinfo"
-version = "0.26.4"
+version = "0.28.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7890fff842b8db56f2033ebee8f6efe1921475c3830c115995552914fb967580"
+checksum = "d3e847e2de7a137c8c2cede5095872dbb00f4f9bf34d061347e36b43322acd56"
 dependencies = [
  "cfg-if",
  "core-foundation-sys",
