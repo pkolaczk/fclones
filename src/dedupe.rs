@@ -658,13 +658,11 @@ impl PartitionedFileGroup {
     fn move_target(target_dir: &Arc<Path>, source_path: &Path) -> Path {
         let root = source_path
             .root()
-            .to_string_lossy()
-            .replace(['/', '\\', ':'], "");
+            .map(|p| p.to_string_lossy().replace(['/', '\\', ':'], ""));
         let suffix = source_path.strip_root();
-        if root.is_empty() {
-            target_dir.join(suffix)
-        } else {
-            Arc::new(target_dir.join(Path::from(root))).join(suffix)
+        match root {
+            None => target_dir.join(suffix),
+            Some(root) => Arc::new(target_dir.join(Path::from(root))).join(suffix),
         }
     }
 

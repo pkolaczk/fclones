@@ -23,9 +23,15 @@ pub const PATH_ESCAPE_CHAR: &str = "\\";
 #[cfg(windows)]
 pub const PATH_ESCAPE_CHAR: &str = "^";
 
+#[cfg(unix)]
+const ROOT_BYTES: &[u8] = b"/";
+
+#[cfg(windows)]
+const ROOT_BYTES: &[u8] = b"\\";
+
 /// Memory-efficient file path representation.
 ///
-/// When storing multiple paths with common parent, the standard [`std::path::PathBuf`]
+/// When storing multiple paths with common parent, the standard [`PathBuf`]
 /// would keep the parent path text duplicated in memory, wasting a lot of memory.
 /// This structure here shares the common parent between many paths by reference-counted
 /// references.
@@ -44,20 +50,31 @@ impl Path {
         }
     }
 
-    #[cfg(unix)]
     pub fn is_absolute(&self) -> bool {
-        let root = self.root().component.as_bytes();
-        root == b"/"
-    }
-
-    #[cfg(windows)]
-    pub fn is_absolute(&self) -> bool {
-        let root = self.root().component.as_bytes();
-        root.len() >= 1 && root[0] == b'\\' || root.len() == 2 && root[1] == b':'
+        self.root().is_some()
     }
 
     pub fn is_relative(&self) -> bool {
-        !self.is_absolute()
+        self.root().is_none()
+    }
+
+    /// Returns the absolute root of the path if the path is absolute.
+    /// In Unix, returns "/".
+    /// In Windows this can return a root with prefix e.g. "C:\".
+    /// If path is relative, returns None.
+    pub fn root(&self) -> Option<&Path> {
+        let mut result = self;
+        loop {
+            if result.component.as_bytes() == ROOT_BYTES {
+                return Some(result);
+            }
+            if let Some(parent) = &result.parent {
+                result = parent.as_ref()
+            } else {
+                break;
+            }
+        }
+        None
     }
 
     /// Moves this [`Path`] under an [`Arc`].
@@ -147,8 +164,8 @@ impl Path {
     /// Otherwise returns a clone of this path.
     /// E.g. `/foo/bar` becomes `foo/bar`
     pub fn strip_root(&self) -> Path {
-        if self.is_absolute() {
-            Path::make(self.components().into_iter().skip(1))
+        if let Some(root) = self.root() {
+            self.strip_prefix(root).unwrap()
         } else {
             self.clone()
         }
@@ -281,15 +298,6 @@ impl Path {
         };
         for c in iter {
             result = Arc::new(result).push(CString::from(c))
-        }
-        result
-    }
-
-    /// Returns the first component of this path
-    pub fn root(&self) -> &Path {
-        let mut result = self;
-        while let Some(parent) = &result.parent {
-            result = parent.as_ref();
         }
         result
     }
@@ -505,6 +513,13 @@ mod test {
         roundtrip("a \\n b");
         roundtrip("a \\t b");
         roundtrip("a \\x7F b");
+    }
+
+    #[test]
+    fn root() {
+        assert!(Path::from("foo/bar").root().is_none());
+        assert_eq!(Path::from("/foo/bar").root().unwrap(), &Path::from("/"));
+        assert_eq!(Path::from("/foo/bar").strip_root(), Path::from("foo/bar"));
     }
 
     #[test]
