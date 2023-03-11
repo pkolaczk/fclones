@@ -1,6 +1,6 @@
 [package]
 name = "fclones"
-version = "0.29.3"
+version = "0.30.0"
 description = "Finds and removes duplicate files"
 authors = ["Piotr Kołaczkowski <pkolaczk@gmail.com>"]
 homepage = "https://github.com/pkolaczk/fclones"
@@ -44,7 +44,8 @@ lazy-init = "0.5"
 lazy_static = "1.4"
 maplit = "1.0"
 metrohash = "1.0"
-nom = { version = "5.1", features = ["regexp"] }
+nom = "7"
+nom-regex = "0.2"
 num_cpus = "1.13"
 priority-queue = "1.2"
 rand = "0.8"
