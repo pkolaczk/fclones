@@ -8,7 +8,6 @@ use crate::dedupe::{FsCommand, PathAndMetadata};
 use crate::log::{Log, LogExt};
 
 #[cfg(unix)]
-#[cfg(any(not(any(target_os = "linux", target_os = "android")), test))]
 struct XAttr {
     name: std::ffi::OsString,
     value: Option<Vec<u8>>,
@@ -23,13 +22,28 @@ pub fn reflink(src: &PathAndMetadata, dest: &PathAndMetadata, log: &dyn Log) -> 
     let dest_parent_metadata = dest_parent.map(|p| p.to_path_buf().metadata());
 
     // Call reflink:
-    let result = {
+    let result = || -> io::Result<()> {
+        let dest_path_buf = dest.path.to_path_buf();
+
         if cfg!(any(target_os = "linux", target_os = "android")) && !crosstest() {
-            linux_reflink(src, dest, log)
+            linux_reflink(src, dest, log)?;
+            restore_metadata(&dest_path_buf, &dest.metadata, Restore::TimestampOnly)
         } else {
-            safe_reflink(src, dest, log)
+            #[cfg(unix)]
+            let dest_xattrs = get_xattrs(&dest_path_buf)?;
+
+            safe_reflink(src, dest, log)?;
+
+            #[cfg(unix)]
+            restore_xattrs(&dest_path_buf, dest_xattrs)?;
+
+            restore_metadata(
+                &dest_path_buf,
+                &dest.metadata,
+                Restore::TimestampOwnersPermissions,
+            )
         }
-    }
+    }()
     .map_err(|e| {
         io::Error::new(
             e.kind(),
@@ -40,8 +54,9 @@ pub fn reflink(src: &PathAndMetadata, dest: &PathAndMetadata, log: &dyn Log) -> 
     // Restore the original metadata of the deduplicated files's parent directory:
     if let Some(parent) = dest_parent {
         if let Some(metadata) = dest_parent_metadata {
-            let result =
-                metadata.and_then(|metadata| restore_metadata(&parent.to_path_buf(), &metadata));
+            let result = metadata.and_then(|metadata| {
+                restore_metadata(&parent.to_path_buf(), &metadata, Restore::TimestampOnly)
+            });
             if let Err(e) = result {
                 log.warn(format!(
                     "Failed keep metadata for {}: {}",
@@ -66,7 +81,7 @@ fn linux_reflink(
 }
 
 // First reflink (not move) the target file out of the way (this also checks for
-// reflink support), then overwrite the existing file to preserve metadata.
+// reflink support), then overwrite the existing file to preserve most metadata and xattrs.
 #[cfg(any(target_os = "linux", target_os = "android"))]
 fn linux_reflink(src: &PathAndMetadata, dest: &PathAndMetadata, log: &dyn Log) -> io::Result<()> {
     let tmp = FsCommand::temp_file(&dest.path);
@@ -174,8 +189,18 @@ fn restore_owner(path: &std::path::Path, metadata: &Metadata) -> io::Result<()> 
     Ok(())
 }
 
+#[derive(Debug, PartialEq)]
+enum Restore {
+    TimestampOnly,
+    TimestampOwnersPermissions,
+}
+
 // Not kept: xattrs, ACLs, etc.
-fn restore_metadata(path: &std::path::Path, metadata: &Metadata) -> io::Result<()> {
+fn restore_metadata(
+    path: &std::path::Path,
+    metadata: &Metadata,
+    restore: Restore,
+) -> io::Result<()> {
     let atime = FileTime::from_last_access_time(metadata);
     let mtime = FileTime::from_last_modification_time(metadata);
 
@@ -190,20 +215,21 @@ fn restore_metadata(path: &std::path::Path, metadata: &Metadata) -> io::Result<(
         )
     })?;
 
-    fs::set_permissions(path, metadata.permissions()).map_err(|e| {
-        io::Error::new(
-            e.kind(),
-            format!("Failed to set permissions for {}: {}", path.display(), e),
-        )
-    })?;
+    if restore == Restore::TimestampOwnersPermissions {
+        fs::set_permissions(path, metadata.permissions()).map_err(|e| {
+            io::Error::new(
+                e.kind(),
+                format!("Failed to set permissions for {}: {}", path.display(), e),
+            )
+        })?;
 
-    #[cfg(unix)]
-    restore_owner(path, metadata)?;
+        #[cfg(unix)]
+        restore_owner(path, metadata)?;
+    }
     Ok(())
 }
 
 #[cfg(unix)]
-#[cfg(any(not(any(target_os = "linux", target_os = "android")), test))]
 fn get_xattrs(path: &std::path::Path) -> io::Result<Vec<XAttr>> {
     use itertools::Itertools;
     use xattr::FileExt;
@@ -240,7 +266,6 @@ fn get_xattrs(path: &std::path::Path) -> io::Result<Vec<XAttr>> {
 }
 
 #[cfg(unix)]
-#[cfg(any(not(any(target_os = "linux", target_os = "android")), test))]
 fn restore_xattrs(path: &std::path::Path, xattrs: Vec<XAttr>) -> io::Result<()> {
     use xattr::FileExt;
     let file = fs::File::open(path)?;
@@ -287,18 +312,10 @@ fn copy_by_reflink(src: &crate::path::Path, dest: &crate::path::Path) -> io::Res
 // If reflink or metadata restoration fails, moves the original file back to its original place.
 #[cfg(any(not(any(target_os = "linux", target_os = "android")), test))]
 fn safe_reflink(src: &PathAndMetadata, dest: &PathAndMetadata, log: &dyn Log) -> io::Result<()> {
-    let dest_path_buf = dest.path.to_path_buf();
-    #[cfg(unix)]
-    let dest_xattrs = get_xattrs(&dest_path_buf)?;
-
     FsCommand::safe_remove(
         &dest.path,
         move |link| {
             copy_by_reflink(&src.path, link)?;
-
-            #[cfg(unix)]
-            restore_xattrs(&dest_path_buf, dest_xattrs)?;
-            restore_metadata(&dest_path_buf, &dest.metadata)?;
             Ok(())
         },
         log,
