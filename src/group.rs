@@ -36,6 +36,7 @@ use crate::log::{Log, LogExt, ProgressBarLength};
 use crate::path::Path;
 use crate::phase::{Phase, Phases};
 use crate::report::{FileStats, ReportHeader, ReportWriter};
+use crate::rlimit::RLIMIT_OPEN_FILES;
 use crate::selector::PathSelector;
 use crate::semaphore::Semaphore;
 use crate::walk::Walk;
@@ -572,6 +573,7 @@ where
                     // when the pool has only one thread.
                     let hash_fn: &HashFn<'static> = unsafe { std::mem::transmute(hash_fn) };
                     thread_pool.spawn_fifo(move || {
+                        let _open_files_guard = RLIMIT_OPEN_FILES.clone().access_owned();
                         let old_hash = fg[0].file_hash.clone();
                         if let Some(hash) = hash_fn((&mut fg[0].file_info, old_hash)) {
                             for mut f in fg {
