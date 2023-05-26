@@ -17,6 +17,7 @@ mod pattern;
 mod phase;
 mod reflink;
 mod regex;
+mod rlimit;
 mod selector;
 mod semaphore;
 mod transform;

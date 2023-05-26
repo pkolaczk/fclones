@@ -421,7 +421,11 @@ pub(crate) fn file_info_or_log_err(
 /// Returns the physical offset of the first data block of the file
 #[cfg(target_os = "linux")]
 pub(crate) fn get_physical_file_location(path: &Path) -> io::Result<Option<u64>> {
-    let mut extents = fiemap::fiemap(path.to_path_buf())?;
+    use crate::rlimit::RLIMIT_OPEN_FILES;
+    let mut extents = {
+        let _open_files_guard = RLIMIT_OPEN_FILES.clone().access_owned();
+        fiemap::fiemap(path.to_path_buf())?
+    };
     match extents.next() {
         Some(fe) => Ok(Some(fe?.fe_physical)),
         None => Ok(None),
