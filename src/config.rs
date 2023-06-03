@@ -308,6 +308,19 @@ pub struct GroupConfig {
     #[arg(value_enum, long, value_name = "NAME", default_value = "metro")]
     pub hash_fn: HashFn,
 
+    /// Skip the full contents hash step entirely.
+    ///
+    /// This is a *dangerous* option - there is a significantly increased risk of false positives,
+    /// especially on smaller files or files with significant amounts of shared content that
+    /// wouldn't be caught by prefix/suffix checks.
+    ///
+    /// It's recommended to use this with increased `--max-prefix-size` and `--max-suffix-size`
+    /// options, to minimize false positives.
+    ///
+    /// Note: This option currently does nothing if you specify a `--transform` command
+    #[arg(long)]
+    pub skip_content_hash: bool,
+
     /// Enable caching of file hashes.
     ///
     /// Caching can significantly speed up subsequent runs of `fclones group` by avoiding
