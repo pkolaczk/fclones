@@ -811,7 +811,7 @@ fn update_file_locations(ctx: &GroupCtx<'_>, groups: &mut (impl FileCollection +
     let err_counters = atomic_counter_vec(ctx.devices.len());
     groups.for_each_mut(|fi| {
         let device: &DiskDevice = &ctx.devices[fi.get_device_index()];
-        if device.disk_type != sysinfo::DiskType::SSD {
+        if device.disk_kind != sysinfo::DiskKind::SSD {
             if let Err(e) = fi.fetch_physical_location() {
                 handle_fetch_physical_location_err(ctx, &err_counters, fi, e)
             }
@@ -1244,7 +1244,7 @@ mod test {
 
     use crate::log::StdLog;
     use rand::seq::SliceRandom;
-    use sysinfo::DiskType;
+    use sysinfo::DiskKind;
 
     use crate::path::Path;
     use crate::util::test::*;
@@ -1486,7 +1486,7 @@ mod test {
     #[test]
     fn test_rehash_processes_files_in_location_order_on_hdd() {
         let thread_count = 2;
-        let devices = DiskDevices::single(DiskType::HDD, thread_count);
+        let devices = DiskDevices::single(DiskKind::HDD, thread_count);
         let count = 1000;
         let mut input = Vec::with_capacity(count);
         for i in 0..count {

@@ -6,19 +6,19 @@ use std::ops::Index;
 use itertools::Itertools;
 use lazy_init::Lazy;
 use rayon::{ThreadPool, ThreadPoolBuilder};
-use sysinfo::{DiskExt, DiskType, System, SystemExt};
+use sysinfo::{DiskExt, DiskKind, System, SystemExt};
 
 use crate::config::Parallelism;
 use crate::file::FileLen;
 use crate::path::Path;
 
 impl Parallelism {
-    pub fn default_for(disk_type: DiskType) -> Parallelism {
+    pub fn default_for(disk_kind: DiskKind) -> Parallelism {
         let cpu_count = num_cpus::get();
-        match disk_type {
+        match disk_kind {
             // SSDs typically benefit from a lot of parallelism.
             // Some users will probably want to increase it even more.
-            DiskType::SSD => Parallelism {
+            DiskKind::SSD => Parallelism {
                 random: 4 * cpu_count,
                 sequential: 4 * cpu_count,
             },
@@ -27,7 +27,7 @@ impl Parallelism {
             // that we get slightly more IOPS when we schedule random access operations on a
             // single thread. For sequential scanning of big files, parallel access can hurt a lot,
             // so 1 is the only possible choice here.
-            DiskType::HDD => Parallelism {
+            DiskKind::HDD => Parallelism {
                 random: 1,
                 sequential: 1,
             },
@@ -49,7 +49,7 @@ impl Parallelism {
 pub struct DiskDevice {
     pub index: usize,
     pub name: OsString,
-    pub disk_type: DiskType,
+    pub disk_kind: DiskKind,
     pub file_system: String,
     pub parallelism: Parallelism,
     seq_thread_pool: Lazy<ThreadPool>,
@@ -60,14 +60,14 @@ impl DiskDevice {
     fn new(
         index: usize,
         name: OsString,
-        disk_type: DiskType,
+        disk_kind: DiskKind,
         file_system: String,
         parallelism: Parallelism,
     ) -> DiskDevice {
         DiskDevice {
             index,
             name,
-            disk_type,
+            disk_kind,
             file_system,
             parallelism,
             seq_thread_pool: Lazy::new(),
@@ -93,18 +93,18 @@ impl DiskDevice {
     }
 
     pub fn min_prefix_len(&self) -> FileLen {
-        FileLen(match self.disk_type {
-            DiskType::SSD => 4 * 1024,
-            DiskType::HDD => 4 * 1024,
-            DiskType::Unknown(_) => 4 * 1024,
+        FileLen(match self.disk_kind {
+            DiskKind::SSD => 4 * 1024,
+            DiskKind::HDD => 4 * 1024,
+            DiskKind::Unknown(_) => 4 * 1024,
         })
     }
 
     pub fn max_prefix_len(&self) -> FileLen {
-        FileLen(match self.disk_type {
-            DiskType::SSD => 4 * 1024,
-            DiskType::HDD => 16 * 1024,
-            DiskType::Unknown(_) => 16 * 1024,
+        FileLen(match self.disk_kind {
+            DiskKind::SSD => 4 * 1024,
+            DiskKind::HDD => 16 * 1024,
+            DiskKind::Unknown(_) => 16 * 1024,
         })
     }
 
@@ -113,10 +113,10 @@ impl DiskDevice {
     }
 
     pub fn suffix_threshold(&self) -> FileLen {
-        FileLen(match self.disk_type {
-            DiskType::HDD => 64 * 1024 * 1024, // 64 MB
-            DiskType::SSD => 64 * 1024,        // 64 kB
-            DiskType::Unknown(_) => 64 * 1024 * 1024,
+        FileLen(match self.disk_kind {
+            DiskKind::HDD => 64 * 1024 * 1024, // 64 MB
+            DiskKind::SSD => 64 * 1024,        // 64 kB
+            DiskKind::Unknown(_) => 64 * 1024 * 1024,
         })
     }
 }
@@ -129,11 +129,11 @@ pub struct DiskDevices {
 
 impl DiskDevices {
     #[cfg(test)]
-    pub fn single(disk_type: DiskType, parallelism: usize) -> DiskDevices {
+    pub fn single(disk_kind: DiskKind, parallelism: usize) -> DiskDevices {
         let device = DiskDevice::new(
             0,
             OsString::from("/"),
-            disk_type,
+            disk_kind,
             String::from("unknown"),
             Parallelism {
                 random: parallelism,
@@ -153,7 +153,7 @@ impl DiskDevices {
     /// If found, the device key is removed from the map.
     fn get_parallelism(
         name: &OsStr,
-        disk_type: DiskType,
+        disk_kind: DiskKind,
         pool_sizes: &HashMap<OsString, Parallelism>,
     ) -> Parallelism {
         let mut dev_key = OsString::new();
@@ -162,17 +162,17 @@ impl DiskDevices {
         match pool_sizes.get(&dev_key) {
             Some(p) => *p,
             None => {
-                let p = match disk_type {
-                    DiskType::SSD => pool_sizes.get(OsStr::new("ssd")),
-                    DiskType::HDD => pool_sizes.get(OsStr::new("hdd")),
-                    DiskType::Unknown(_) => pool_sizes.get(OsStr::new("unknown")),
+                let p = match disk_kind {
+                    DiskKind::SSD => pool_sizes.get(OsStr::new("ssd")),
+                    DiskKind::HDD => pool_sizes.get(OsStr::new("hdd")),
+                    DiskKind::Unknown(_) => pool_sizes.get(OsStr::new("unknown")),
                 };
                 match p {
                     Some(p) => *p,
                     None => pool_sizes
                         .get(OsStr::new("default"))
                         .copied()
-                        .unwrap_or_else(|| Parallelism::default_for(disk_type)),
+                        .unwrap_or_else(|| Parallelism::default_for(disk_kind)),
                 }
             }
         }
@@ -183,7 +183,7 @@ impl DiskDevices {
     fn add_device(
         &mut self,
         name: OsString,
-        disk_type: DiskType,
+        disk_kind: DiskKind,
         file_system: String,
         pool_sizes: &HashMap<OsString, Parallelism>,
     ) -> usize {
@@ -191,11 +191,11 @@ impl DiskDevices {
             index
         } else {
             let index = self.devices.len();
-            let parallelism = Self::get_parallelism(&name, disk_type, pool_sizes);
+            let parallelism = Self::get_parallelism(&name, disk_kind, pool_sizes);
             self.devices.push(DiskDevice::new(
                 index,
                 name,
-                disk_type,
+                disk_kind,
                 file_system,
                 parallelism,
             ));
@@ -236,7 +236,7 @@ impl DiskDevices {
         // Default device used when we don't find any real device
         result.add_device(
             OsString::from("default"),
-            DiskType::Unknown(-1),
+            DiskKind::Unknown(-1),
             String::from("unknown"),
             pool_sizes,
         );
@@ -244,7 +244,7 @@ impl DiskDevices {
             let device_name = Self::physical_device_name(d.name());
             let index = result.add_device(
                 device_name,
-                d.type_(),
+                d.kind(),
                 String::from_utf8_lossy(d.file_system()).to_string(),
                 pool_sizes,
             );
