@@ -268,6 +268,22 @@ pub struct GroupConfig {
     #[arg(long("max"), value_name("BYTES"))]
     pub max_size: Option<FileLen>,
 
+    /// Maximum prefix size to check in bytes
+    ///
+    /// Units like KB, KiB, MB, MiB, GB, GiB are supported.
+    ///
+    /// Default: 16KiB for hard drives, 4KiB for SSDs
+    #[arg(long("max-prefix-size"), value_name("BYTES"))]
+    pub max_prefix_size: Option<FileLen>,
+
+    /// Maximum suffix size to check in bytes
+    ///
+    /// Units like KB, KiB, MB, MiB, GB, GiB are supported.
+    ///
+    /// Default: 16KiB for hard drives, 4KiB for SSDs
+    #[arg(long("max-suffix-size"), value_name("BYTES"))]
+    pub max_suffix_size: Option<FileLen>,
+
     /// Include only file names matched fully by any of the given patterns.
     #[arg(long = "name", value_name("PATTERN"))]
     pub name_patterns: Vec<String>,
