@@ -1164,7 +1164,11 @@ pub fn group_files(config: &GroupConfig, log: &dyn Log) -> Result<Vec<FileGroup<
                 .unwrap_or_else(|| prefix_len(&ctx.devices, flat_iter(&size_groups_pruned)));
             let prefix_groups = group_by_prefix(&ctx, prefix_len, size_groups_pruned);
             let suffix_groups = group_by_suffix(&ctx, prefix_groups);
-            group_by_contents(&ctx, prefix_len, suffix_groups)
+            if !ctx.config.skip_content_hash {
+                group_by_contents(&ctx, prefix_len, suffix_groups)
+            } else {
+                suffix_groups
+            }
         }
     };
     groups.par_sort_by_key(|g| Reverse((g.file_len, g.file_hash.u128_prefix())));
