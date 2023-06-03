@@ -1001,7 +1001,10 @@ fn group_by_suffix(
     let mut groups = groups;
     sort_files_by_id(&mut groups);
 
-    let suffix_len = suffix_len(&ctx.devices, flat_iter(&groups));
+    let suffix_len = ctx
+        .config
+        .max_suffix_size
+        .unwrap_or_else(|| suffix_len(&ctx.devices, flat_iter(&groups)));
     let suffix_threshold = suffix_threshold(&ctx.devices, flat_iter(&groups));
     let pre_filter =
         |g: &FileGroup<FileInfo>| g.file_len >= suffix_threshold && g.unique_count() > 1;
@@ -1155,7 +1158,10 @@ pub fn group_files(config: &GroupConfig, log: &dyn Log) -> Result<Vec<FileGroup<
             let size_groups = group_by_size(&ctx, matching_files);
             let mut size_groups_pruned = remove_same_files(&ctx, size_groups);
             update_file_locations(&ctx, &mut size_groups_pruned);
-            let prefix_len = prefix_len(&ctx.devices, flat_iter(&size_groups_pruned));
+            let prefix_len = ctx
+                .config
+                .max_prefix_size
+                .unwrap_or_else(|| prefix_len(&ctx.devices, flat_iter(&size_groups_pruned)));
             let prefix_groups = group_by_prefix(&ctx, prefix_len, size_groups_pruned);
             let suffix_groups = group_by_suffix(&ctx, prefix_groups);
             group_by_contents(&ctx, prefix_len, suffix_groups)
