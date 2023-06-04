@@ -813,7 +813,14 @@ fn update_file_locations(ctx: &GroupCtx<'_>, groups: &mut (impl FileCollection +
         let device: &DiskDevice = &ctx.devices[fi.get_device_index()];
         if device.disk_kind != sysinfo::DiskKind::SSD {
             if let Err(e) = fi.fetch_physical_location() {
-                handle_fetch_physical_location_err(ctx, &err_counters, fi, e)
+                // Do not print a notice about slower access when fetching file extents has
+                // failed because a file vanished -- now it will never be accessed anyhow.
+                const ENOENT_NO_SUCH_FILE: i32 = 2;
+                if e.raw_os_error()
+                    .map_or(true, |err| err != ENOENT_NO_SUCH_FILE)
+                {
+                    handle_fetch_physical_location_err(ctx, &err_counters, fi, e)
+                }
             }
         }
         progress.inc(1)
