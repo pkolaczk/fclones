@@ -43,7 +43,7 @@ pub enum DedupeOp {
 }
 
 /// Convenience struct for holding a path to a file and its metadata together
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct PathAndMetadata {
     pub path: Path,
     pub metadata: FileMetadata,
@@ -70,6 +70,12 @@ impl AsRef<Path> for PathAndMetadata {
 impl AsRef<FileId> for PathAndMetadata {
     fn as_ref(&self) -> &FileId {
         self.metadata.as_ref()
+    }
+}
+
+impl From<PathAndMetadata> for Path {
+    fn from(value: PathAndMetadata) -> Self {
+        value.path
     }
 }
 
@@ -684,15 +690,8 @@ impl PartitionedFileGroup {
         let mut commands = Vec::new();
         let retained_file = Arc::new(self.to_keep.swap_remove(0));
         for dropped_file in self.to_drop {
-            let devices_differ =
-                retained_file.metadata.device_id() != dropped_file.metadata.device_id();
             match strategy {
                 DedupeOp::SoftLink => commands.push(FsCommand::SoftLink {
-                    target: retained_file.clone(),
-                    link: dropped_file,
-                }),
-                // hard links are not supported between files on different file systems
-                DedupeOp::HardLink if devices_differ => commands.push(FsCommand::SoftLink {
                     target: retained_file.clone(),
                     link: dropped_file,
                 }),
@@ -724,52 +723,35 @@ impl PartitionedFileGroup {
 
 /// Attempts to retrieve the metadata of all the files in the file group.
 /// If metadata is inaccessible for a file, a warning is emitted to the log, and None gets returned.
-fn files_metadata<P>(group: FileGroup<P>, log: &dyn Log) -> Option<Vec<PathAndMetadata>>
+fn fetch_files_metadata<P>(group: FileGroup<P>, log: &dyn Log) -> Option<FileGroup<PathAndMetadata>>
 where
     P: Into<Path>,
 {
-    let mut last_error: Option<io::Error> = None;
-    let files: Vec<_> = group
-        .files
-        .into_iter()
-        .filter_map(|p| {
-            PathAndMetadata::new(p.into())
-                .map_err(|e| {
-                    log.warn(&e);
-                    last_error = Some(e);
-                })
-                .ok()
+    group
+        .try_map_all(|p| {
+            PathAndMetadata::new(p.into()).map_err(|e| {
+                log.warn(&e);
+            })
         })
-        .collect();
-
-    match last_error {
-        Some(_) => None,
-        None => Some(files),
-    }
+        .ok()
 }
 
 /// Partitions a group of files into files to keep and files that can be safely dropped
 /// (or linked).
-fn partition<P>(
-    group: FileGroup<P>,
+fn partition(
+    group: FileGroup<PathAndMetadata>,
     config: &DedupeConfig,
     log: &dyn Log,
-) -> Result<PartitionedFileGroup, Error>
-where
-    P: Into<Path>,
-{
+) -> Result<PartitionedFileGroup, Error> {
     let file_len = group.file_len;
     let file_hash = group.file_hash.clone();
+    let mut files = group.files;
+
     let error = |msg: &str| {
         Err(Error::from(format!(
             "Could not determine files to drop in group with hash {} and len {}: {}",
             file_hash, file_len.0, msg
         )))
-    };
-
-    let mut files = match files_metadata(group, log) {
-        Some(files) => files,
-        None => return error("Metadata of some files could not be obtained"),
     };
 
     // We don't want to remove dirs or symlinks
@@ -882,19 +864,30 @@ pub fn dedupe<'a, I, P>(
 where
     I: IntoIterator<Item = FileGroup<P>> + 'a,
     I::IntoIter: Send,
-    P: Into<Path> + Send,
+    P: Into<Path> + AsRef<Path> + fmt::Debug + Send + 'a,
 {
     let devices = DiskDevices::new(&HashMap::new());
+    let disallow_cross_device = op == DedupeOp::HardLink || op == DedupeOp::RefLink;
     groups
         .into_iter()
         .enumerate()
         .par_bridge()
-        .map(move |(i, group)| match partition(group, config, log) {
-            Ok(group) => (i, group.dedupe_script(&op, &devices)),
-            Err(e) => {
-                log.warn(e);
-                (i, vec![])
+        .map(move |(i, group)| {
+            let mut commands = Vec::new();
+            if let Some(group) = fetch_files_metadata(group, log) {
+                let groups = if disallow_cross_device {
+                    group.partition_by_key(|p| p.metadata.device_id())
+                } else {
+                    vec![group]
+                };
+                for group in groups {
+                    match partition(group, config, log) {
+                        Ok(group) => commands.extend(group.dedupe_script(&op, &devices)),
+                        Err(e) => log.warn(e),
+                    }
+                }
             }
+            (i, commands)
         })
 }
 
@@ -1205,6 +1198,7 @@ mod test {
     fn test_partition_selects_files_for_removal() {
         with_dir("dedupe/partition/basic", |root| {
             let group = make_group(root, FileHash::from_str("00").unwrap());
+            let group = group.map(|p| PathAndMetadata::new(p).unwrap());
             let config = DedupeConfig::default();
             let partitioned = partition(group, &config, &StdLog::new()).unwrap();
             assert_eq!(partitioned.to_keep.len(), 1);
@@ -1216,6 +1210,7 @@ mod test {
     fn test_partition_bails_out_if_file_modified_too_late() {
         with_dir("dedupe/partition/modification", |root| {
             let group = make_group(root, FileHash::from_str("00").unwrap());
+            let group = group.map(|p| PathAndMetadata::new(p).unwrap());
             let config = DedupeConfig {
                 modified_before: Some(DateTime::from(Local::now() - Duration::days(1))),
                 ..DedupeConfig::default()
@@ -1235,6 +1230,7 @@ mod test {
                 priority: vec![Priority::MostRecentlyModified],
                 ..DedupeConfig::default()
             };
+            let group = group.map(|p| PathAndMetadata::new(p).unwrap());
             let partitioned = partition(group, &config, &StdLog::new()).unwrap();
             assert!(!partitioned.to_drop.iter().any(|m| m.path == path));
             assert!(!partitioned.to_keep.iter().any(|m| m.path == path));
@@ -1258,6 +1254,7 @@ mod test {
                 priority: vec![Priority::Newest],
                 ..DedupeConfig::default()
             };
+            let group = group.map(|p| PathAndMetadata::new(p).unwrap());
             let partitioned_1 = partition(group.clone(), &config, &StdLog::new()).unwrap();
             config.priority = vec![Priority::Oldest];
             let partitioned_2 = partition(group, &config, &StdLog::new()).unwrap();
@@ -1282,6 +1279,8 @@ mod test {
             let path = group.files[0].clone();
             write_file(&path.to_path_buf(), "foo");
 
+            // note that fetching metadata happens after we wrote the file
+            let group = group.map(|p| PathAndMetadata::new(p).unwrap());
             let config = DedupeConfig {
                 priority: vec![Priority::MostRecentlyModified],
                 ..DedupeConfig::default()
@@ -1309,20 +1308,22 @@ mod test {
     fn test_partition_respects_keep_patterns() {
         with_dir("dedupe/partition/keep", |root| {
             let group = make_group(root, FileHash::from_str("00").unwrap());
+            let group = group.map(|p| PathAndMetadata::new(p).unwrap());
             let mut config = DedupeConfig {
                 priority: vec![Priority::LeastRecentlyModified],
                 keep_name_patterns: vec![Pattern::glob("*_1").unwrap()],
                 ..DedupeConfig::default()
             };
+
             let p = partition(group.clone(), &config, &StdLog::new()).unwrap();
             assert_eq!(p.to_keep.len(), 1);
-            assert_eq!(&p.to_keep[0].path, &group.files[0]);
+            assert_eq!(&p.to_keep[0].path, &group.files[0].path);
 
             config.keep_name_patterns = vec![];
             config.keep_path_patterns = vec![Pattern::glob("**/file_1").unwrap()];
             let p = partition(group.clone(), &config, &StdLog::new()).unwrap();
             assert_eq!(p.to_keep.len(), 1);
-            assert_eq!(&p.to_keep[0].path, &group.files[0]);
+            assert_eq!(&p.to_keep[0].path, &group.files[0].path);
         })
     }
 
@@ -1330,6 +1331,7 @@ mod test {
     fn test_partition_respects_drop_patterns() {
         with_dir("dedupe/partition/drop", |root| {
             let group = make_group(root, FileHash::from_str("00").unwrap());
+            let group = group.map(|p| PathAndMetadata::new(p).unwrap());
             let mut config = DedupeConfig {
                 priority: vec![Priority::LeastRecentlyModified],
                 name_patterns: vec![Pattern::glob("*_3").unwrap()],
@@ -1337,13 +1339,13 @@ mod test {
             };
             let p = partition(group.clone(), &config, &StdLog::new()).unwrap();
             assert_eq!(p.to_drop.len(), 1);
-            assert_eq!(&p.to_drop[0].path, &group.files[2]);
+            assert_eq!(&p.to_drop[0].path, &group.files[2].path);
 
             config.name_patterns = vec![];
             config.path_patterns = vec![Pattern::glob("**/file_3").unwrap()];
             let p = partition(group.clone(), &config, &StdLog::new()).unwrap();
             assert_eq!(p.to_drop.len(), 1);
-            assert_eq!(&p.to_drop[0].path, &group.files[2]);
+            assert_eq!(&p.to_drop[0].path, &group.files[2].path);
         })
     }
 
@@ -1368,6 +1370,7 @@ mod test {
                 ..DedupeConfig::default()
             };
 
+            let group = group.map(|p| PathAndMetadata::new(p).unwrap());
             let p = partition(group, &config, &StdLog::new()).unwrap();
             assert_eq!(p.to_drop.len(), 3);
             assert!(p
@@ -1412,6 +1415,7 @@ mod test {
             };
 
             let config = DedupeConfig::default();
+            let group = group.map(|p| PathAndMetadata::new(p).unwrap());
             let p = partition(group, &config, &StdLog::new()).unwrap();
 
             // drop A files because file_a2 appears after file_b1 in the files vector

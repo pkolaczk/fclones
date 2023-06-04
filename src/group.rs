@@ -6,6 +6,7 @@ use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::env::{args_os, current_dir};
 use std::ffi::{OsStr, OsString};
+use std::fmt::Debug;
 use std::fs::File;
 use std::hash::Hash;
 use std::io;
@@ -240,10 +241,72 @@ impl<F> FileGroup<F> {
     pub fn total_size(&self) -> FileLen {
         self.file_len * self.file_count() as u64
     }
+
+    /// Maps the list of files in the group.
+    /// Preserves the group file len and hash.
+    pub fn map<R>(self, f: impl Fn(F) -> R) -> FileGroup<R> {
+        FileGroup {
+            file_len: self.file_len,
+            file_hash: self.file_hash,
+            files: self.files.into_iter().map(f).collect(),
+        }
+    }
+
+    /// Tries to map each file by given fallible function.
+    /// Does not stop processing on the first failure.
+    /// If mapping any of the files fails, then returns a vector of errors.
+    pub fn try_map_all<R: Debug, E: Debug>(
+        self,
+        f: impl Fn(F) -> Result<R, E>,
+    ) -> Result<FileGroup<R>, Vec<E>> {
+        let (ok, err): (Vec<_>, Vec<_>) = self.files.into_iter().map(f).partition(Result::is_ok);
+        if err.is_empty() {
+            Ok(FileGroup {
+                file_len: self.file_len,
+                file_hash: self.file_hash,
+                files: ok.into_iter().map(Result::unwrap).collect(),
+            })
+        } else {
+            Err(err.into_iter().map(Result::unwrap_err).collect())
+        }
+    }
+
+    /// Flat maps the list of files in the group.
+    /// Preserves the group file len and hash.
+    pub fn flat_map<R, I>(self, f: impl Fn(F) -> I) -> FileGroup<R>
+    where
+        I: IntoIterator<Item = R>,
+    {
+        FileGroup {
+            file_len: self.file_len,
+            file_hash: self.file_hash,
+            files: self.files.into_iter().flat_map(f).collect(),
+        }
+    }
+
+    /// Splits the group into one or more groups based on the key function applied to each file.
+    /// Files with the same key are placed in the same group.
+    /// The key is computed only once per item.
+    /// File len and file hash are preserved.
+    pub fn partition_by_key<K: Eq + Hash>(self, key_fn: impl Fn(&F) -> K) -> Vec<FileGroup<F>> {
+        let mut groups = HashMap::new();
+        for f in self.files {
+            let key = key_fn(&f);
+            groups.entry(key).or_insert_with(Vec::new).push(f);
+        }
+        groups
+            .into_values()
+            .map(|files| FileGroup {
+                file_len: self.file_len,
+                file_hash: self.file_hash.clone(),
+                files,
+            })
+            .collect()
+    }
 }
 
-#[cfg(test)]
-impl<F: AsRef<Path>> FileGroup<F> {
+impl<F: AsRef<Path> + core::fmt::Debug> FileGroup<F> {
+    #[cfg(test)]
     fn paths(&self) -> Vec<Path> {
         self.files.iter().map(|f| f.as_ref().clone()).collect_vec()
     }
@@ -1939,6 +2002,75 @@ mod test {
                 }
             ]
         )
+    }
+
+    #[test]
+    fn partition() {
+        let fg = FileGroup {
+            file_len: FileLen::from(1u64),
+            file_hash: FileHash::from(1u128),
+            files: vec!["a1", "b1", "a2", "b2", "b3"],
+        };
+        let mut partitions = fg.partition_by_key(|f| f.chars().next().unwrap());
+        assert_eq!(partitions.len(), 2);
+        partitions.sort_by_key(|p| p.files.len());
+        assert_eq!(partitions[0].files, vec!["a1", "a2"]);
+        assert_eq!(partitions[1].files, vec!["b1", "b2", "b3"]);
+    }
+
+    #[test]
+    fn map() {
+        let fg = FileGroup {
+            file_len: FileLen::from(1u64),
+            file_hash: FileHash::from(1u128),
+            files: vec!["a", "b"],
+        };
+        let fg = fg.map(|f| format!("{f}.txt"));
+        assert_eq!(fg.files, vec![String::from("a.txt"), String::from("b.txt")]);
+    }
+
+    #[test]
+    fn try_map_all_happy_path() {
+        let fg = FileGroup {
+            file_len: FileLen::from(1u64),
+            file_hash: FileHash::from(1u128),
+            files: vec!["a", "b"],
+        };
+        let fg = fg.try_map_all(|f| Result::<_, ()>::Ok(format!("{f}.txt")));
+        assert!(fg.is_ok());
+        assert_eq!(
+            fg.unwrap().files,
+            vec![String::from("a.txt"), String::from("b.txt")]
+        );
+    }
+
+    #[test]
+    fn try_map_all_errors() {
+        let fg = FileGroup {
+            file_len: FileLen::from(1u64),
+            file_hash: FileHash::from(1u128),
+            files: vec!["a", "b"],
+        };
+        let fg = fg.try_map_all(|f| Result::<(), _>::Err(format!("error {f}")));
+        assert!(fg.is_err());
+        assert_eq!(
+            fg.unwrap_err(),
+            vec![String::from("error a"), String::from("error b")]
+        );
+    }
+
+    #[test]
+    fn flat_map() {
+        let fg = FileGroup {
+            file_len: FileLen::from(1u64),
+            file_hash: FileHash::from(1u128),
+            files: vec!["a1", "b1", "a2", "b2", "b3"],
+        };
+        let fg = fg.flat_map(|f| if f.starts_with('a') { Some(f) } else { None });
+        assert_eq!(fg.files, vec!["a1", "a2"]);
+
+        let fg = fg.flat_map(|f| vec![f, f]);
+        assert_eq!(fg.files, vec!["a1", "a1", "a2", "a2"]);
     }
 
     fn write_test_file(path: &PathBuf, prefix: &[u8], mid: &[u8], suffix: &[u8]) {

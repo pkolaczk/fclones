@@ -694,14 +694,13 @@ pub enum Command {
     /// The list of groups earlier produced by `fclones group` should be submitted
     /// on the standard input.
     ///
-    /// Unless `--soft` is specified, hard links are created for links within
-    /// the same file system. Soft links are always created to link files between
-    /// different file systems.
+    /// Unless `--soft` is specified, hard links are created.
+    /// Creating hard links to files on different mount points is expected to fail.
     Link {
         #[clap(flatten)]
         config: DedupeConfig,
 
-        /// Create soft links.
+        /// Create soft (symbolic) links.
         #[arg(short, long)]
         soft: bool,
     },
