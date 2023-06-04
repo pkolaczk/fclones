@@ -284,7 +284,7 @@ impl FileId {
 }
 
 /// Convenience wrapper for accessing OS-dependent metadata like inode and device-id
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct FileMetadata {
     id: FileId,
     metadata: fs::Metadata,
