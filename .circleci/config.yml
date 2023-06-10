@@ -25,6 +25,11 @@ jobs:
     environment:
       RUSTFLAGS: '-D warnings'
     steps:
+      - run:
+          name: Install GTK4
+          command: |
+            sudo apt update
+            sudo apt install -y libgtk-4-dev libadwaita-1-dev
       - checkout
       - run:
           name: Calculate dependencies
@@ -37,7 +42,7 @@ jobs:
       - run:
           name: Build
           command: |
-            cargo build
+            cargo build --all
       - save_cache:
           key: cargo-cache-v1-{{ arch }}-{{checksum "rust-version"}}-{{ checksum "Cargo.lock" }}
           paths:
@@ -50,6 +55,11 @@ jobs:
     docker:
       - image: cimg/rust:1.65.0
     steps:
+      - run:
+          name: Install GTK4
+          command: |
+            sudo apt update
+            sudo apt install -y libgtk-4-dev libadwaita-1-dev
       - checkout
       - run:
           name: Version information
@@ -62,7 +72,7 @@ jobs:
       - run:
           name: Run Clippy
           command: |
-            cargo clippy -- -D warnings -D rust-2018-idioms
+            cargo clippy --all -- -D warnings -D rust-2018-idioms
 
   test:
     docker:
