@@ -37,7 +37,7 @@ jobs:
       - run:
           name: Build
           command: |
-            cargo build --all
+            cargo build
       - save_cache:
           key: cargo-cache-v1-{{ arch }}-{{checksum "rust-version"}}-{{ checksum "Cargo.lock" }}
           paths:
@@ -62,7 +62,7 @@ jobs:
       - run:
           name: Run Clippy
           command: |
-            cargo clippy --all -- -D warnings -D rust-2018-idioms
+            cargo clippy -- -D warnings -D rust-2018-idioms
 
   test:
     docker:
@@ -82,7 +82,7 @@ jobs:
       - run:
           name: Build
           command: |
-            cargo build --all
+            cargo build
       - save_cache:
           key: cargo-cache-v1-{{ arch }}-{{checksum "rust-version"}}-{{ checksum "Cargo.lock" }}
           paths:
