@@ -88,7 +88,7 @@ impl FileGroupItem {
         self.imp().id.get()
     }
 
-    pub fn file_hash(&self) -> Ref<FileHash> {
+    pub fn file_hash(&self) -> Ref<'_, FileHash> {
         self.imp().file_hash.borrow()
     }
 
@@ -96,7 +96,7 @@ impl FileGroupItem {
         *self.imp().file_len.borrow()
     }
 
-    pub fn files(&self) -> Ref<Vec<FileItem>> {
+    pub fn files(&self) -> Ref<'_, Vec<FileItem>> {
         self.imp().files.borrow()
     }
 

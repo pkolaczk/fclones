@@ -97,7 +97,7 @@ impl FileItem {
             .ok()
     }
 
-    pub fn path(&self) -> Ref<fclones::Path> {
+    pub fn path(&self) -> Ref<'_, fclones::Path> {
         let inner = self.imp().inner.borrow();
         Ref::map(inner, |p| &p.as_ref().unwrap().path)
     }
