@@ -550,7 +550,7 @@ dependencies = [
 
 [[package]]
 name = "fclones"
-version = "0.32.0"
+version = "0.32.1"
 dependencies = [
  "assert_matches",
  "atomic-counter",
@@ -582,7 +582,7 @@ dependencies = [
  "libc",
  "maplit",
  "metrohash",
- "nix 0.21.0",
+ "nix",
  "nom",
  "nom-regex",
  "num_cpus",
@@ -611,73 +611,12 @@ dependencies = [
 ]
 
 [[package]]
-name = "fclones"
-version = "0.32.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2001412152306fc5d0f4fea34efdd8c9e21bd0960de95f100af01ba7522a605f"
-dependencies = [
- "atomic-counter",
- "bincode",
- "blake3",
- "byte-unit",
- "byteorder",
- "bytesize",
- "chrono",
- "clap",
- "console",
- "crossbeam-utils",
- "csv",
- "dashmap",
- "dirs",
- "dtparse",
- "dunce",
- "fallible-iterator",
- "fiemap",
- "file-owner",
- "filetime",
- "hex",
- "ignore",
- "indexmap",
- "indicatif",
- "itertools",
- "lazy-init",
- "lazy_static",
- "libc",
- "maplit",
- "metrohash",
- "nix 0.21.0",
- "nom",
- "nom-regex",
- "num_cpus",
- "priority-queue",
- "rand",
- "rayon",
- "reflink",
- "regex",
- "serde",
- "serde_json",
- "sha2",
- "sha3",
- "sled",
- "smallvec",
- "stfu8",
- "sysinfo",
- "thread_local",
- "typed-sled",
- "uuid",
- "winapi",
- "winapi-util",
- "xattr",
- "xxhash-rust",
-]
-
-[[package]]
 name = "fclones-gui"
 version = "0.1.1"
 dependencies = [
  "byte-unit",
  "chrono",
- "fclones 0.32.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "fclones",
  "itertools",
  "libadwaita",
  "parse-size",
@@ -712,7 +651,7 @@ version = "0.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e8e7c734d6215b191e0c6944437c1b3d60d35ab8ace80ac3fbb0647d8f65cc44"
 dependencies = [
- "nix 0.26.2",
+ "nix",
 ]
 
 [[package]]
@@ -1415,15 +1354,6 @@ checksum = "2dffe52ecf27772e601905b7522cb4ef790d2cc203488bbd0e2fe85fcb74566d"
 
 [[package]]
 name = "memoffset"
-version = "0.6.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5aa361d4faea93603064a027415f07bd8e1d5c88c9fbf68bf56a285428fd79ce"
-dependencies = [
- "autocfg",
-]
-
-[[package]]
-name = "memoffset"
 version = "0.7.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5de893c32cde5f383baa4c04c5d6dbdd735cfd4a794b0debdb2bb1b421da5ff4"
@@ -1468,19 +1398,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6a51313c5820b0b02bd422f4b44776fbf47961755c74ce64afc73bfad10226c3"
 dependencies = [
  "getrandom",
-]
-
-[[package]]
-name = "nix"
-version = "0.21.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5c3728fec49d363a50a8828a190b379a446cc5cf085c06259bbbeb34447e4ec7"
-dependencies = [
- "bitflags",
- "cc",
- "cfg-if",
- "libc",
- "memoffset 0.6.5",
 ]
 
 [[package]]
@@ -2633,9 +2550,9 @@ dependencies = [
 
 [[package]]
 name = "xattr"
-version = "0.2.3"
+version = "1.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6d1526bbe5aaeb5eb06885f4d987bcdfa5e23187055de9b83fe00156a821fabc"
+checksum = "ea263437ca03c1522846a4ddafbca2542d0ad5ed9b784909d4b27b76f62bc34a"
 dependencies = [
  "libc",
 ]

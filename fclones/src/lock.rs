@@ -19,8 +19,7 @@ impl FileLock {
     fn nix_as_io_error<T>(result: nix::Result<T>) -> io::Result<T> {
         match result {
             Ok(x) => Ok(x),
-            Err(nix::Error::Sys(errno)) => Err(io::Error::from_raw_os_error(errno as i32)),
-            Err(e) => Err(io::Error::new(io::ErrorKind::Other, e.to_string())),
+            Err(e) => Err(e.into()),
         }
     }
 
