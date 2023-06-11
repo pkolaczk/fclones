@@ -317,9 +317,10 @@ fn create_named_pipe(path: &std::path::Path) -> io::Result<()> {
     use nix::sys::stat;
     use nix::unistd::mkfifo;
     if let Err(e) = mkfifo(path, stat::Mode::S_IRWXU) {
+        let io_err: io::Error = e.into();
         return Err(io::Error::new(
-            io::Error::from(e.as_errno().unwrap()).kind(),
-            format!("Failed to create named pipe {}: {}", path.display(), e),
+            io_err.kind(),
+            format!("Failed to create named pipe {}: {}", path.display(), io_err),
         ));
     }
     Ok(())

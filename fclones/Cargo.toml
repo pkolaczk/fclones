@@ -1,6 +1,6 @@
 [package]
 name = "fclones"
-version = "0.32.0"
+version = "0.32.1"
 description = "Finds and removes duplicate files"
 authors = ["Piotr Kołaczkowski <pkolaczk@gmail.com>"]
 homepage = "https://github.com/pkolaczk/fclones"
@@ -73,8 +73,8 @@ fiemap = "0.1"
 [target.'cfg(unix)'.dependencies]
 file-owner = "0.1"
 libc = "0.2"
-nix = "0.21"
-xattr = "0.2"
+nix = "0.26"
+xattr = "1"
 
 [target.'cfg(windows)'.dependencies]
 winapi = "0.3"
