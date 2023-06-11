@@ -3,6 +3,8 @@ use adw::gtk;
 use adw::prelude::*;
 use gtk::glib;
 
+const UNLIMITED_STR: &str = "Unlimited";
+
 /** A text field with a slider allowing to enter bytes value. */
 pub struct BytesRow {
     row: adw::ActionRow,
@@ -17,7 +19,6 @@ impl BytesRow {
             .valign(gtk::Align::Center)
             .halign(gtk::Align::End)
             .hexpand(false)
-            .text("foo")
             .build();
         let adjustment = gtk::Adjustment::builder()
             .lower(0.0)
@@ -26,7 +27,7 @@ impl BytesRow {
             .step_increment(0.05)
             .build();
         let scale = gtk::Scale::new(gtk::Orientation::Horizontal, Some(&adjustment));
-        scale.set_width_request(200);
+        scale.set_width_request(240);
 
         bind(&scale, &entry, unlimited);
         entry.set_text(default);
@@ -78,7 +79,9 @@ impl BytesRow {
         });
         // Invoke the action on every text entry change:
         self.entry.connect_changed(move |entry| {
-            if let Ok(bytes) = parse_size::parse_size(entry.text()) {
+            if entry.text() == UNLIMITED_STR {
+                action(u64::MAX)
+            } else if let Ok(bytes) = parse_size::parse_size(entry.text()) {
                 action(bytes);
             }
         });
@@ -88,7 +91,7 @@ impl BytesRow {
 fn set_bytes(bytes: u64, entry: &gtk::EditableLabel) {
     if !entry.is_editing() {
         let value_str = if bytes == u64::MAX {
-            "Unlimited".to_owned()
+            UNLIMITED_STR.to_owned()
         } else {
             let bytes = byte_unit::Byte::from_bytes(bytes as u128);
             let adjusted = bytes.get_appropriate_unit(false);
@@ -105,7 +108,7 @@ fn bind(scale: &gtk::Scale, entry: &gtk::EditableLabel, unlimited: bool) {
     scale.connect_change_value(
         glib::clone!(@weak entry => @default-panic, move |scale, _, value| {
             if unlimited && value == scale.adjustment().upper() {
-                entry.set_text("Unlimited");
+                entry.set_text(UNLIMITED_STR);
             }
             else {
                 let bytes = scale_to_bytes(value);
@@ -116,10 +119,10 @@ fn bind(scale: &gtk::Scale, entry: &gtk::EditableLabel, unlimited: bool) {
     );
     entry.connect_changed(glib::clone!(@weak scale => @default-panic, move |value| {
         let text = value.text();
-        if unlimited && text == "Unlimited" {
+        if unlimited && text == UNLIMITED_STR {
             scale.set_value(scale.adjustment().upper());
         }
-        if let Ok(bytes) = parse_size::parse_size(text) {
+        else if let Ok(bytes) = parse_size::parse_size(text) {
             scale.set_value(bytes_to_scale(bytes));
         }
     }));
