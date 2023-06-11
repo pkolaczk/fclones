@@ -53,8 +53,10 @@ impl DuplicatesPageModel {
         }
     }
 
-    pub fn clear_files(&self) {
+    pub fn clear_files(&mut self) {
         self.root_store().remove_all();
+        self.total_count = 0;
+        self.total_size = FileLen(0);
         self.selected_count.set(0);
         self.selected_size.set(FileLen(0));
     }

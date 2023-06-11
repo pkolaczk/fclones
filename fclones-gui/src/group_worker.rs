@@ -15,24 +15,28 @@ pub struct GroupWorker {
 
 impl GroupWorker {
     fn find_duplicates(&mut self, config: GroupConfig, sender: ComponentSender<Self>) {
+        sender.output(AppMsg::ClearFiles).unwrap_or_default();
+
         let (tx, rx) = relm4::channel();
         let log = LogAdapter::new(tx);
         spawn(rx.forward(sender.output_sender().clone(), AppMsg::Progress));
 
         let groups = fclones::group_files(&config, &log);
-
         if let Ok(groups) = groups {
             self.groups = VecDeque::new();
             self.group_start_id = 0;
             for chunk in groups.chunks(256) {
                 self.groups.push_back(chunk.to_vec())
             }
-            sender.output(AppMsg::ClearFiles).unwrap_or_default();
             sender
                 .output(AppMsg::Progress(ProgressMsg::Hide))
                 .unwrap_or_default();
             self.start_time = SystemTime::now();
-            self.send_next_chunk(sender)
+            if groups.is_empty() {
+                sender.output(AppMsg::NoDuplicatesFound).unwrap_or_default();
+            } else {
+                self.send_next_chunk(sender)
+            }
         }
     }
 
