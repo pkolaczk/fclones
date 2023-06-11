@@ -1,9 +1,11 @@
+use adw::gtk::{MessageDialog, MessageType};
+use adw::prelude::{DialogExt, WidgetExt};
 use std::convert::identity;
 use std::path::PathBuf;
 
 use gtk::{CssProvider, StyleContext};
-use relm4::gtk::gdk;
 use relm4::gtk::prelude::GtkWindowExt;
+use relm4::gtk::{gdk, ButtonsType};
 use relm4::Component;
 use relm4::ComponentController;
 use relm4::WorkerController;
@@ -34,6 +36,7 @@ pub enum AppMsg {
     AddFiles(usize, Vec<fclones::FileGroup<fclones::PathAndMetadata>>),
     RemoveFiles(u32, Vec<fclones::Path>),
     RemoveGroup(u32),
+    NoDuplicatesFound,
     Progress(ProgressMsg),
     ToggleFileSelection(u32, bool),
     SelectionPriorityChanged(fclones::Priority),
@@ -46,6 +49,7 @@ pub enum AppMsg {
 pub enum AppPage {
     Input,
     Duplicates,
+    NoDuplicatesMsg,
 }
 
 pub struct AppModel {
@@ -62,6 +66,7 @@ pub struct AppWidgets {
     container: gtk::Stack,
     input_page: InputPageWidgets,
     duplicates_page: DuplicatesPageWidgets,
+    no_dupes_msg_dlg: MessageDialog,
 }
 
 impl SimpleComponent for AppModel {
@@ -111,11 +116,22 @@ impl SimpleComponent for AppModel {
         root.set_titlebar(Some(&input_page.header));
         root.set_child(Some(&container));
 
+        let no_dupes_msg_dlg = MessageDialog::builder()
+            .modal(true)
+            .message_type(MessageType::Info)
+            .transient_for(root)
+            .text("No duplicates found")
+            .buttons(ButtonsType::Ok)
+            .build();
+
+        no_dupes_msg_dlg.connect_response(|dlg, _| dlg.hide());
+
         let widgets = AppWidgets {
             window: root.clone(),
             container,
             input_page,
             duplicates_page,
+            no_dupes_msg_dlg,
         };
 
         widgets
@@ -168,7 +184,6 @@ impl SimpleComponent for AppModel {
             }
             AppMsg::SetDedupeOp(op) => self.duplicates.set_dedupe_op(op),
             AppMsg::ClearFiles => {
-                self.selected_page = AppPage::Duplicates;
                 self.duplicates.clear_files();
             }
             AppMsg::AddFiles(start_id, files) => {
@@ -178,6 +193,9 @@ impl SimpleComponent for AppModel {
                     .sender()
                     .send(GroupWorkerMsg::GetNextChunk)
                     .unwrap();
+            }
+            AppMsg::NoDuplicatesFound => {
+                self.selected_page = AppPage::NoDuplicatesMsg;
             }
             AppMsg::RemoveFiles(index, files) => {
                 self.duplicates.remove_files(index, &files);
@@ -202,7 +220,7 @@ impl SimpleComponent for AppModel {
         }
     }
 
-    fn update_view(&self, widgets: &mut Self::Widgets, _sender: ComponentSender<Self>) {
+    fn update_view(&self, widgets: &mut Self::Widgets, sender: ComponentSender<Self>) {
         match self.selected_page {
             AppPage::Input => {
                 widgets
@@ -221,6 +239,13 @@ impl SimpleComponent for AppModel {
                     .window
                     .set_titlebar(Some(&widgets.duplicates_page.header));
                 widgets.duplicates_page.update(&self.duplicates);
+            }
+            AppPage::NoDuplicatesMsg => {
+                widgets.no_dupes_msg_dlg.show();
+                sender
+                    .input_sender()
+                    .send(AppMsg::ActivateInputPage)
+                    .unwrap_or_default();
             }
         };
     }
