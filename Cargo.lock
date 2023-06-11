@@ -673,7 +673,7 @@ dependencies = [
 
 [[package]]
 name = "fclones-gui"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "byte-unit",
  "chrono",

@@ -392,6 +392,8 @@ impl InputPageWidgets {
     pub fn update(&self, model: &InputPageModel) {
         self.min_size.set_value(model.min_size.get());
         self.max_size.set_value(model.max_size.get());
+        self.find_duplicates
+            .set_sensitive(model.input_paths.n_items() > 0);
     }
 }
 
