@@ -1,5 +1,5 @@
 [workspace]
-members = ["fclones", "fclones-gui", "gen-test-files"]
+members = ["fclones", "gen-test-files"]
 default-members = ["fclones"]
 
 [profile.release]

@@ -7,6 +7,11 @@ fclones
 [![Documentation](https://docs.rs/fclones/badge.svg)](https://docs.rs/fclones)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
+This is the repo for command line fclones and its core libraries.
+For the desktop frontend, see [https://github.com/pkolaczk/fclones-gui](fclones-gui).
+
+---
+
 `fclones` is a command line utility that identifies groups of identical files and gets rid 
 of the file copies you no longer need. It comes with plenty of configuration options for controlling
 the search scope and offers many ways of removing duplicates. For maximum flexibility,

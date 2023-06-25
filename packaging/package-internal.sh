@@ -34,18 +34,3 @@ mv *.tgz $PKG_DIR/"fclones-$VERSION-linux-glibc-x86_64.tar.gz"
 tar -zcvf $PKG_DIR/"fclones-$VERSION-linux-musl-x86_64.tar.gz" target/x86_64-unknown-linux-musl/release/fclones
 tar -zcvf $PKG_DIR/"fclones-$VERSION-linux-musl-i686.tar.gz" target/i686-unknown-linux-musl/release/fclones
 zip -j $PKG_DIR/"fclones-$VERSION-windows-x86_64.zip" target/x86_64-pc-windows-gnu/release/fclones.exe
-
-echo "${bold}Packaging${normal} fclones-gui"
-set -x
-VERSION=$(cargo pkgid -p fclones-gui | sed 's/.*#//')
-PKG_DIR=target/packages/fclones-gui-$VERSION
-mkdir -p $PKG_DIR
-rm -f $PKG_DIR/*
-
-cargo deb -p fclones-gui
-mv target/debian/*.deb $PKG_DIR
-
-fakeroot alien --to-rpm -c $PKG_DIR/*.deb
-mv *.rpm $PKG_DIR
-fakeroot alien --to-tgz -c $PKG_DIR/*.deb
-mv *.tgz $PKG_DIR/"fclones-gui-$VERSION-linux-glibc-x86_64.tar.gz"
