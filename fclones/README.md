@@ -8,7 +8,7 @@ fclones
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 This is the repo for command line fclones and its core libraries.
-For the desktop frontend, see [https://github.com/pkolaczk/fclones-gui](fclones-gui).
+For the desktop frontend, see [fclones-gui](https://github.com/pkolaczk/fclones-gui).
 
 ---
 
