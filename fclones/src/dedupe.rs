@@ -620,6 +620,21 @@ impl<P: AsRef<PathAndMetadata>> FileSubGroup<P> {
         .unwrap())
     }
 
+    /// Returns the time of the latest status change of a file in the subgroup
+    #[cfg(unix)]
+    pub fn status_changed(&self) -> Result<(i64, i64), Error> {
+        use std::os::unix::fs::MetadataExt;
+        Ok(self
+            .files
+            .iter()
+            .map(|f| {
+                let f = f.as_ref();
+                (f.metadata.ctime(), f.metadata.ctime_nsec())
+            })
+            .max()
+            .unwrap())
+    }
+
     /// Returns true if any of the files in the subgroup must be kept
     pub fn should_keep(&self, config: &DedupeConfig) -> bool {
         self.files
@@ -673,6 +688,12 @@ where
         Priority::LeastRecentlyModified => try_sort_by_key(files, |m| m.modified().map(Reverse)),
         Priority::MostRecentlyAccessed => try_sort_by_key(files, |m| m.accessed()),
         Priority::LeastRecentlyAccessed => try_sort_by_key(files, |m| m.accessed().map(Reverse)),
+        #[cfg(unix)]
+        Priority::MostRecentStatusChange => try_sort_by_key(files, |m| m.status_changed()),
+        #[cfg(unix)]
+        Priority::LeastRecentStatusChange => {
+            try_sort_by_key(files, |m| m.status_changed().map(Reverse))
+        }
         Priority::MostNested => {
             files.sort_by_key(|m| m.max_nesting());
             vec![]
