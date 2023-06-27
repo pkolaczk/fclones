@@ -560,6 +560,12 @@ pub enum Priority {
     MostRecentlyAccessed,
     /// Give higher priority to the files with the least recent access time.
     LeastRecentlyAccessed,
+    #[cfg(unix)]
+    /// Give higher priority to the files with the most recent status change.
+    MostRecentStatusChange,
+    #[cfg(unix)]
+    /// Give higher priority to the files with the least recent status change.
+    LeastRecentStatusChange,
     /// Give higher priority to the files nested deeper in the directory tree.
     MostNested,
     /// Give higher priority to the files nested shallower in the directory tree.
