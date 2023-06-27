@@ -566,42 +566,6 @@ pub enum Priority {
     LeastNested,
 }
 
-impl Priority {
-    pub fn variants() -> Vec<&'static str> {
-        vec![
-            "top",
-            "bottom",
-            "newest",
-            "oldest",
-            "most-recently-modified",
-            "least-recently-modified",
-            "most-recently-accessed",
-            "least-recently-accessed",
-            "most-nested",
-            "least-nested",
-        ]
-    }
-}
-
-impl FromStr for Priority {
-    type Err = String;
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s.to_lowercase().as_str() {
-            "top" => Ok(Priority::Top),
-            "bottom" => Ok(Priority::Bottom),
-            "newest" => Ok(Priority::Newest),
-            "oldest" => Ok(Priority::Oldest),
-            "most-recently-modified" | "mrm" => Ok(Priority::MostRecentlyModified),
-            "least-recently-modified" | "lrm" => Ok(Priority::MostRecentlyModified),
-            "most-recently-accessed" | "mra" => Ok(Priority::MostRecentlyAccessed),
-            "least-recently-accessed" | "lra" => Ok(Priority::LeastRecentlyAccessed),
-            "most-nested" => Ok(Priority::MostNested),
-            "least-nested" => Ok(Priority::LeastNested),
-            _ => Err(format!("Unrecognized priority: {s}")),
-        }
-    }
-}
-
 /// Configures which files should be removed
 #[derive(clap::Args, Debug, Default)]
 #[command(disable_version_flag = true)]
