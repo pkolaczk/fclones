@@ -402,7 +402,11 @@ impl FsCommand {
                 let link = link.path.quote();
                 // Not really what happens on Linux, there the `mv` is also a reflink.
                 result.push(format!("mv {} {}", link, tmp.quote()));
-                result.push(format!("cp --reflink=always {target} {link}"));
+                if cfg!(target_os = "macos") {
+                    result.push(format!("cp -c {target} {link}"));
+                } else {
+                    result.push(format!("cp --reflink=always {target} {link}"));
+                };
                 result.push(format!("rm {}", tmp.quote()));
             }
             FsCommand::Move {
