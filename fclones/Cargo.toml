@@ -73,7 +73,7 @@ fiemap = "0.1"
 [target.'cfg(unix)'.dependencies]
 file-owner = "0.1"
 libc = "0.2"
-nix = "0.26"
+nix = { version = "0.27", features = [ "user", "fs", "ioctl" ] }
 xattr = "1"
 
 [target.'cfg(windows)'.dependencies]
