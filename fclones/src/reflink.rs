@@ -383,7 +383,7 @@ pub mod test {
     use crate::path::Path as FcPath;
 
     // Usually /dev/shm only exists on Linux.
-    #[cfg(any(target_os = "linux"))]
+    #[cfg(target_os = "linux")]
     fn test_reflink_command_fails_on_dev_shm_tmpfs() {
         // No `cached_reflink_supported()` check
 
@@ -433,7 +433,7 @@ pub mod test {
     }
 
     #[test]
-    #[cfg(any(target_os = "linux"))]
+    #[cfg(target_os = "linux")]
     fn test_reflink_command_failure() {
         {
             let _sequential = cfg::CrossTest::new(false);
