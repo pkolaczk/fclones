@@ -680,7 +680,7 @@ where
             file_hash: hash,
             files: files.to_vec(),
         })
-        .chain(groups_to_pass.into_iter())
+        .chain(groups_to_pass)
         .filter(group_post_filter)
         .collect()
 }
