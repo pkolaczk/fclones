@@ -504,7 +504,7 @@ dependencies = [
 
 [[package]]
 name = "fclones"
-version = "0.32.1"
+version = "0.32.2"
 dependencies = [
  "assert_matches",
  "atomic-counter",
