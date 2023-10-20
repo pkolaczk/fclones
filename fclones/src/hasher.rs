@@ -550,7 +550,7 @@ fn open_noatime(path: &Path) -> io::Result<File> {
     }
     #[cfg(not(target_os = "linux"))]
     {
-        options.open(&path)
+        options.open(path)
     }
 }
 
