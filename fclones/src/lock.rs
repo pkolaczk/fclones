@@ -31,6 +31,7 @@ impl FileLock {
     }
 
     #[cfg(unix)]
+    #[allow(clippy::unnecessary_cast)]
     fn fcntl_lock(file: &File) -> io::Result<()> {
         use nix::fcntl::*;
         use std::os::unix::io::AsRawFd;
@@ -42,6 +43,7 @@ impl FileLock {
     }
 
     #[cfg(unix)]
+    #[allow(clippy::unnecessary_cast)]
     fn fcntl_unlock(file: &File) -> io::Result<()> {
         use nix::fcntl::*;
         use std::os::unix::io::AsRawFd;

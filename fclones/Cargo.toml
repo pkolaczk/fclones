@@ -14,7 +14,7 @@ exclude = [
     ".circleci",
     "release.sh"
 ]
-rust-version = "1.65"
+rust-version = "1.70"
 
 [dependencies]
 atomic-counter = "1.0"
@@ -24,21 +24,21 @@ byteorder = "1.4"
 bytesize = "1.1"
 byte-unit = "4.0"
 chrono = { version = "0.4", default-features = false, features = ["serde", "clock", "std"] }
-clap = { version = "4.0", features = ["derive", "cargo", "wrap_help"] }
+clap = { version = "4.4", features = ["derive", "cargo", "wrap_help"] }
 console = "0.15"
 crossbeam-utils = "0.8"
 csv = "1.1"
 dashmap = "5.2"
 dirs = "5.0.1"
-dtparse = "1.2"
+dtparse = "2"
 dunce = "1.0"
 fallible-iterator = "0.3"
 filetime = "0.2"
 hex = "0.4"
 ignore = "0.4.18"
 indicatif = "0.17"
-indexmap = "1.8"
-itertools = "0.10"
+indexmap = "2"
+itertools = "0.11"
 lazy-init = "0.5"
 lazy_static = "1.4"
 maplit = "1.0"

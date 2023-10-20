@@ -92,10 +92,10 @@ impl ValueParserFactory for Path {
 /// Parses date time string, accepts wide range of human-readable formats
 fn parse_date_time(s: &str) -> Result<DateTime<FixedOffset>, String> {
     match dtparse::parse(s) {
-        Ok((dt, Some(offset))) => Ok(DateTime::from_utc(dt, offset)),
+        Ok((dt, Some(offset))) => Ok(DateTime::from_naive_utc_and_offset(dt, offset)),
         Ok((dt, None)) => {
             let local_offset = *Local::now().offset();
-            Ok(DateTime::from_utc(dt, local_offset))
+            Ok(DateTime::from_naive_utc_and_offset(dt, local_offset))
         }
         Err(e) => Err(format!("Failed to parse {s} as date: {e}")),
     }

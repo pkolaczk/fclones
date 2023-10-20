@@ -1287,7 +1287,7 @@ pub fn write_report(
     });
 
     let header = ReportHeader {
-        timestamp: DateTime::from_utc(now.naive_utc(), *now.offset()),
+        timestamp: DateTime::from_naive_utc_and_offset(now.naive_utc(), *now.offset()),
         version: env!("CARGO_PKG_VERSION").to_owned(),
         command: args_os().map(Arg::from).collect(),
         base_dir: config.base_dir.clone(),
