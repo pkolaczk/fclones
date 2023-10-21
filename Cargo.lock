@@ -471,7 +471,7 @@ checksum = "25cbce373ec4653f1a01a31e8a5e5ec0c622dc27ff9c4e6606eefef5cbbed4a5"
 
 [[package]]
 name = "fclones"
-version = "0.32.2"
+version = "0.33.0"
 dependencies = [
  "assert_matches",
  "atomic-counter",
