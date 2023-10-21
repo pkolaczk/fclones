@@ -2,6 +2,10 @@
 
 use std::fmt::{Display, Formatter};
 use std::fs::create_dir_all;
+use std::sync::mpsc::{channel, RecvTimeoutError, Sender};
+use std::sync::{Arc, Mutex};
+use std::thread;
+use std::thread::JoinHandle;
 use std::time::{Duration, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
@@ -32,13 +36,18 @@ struct CachedFileInfo {
     hash: FileHash,
 }
 
+type InnerCache = typed_sled::Tree<Key, CachedFileInfo>;
+
+const FLUSH_INTERVAL: Duration = Duration::from_millis(1000);
+
 /// Caches file hashes to avoid repeated computations in subsequent runs of fclones.
 ///
 /// Most files don't change very frequently so their hashes don't change.
 /// Usually it is a lot faster to retrieve the hash from an embedded database that to compute
 /// them from file data.
 pub struct HashCache {
-    cache: typed_sled::Tree<Key, CachedFileInfo>,
+    cache: Arc<InnerCache>,
+    _flusher: HashCacheFlusher,
 }
 
 impl HashCache {
@@ -65,8 +74,12 @@ impl HashCache {
         })?;
 
         let tree_id = format!("hash_db:{:?}:{}", algorithm, transform.unwrap_or("<none>"));
-        let cache = typed_sled::Tree::open(&db, tree_id);
-        Ok(HashCache { cache })
+        let cache = Arc::new(typed_sled::Tree::open(&db, tree_id));
+        let flusher = HashCacheFlusher::start(&cache);
+        Ok(HashCache {
+            cache,
+            _flusher: flusher,
+        })
     }
 
     /// Opens the file hash database located in `fclones` subdir of user cache directory.
@@ -101,6 +114,7 @@ impl HashCache {
         self.cache
             .insert(key, &value)
             .map_err(|e| format!("Failed to write entry to cache: {e}"))?;
+
         Ok(())
     }
 
@@ -148,6 +162,44 @@ impl HashCache {
             chunk_len: chunk.len,
         };
         Ok(key)
+    }
+}
+
+/// Periodically flushes the cache in a background thread
+struct HashCacheFlusher {
+    thread_handle: Option<JoinHandle<()>>,
+    control_channel: Option<Mutex<Sender<()>>>, // wrapped in Mutex because Sender is not Send in older versions of Rust
+}
+
+impl HashCacheFlusher {
+    fn start(cache: &Arc<InnerCache>) -> HashCacheFlusher {
+        let cache = Arc::downgrade(cache);
+        let (tx, rx) = channel::<()>();
+
+        let thread_handle = thread::spawn(move || {
+            while let Err(RecvTimeoutError::Timeout) = rx.recv_timeout(FLUSH_INTERVAL) {
+                if let Some(cache) = cache.upgrade() {
+                    if let Err(e) = cache.flush() {
+                        eprintln!("Failed to flush hash cache: {e}");
+                        return;
+                    }
+                }
+            }
+        });
+
+        HashCacheFlusher {
+            thread_handle: Some(thread_handle),
+            control_channel: Some(Mutex::new(tx)),
+        }
+    }
+}
+
+impl Drop for HashCacheFlusher {
+    fn drop(&mut self) {
+        // Signal the flusher thread to exit:
+        drop(self.control_channel.take());
+        // Wait for the flusher thread to exit:
+        self.thread_handle.take().unwrap().join().unwrap();
     }
 }
 
