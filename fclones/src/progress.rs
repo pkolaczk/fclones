@@ -171,10 +171,10 @@ impl ProgressBar {
         self.status_line.is_visible()
     }
 
-    pub fn println<I: AsRef<str>>(&self, msg: I) {
+    pub fn eprintln<I: AsRef<str>>(&self, msg: I) {
         let was_visible = self.status_line.is_visible();
         self.status_line.set_visible(false);
-        println!("{}", msg.as_ref());
+        eprintln!("{}", msg.as_ref());
         self.status_line.set_visible(was_visible);
     }
 
