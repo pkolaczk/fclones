@@ -1,11 +1,11 @@
 //! Fast, concurrent, lockless progress bars.
 
-use atomic_counter::{AtomicCounter, RelaxedCounter};
+use crate::FileLen;
 use console::style;
-use indicatif::{ProgressBar, ProgressDrawTarget, ProgressStyle};
-use std::sync::Arc;
-use std::thread;
-use std::time::Duration;
+use status_line::{Options, StatusLine};
+use std::fmt::{Display, Formatter};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Instant;
 
 /// Common interface for components that can show progress of a task. E.g. progress bars.
 pub trait ProgressTracker: Sync + Send {
@@ -21,210 +21,248 @@ impl ProgressTracker for NoProgressBar {
     fn inc(&self, _delta: u64) {}
 }
 
-/// Console-based progress bar that renders to standard error.
-///
-/// Implemented as a wrapper over `indicatif::ProgressBar` that makes updating its progress
-/// lockless.
-/// Unfortunately `indicatif::ProgressBar` wraps state in a `Mutex`, so updates are slow
-/// and can become a bottleneck in multithreaded context.
-/// This wrapper uses `atomic_counter::RelaxedCounter` to keep shared state without ever blocking
-/// writers. That state is copied repeatedly by a background thread to an underlying
-/// `ProgressBar` at a low rate.
-pub struct FastProgressBar {
-    counter: Arc<RelaxedCounter>,
-    progress_bar: Arc<ProgressBar>,
+#[derive(Debug, Default)]
+enum ProgressUnit {
+    #[default]
+    Item,
+    Bytes,
 }
 
-impl FastProgressBar {
-    /// Width of the progress bar in characters
-    const WIDTH: usize = 50;
-    /// Spinner animation looks like this (moves right and left):
-    const SPACESHIP: &'static str = "<===>";
-    /// Progress bar looks like this:
-    const PROGRESS_CHARS: &'static str = "=> ";
-    /// How much time to wait between refreshes, in milliseconds
-    const REFRESH_PERIOD_MS: u64 = 50;
+/// Keeps state of the progress bar and controls how it is rendered to a string
+#[derive(Debug)]
+struct Progress {
+    msg: String,         // message shown before the progress bar
+    value: AtomicU64,    // controls the length of the progress bar
+    max: Option<u64>,    // maximum expected value, if not set an animated spinner is shown
+    unit: ProgressUnit,  // how to format the numbers
+    start_time: Instant, // needed for the animation
+    color: bool,
+}
 
-    /// Wrap an existing `ProgressBar` and start the background updater-thread.
-    /// The thread periodically copies the `FastProgressBar` position into the wrapped
-    /// `ProgressBar` instance.
-    pub fn wrap(progress_bar: ProgressBar) -> FastProgressBar {
-        let pb = Arc::new(progress_bar);
-        let pb2 = pb.clone();
-        let counter = Arc::new(RelaxedCounter::new(0));
-        let counter2 = counter.clone();
-        thread::spawn(move || {
-            while Arc::strong_count(&counter2) > 1 && !pb2.is_finished() {
-                pb2.set_position(counter2.get() as u64);
-                thread::sleep(Duration::from_millis(Self::REFRESH_PERIOD_MS));
+impl Progress {
+    fn fmt_value(&self, value: u64) -> String {
+        match self.unit {
+            ProgressUnit::Item => value.to_string(),
+            ProgressUnit::Bytes => FileLen(value).to_string(),
+        }
+    }
+
+    /// Draws the progress bar alone (without message and numbers)
+    fn bar(&self, length: usize) -> String {
+        let mut bar = "=".repeat(length);
+        if !bar.is_empty() {
+            bar.pop();
+            bar.push('>');
+        }
+        bar.truncate(MAX_BAR_LEN);
+        bar
+    }
+
+    fn animate_spinner(&self, frame: u64) -> String {
+        let spaceship = "<===>";
+        let max_pos = (MAX_BAR_LEN - spaceship.len()) as u64;
+        let pos = ((frame + max_pos) % (max_pos * 2)).abs_diff(max_pos);
+        assert!(pos < MAX_BAR_LEN as u64);
+        " ".repeat(pos as usize) + spaceship
+    }
+}
+
+impl Default for Progress {
+    fn default() -> Self {
+        Progress {
+            msg: "".to_owned(),
+            value: AtomicU64::default(),
+            max: None,
+            unit: ProgressUnit::default(),
+            start_time: Instant::now(),
+            color: true,
+        }
+    }
+}
+
+const MAX_BAR_LEN: usize = 50;
+
+impl Display for Progress {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        let value = self.value.load(Ordering::Relaxed);
+        let value_str = self.fmt_value(value);
+        let msg = if self.color {
+            style(self.msg.clone()).for_stderr().cyan().bold()
+        } else {
+            style(self.msg.clone())
+        };
+
+        match self.max {
+            Some(max) => {
+                let max_str = self.fmt_value(max);
+                let bar_len = (MAX_BAR_LEN as u64 * value / max.max(1)) as usize;
+                let bar = self.bar(bar_len);
+                write!(f, "{msg:32}[{bar:MAX_BAR_LEN$}]{value_str:>14} / {max_str}")
             }
-        });
-        FastProgressBar {
-            counter,
-            progress_bar: pb,
+            None => {
+                let frame = (self.start_time.elapsed().as_millis() / 50) as u64;
+                let bar = self.animate_spinner(frame);
+                write!(f, "{msg:32}[{bar:MAX_BAR_LEN$}]{value_str:>14}")
+            }
         }
     }
+}
 
-    /// Generate spinner animation strings.
-    /// The spinner moves to the next string from the returned vector with every tick.
-    /// The spinner is rendered as a SPACESHIP that bounces right and left from the
-    /// ends of the spinner bar.
-    fn gen_tick_strings() -> Vec<String> {
-        let mut tick_strings = vec![];
-        for i in 0..(Self::WIDTH - Self::SPACESHIP.len()) {
-            let prefix_len = i;
-            let suffix_len = Self::WIDTH - i - Self::SPACESHIP.len();
-            let tick_str = " ".repeat(prefix_len) + Self::SPACESHIP + &" ".repeat(suffix_len);
-            tick_strings.push(tick_str);
-        }
-        let mut tick_strings_2 = tick_strings.clone();
-        tick_strings_2.reverse();
-        tick_strings.extend(tick_strings_2);
-        tick_strings
-    }
+/// Console-based progress bar that renders to standard error.
+pub struct ProgressBar {
+    status_line: StatusLine<Progress>,
+}
 
+impl ProgressBar {
     /// Create a new preconfigured animated spinner with given message.
-    pub fn new_spinner(msg: &str) -> FastProgressBar {
-        let inner = ProgressBar::new_spinner();
-        let template =
-            style("{msg:32}").cyan().bold().for_stderr().to_string() + "[{spinner}] {pos:>10}";
-        let tick_strings = Self::gen_tick_strings();
-        let tick_strings: Vec<&str> = tick_strings.iter().map(|s| s as &str).collect();
-        inner.set_style(
-            ProgressStyle::default_spinner()
-                .template(template.as_str())
-                .unwrap()
-                .tick_strings(tick_strings.as_slice()),
-        );
-        inner.set_message(msg.to_string());
-        Self::wrap(inner)
+    pub fn new_spinner(msg: &str) -> ProgressBar {
+        let progress = Progress {
+            msg: msg.to_string(),
+            ..Default::default()
+        };
+        ProgressBar {
+            status_line: StatusLine::new(progress),
+        }
     }
 
     /// Create a new preconfigured progress bar with given message.
-    pub fn new_progress_bar(msg: &str, len: u64) -> FastProgressBar {
-        let inner = ProgressBar::new(len);
-        let template = style("{msg:32}").cyan().bold().for_stderr().to_string()
-            + &"[{bar:WIDTH}] {pos:>10}/{len}".replace("WIDTH", Self::WIDTH.to_string().as_str());
-
-        inner.set_style(
-            ProgressStyle::default_bar()
-                .template(template.as_str())
-                .unwrap()
-                .progress_chars(Self::PROGRESS_CHARS),
-        );
-        inner.set_message(msg.to_string());
-        FastProgressBar::wrap(inner)
+    pub fn new_progress_bar(msg: &str, len: u64) -> ProgressBar {
+        let progress = Progress {
+            msg: msg.to_string(),
+            max: Some(len),
+            ..Default::default()
+        };
+        ProgressBar {
+            status_line: StatusLine::new(progress),
+        }
     }
 
     /// Create a new preconfigured progress bar with given message.
     /// Displays progress in bytes.
-    pub fn new_bytes_progress_bar(msg: &str, len: u64) -> FastProgressBar {
-        let inner = ProgressBar::new(len);
-        let template = style("{msg:32}").cyan().bold().for_stderr().to_string()
-            + &"[{bar:WIDTH}] {bytes:>10}/{total_bytes}"
-                .replace("WIDTH", Self::WIDTH.to_string().as_str());
-
-        inner.set_style(
-            ProgressStyle::default_bar()
-                .template(template.as_str())
-                .unwrap()
-                .progress_chars(Self::PROGRESS_CHARS),
-        );
-        inner.set_message(msg.to_string());
-
-        FastProgressBar::wrap(inner)
+    pub fn new_bytes_progress_bar(msg: &str, len: u64) -> ProgressBar {
+        let progress = Progress {
+            msg: msg.to_string(),
+            max: Some(len),
+            unit: ProgressUnit::Bytes,
+            ..Default::default()
+        };
+        ProgressBar {
+            status_line: StatusLine::new(progress),
+        }
     }
 
     /// Creates a new invisible progress bar.
     /// This is useful when you need to disable progress bar, but you need to pass an instance
     /// of a `ProgressBar` to something that expects it.
-    pub fn new_hidden() -> FastProgressBar {
-        let inner = ProgressBar::new(u64::MAX);
-        inner.set_draw_target(ProgressDrawTarget::hidden());
-        FastProgressBar::wrap(inner)
-    }
-
-    fn update_progress(&self) {
-        let value = self.counter.get() as u64;
-        self.progress_bar.set_position(value);
-    }
-
-    pub fn set_draw_target(&self, target: ProgressDrawTarget) {
-        self.progress_bar.set_draw_target(target)
+    pub fn new_hidden() -> ProgressBar {
+        ProgressBar {
+            status_line: StatusLine::with_options(
+                Progress::default(),
+                Options {
+                    refresh_period: Default::default(),
+                    initially_visible: false,
+                    enable_ansi_escapes: false,
+                },
+            ),
+        }
     }
 
     pub fn is_visible(&self) -> bool {
-        !self.progress_bar.is_hidden()
+        self.status_line.is_visible()
     }
 
     pub fn println<I: AsRef<str>>(&self, msg: I) {
-        self.progress_bar.println(msg);
+        let was_visible = self.status_line.is_visible();
+        self.status_line.set_visible(false);
+        println!("{}", msg.as_ref());
+        self.status_line.set_visible(was_visible);
     }
 
     pub fn tick(&self) {
-        self.counter.inc();
-    }
-
-    pub fn position(&self) -> usize {
-        self.counter.get()
-    }
-
-    pub fn last_displayed_position(&self) -> u64 {
-        self.progress_bar.position()
-    }
-
-    pub fn finish(&self) {
-        self.update_progress();
-        self.progress_bar.finish();
+        self.status_line.value.fetch_add(1, Ordering::Relaxed);
     }
 
     pub fn finish_and_clear(&self) {
-        self.update_progress();
-        self.progress_bar.finish_and_clear();
-    }
-
-    pub fn abandon(&self) {
-        self.update_progress();
-        self.progress_bar.abandon();
-    }
-
-    pub fn is_finished(&self) -> bool {
-        self.progress_bar.is_finished()
+        self.status_line.set_visible(false);
     }
 }
 
-impl ProgressTracker for FastProgressBar {
+impl ProgressTracker for ProgressBar {
     fn inc(&self, delta: u64) {
-        self.counter.add(delta as usize);
-    }
-}
-
-impl Drop for FastProgressBar {
-    fn drop(&mut self) {
-        if !self.is_finished() {
-            self.finish_and_clear();
-        }
+        self.status_line.value.fetch_add(delta, Ordering::Relaxed);
     }
 }
 
 #[cfg(test)]
 mod test {
-
-    use super::*;
-    use rayon::prelude::*;
+    use crate::progress::{Progress, ProgressUnit};
+    use crate::regex::Regex;
+    use std::sync::atomic::{AtomicU64, Ordering};
 
     #[test]
-    fn all_ticks_should_be_counted() {
-        let collection = vec![0; 100000];
-        let pb = ProgressBar::new(collection.len() as u64);
-        pb.set_draw_target(ProgressDrawTarget::hidden());
-        let pb = FastProgressBar::wrap(pb);
-        collection
-            .par_iter()
-            .inspect(|_| pb.tick())
-            .for_each(|_| ());
-        pb.abandon();
-        assert_eq!(pb.position(), 100000);
-        assert_eq!(pb.last_displayed_position(), 100000);
+    fn draw_progress_bar() {
+        let p = Progress {
+            msg: "Message".to_string(),
+            max: Some(100),
+            color: false,
+            ..Default::default()
+        };
+
+        assert_eq!(p.to_string(), "Message                         [                                                  ]             0 / 100");
+        p.value.fetch_add(2, Ordering::Relaxed);
+        assert_eq!(p.to_string(), "Message                         [>                                                 ]             2 / 100");
+        p.value.fetch_add(50, Ordering::Relaxed);
+        assert_eq!(p.to_string(), "Message                         [=========================>                        ]            52 / 100");
+        p.value.fetch_add(48, Ordering::Relaxed);
+        assert_eq!(p.to_string(), "Message                         [=================================================>]           100 / 100");
+    }
+
+    #[test]
+    fn draw_progress_bar_bytes() {
+        let p = Progress {
+            msg: "Message".to_string(),
+            max: Some(1000000000),
+            value: AtomicU64::new(12000),
+            unit: ProgressUnit::Bytes,
+            color: false,
+            ..Default::default()
+        };
+
+        assert_eq!(p.to_string(), "Message                         [                                                  ]       12.0 KB / 1000.0 MB");
+    }
+
+    #[test]
+    fn animate_spinner() {
+        let p = Progress {
+            msg: "Message".to_string(),
+            color: false,
+            ..Default::default()
+        };
+
+        let pattern = Regex::new(
+            "^Message                         \\[ *<===> *\\]             0$",
+            false,
+        )
+        .unwrap();
+        let s = p.to_string();
+        assert!(
+            pattern.is_match(s.as_str()),
+            "Spinner doesn't match pattern: {}",
+            s
+        );
+
+        assert_eq!(p.animate_spinner(0), "<===>");
+        assert_eq!(p.animate_spinner(1), " <===>");
+        assert_eq!(p.animate_spinner(2), "  <===>");
+        assert_eq!(p.animate_spinner(3), "   <===>");
+
+        assert_eq!(p.animate_spinner(85), "     <===>");
+        assert_eq!(p.animate_spinner(86), "    <===>");
+        assert_eq!(p.animate_spinner(87), "   <===>");
+        assert_eq!(p.animate_spinner(88), "  <===>");
+        assert_eq!(p.animate_spinner(89), " <===>");
+        assert_eq!(p.animate_spinner(90), "<===>");
+        assert_eq!(p.animate_spinner(91), " <===>");
+        assert_eq!(p.animate_spinner(92), "  <===>");
     }
 }
