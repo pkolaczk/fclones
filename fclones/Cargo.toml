@@ -25,6 +25,7 @@ byte-unit = "4.0"
 chrono = { version = "0.4", default-features = false, features = ["serde", "clock", "std"] }
 clap = { version = "4.4", features = ["derive", "cargo", "wrap_help"] }
 console = "0.15"
+crossbeam-channel = "0.5"
 crossbeam-utils = "0.8"
 csv = "1.1"
 dashmap = "5.2"

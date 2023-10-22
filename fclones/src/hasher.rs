@@ -437,6 +437,16 @@ impl FileHasher<'_> {
     }
 }
 
+impl<'a> Drop for FileHasher<'a> {
+    fn drop(&mut self) {
+        if let Some(cache) = self.cache.take() {
+            if let Err(e) = cache.close() {
+                self.log.warn(e);
+            }
+        }
+    }
+}
+
 fn format_output_stream(output: &str) -> String {
     let output = output.trim().to_string();
     if output.is_empty() {

@@ -1,9 +1,9 @@
 //! Persistent caching of file hashes
 
+use crossbeam_channel::RecvTimeoutError;
 use std::fmt::{Display, Formatter};
 use std::fs::create_dir_all;
-use std::sync::mpsc::{channel, RecvTimeoutError, Sender};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::thread;
 use std::thread::JoinHandle;
 use std::time::{Duration, UNIX_EPOCH};
@@ -47,7 +47,7 @@ const FLUSH_INTERVAL: Duration = Duration::from_millis(1000);
 /// them from file data.
 pub struct HashCache {
     cache: Arc<InnerCache>,
-    _flusher: HashCacheFlusher,
+    flusher: HashCacheFlusher,
 }
 
 impl HashCache {
@@ -76,10 +76,7 @@ impl HashCache {
         let tree_id = format!("hash_db:{:?}:{}", algorithm, transform.unwrap_or("<none>"));
         let cache = Arc::new(typed_sled::Tree::open(&db, tree_id));
         let flusher = HashCacheFlusher::start(&cache);
-        Ok(HashCache {
-            cache,
-            _flusher: flusher,
-        })
+        Ok(HashCache { cache, flusher })
     }
 
     /// Opens the file hash database located in `fclones` subdir of user cache directory.
@@ -115,7 +112,11 @@ impl HashCache {
             .insert(key, &value)
             .map_err(|e| format!("Failed to write entry to cache: {e}"))?;
 
-        Ok(())
+        // Check for cache flush errors. If there were errors, report them to the caller.
+        match self.flusher.err_channel.try_recv() {
+            Ok(err) => Err(err),
+            Err(_) => Ok(()),
+        }
     }
 
     /// Retrieves the cached hash of a file.
@@ -163,24 +164,36 @@ impl HashCache {
         };
         Ok(key)
     }
+
+    /// Flushes all unwritten data and closes the cache.
+    pub fn close(self) -> Result<(), Error> {
+        self.cache
+            .flush()
+            .map_err(|e| format!("Failed to flush cache: {e}"))?;
+        Ok(())
+    }
 }
 
 /// Periodically flushes the cache in a background thread
 struct HashCacheFlusher {
     thread_handle: Option<JoinHandle<()>>,
-    control_channel: Option<Mutex<Sender<()>>>, // wrapped in Mutex because Sender is not Send in older versions of Rust
+    control_channel: Option<crossbeam_channel::Sender<()>>,
+    err_channel: crossbeam_channel::Receiver<Error>,
 }
 
 impl HashCacheFlusher {
     fn start(cache: &Arc<InnerCache>) -> HashCacheFlusher {
         let cache = Arc::downgrade(cache);
-        let (tx, rx) = channel::<()>();
+        let (ctrl_tx, ctrl_rx) = crossbeam_channel::bounded::<()>(1);
+        let (err_tx, err_rx) = crossbeam_channel::bounded(1);
 
         let thread_handle = thread::spawn(move || {
-            while let Err(RecvTimeoutError::Timeout) = rx.recv_timeout(FLUSH_INTERVAL) {
+            while let Err(RecvTimeoutError::Timeout) = ctrl_rx.recv_timeout(FLUSH_INTERVAL) {
                 if let Some(cache) = cache.upgrade() {
                     if let Err(e) = cache.flush() {
-                        eprintln!("Failed to flush hash cache: {e}");
+                        err_tx
+                            .send(format!("Failed to flush the hash cache: {e}").into())
+                            .unwrap_or_default();
                         return;
                     }
                 }
@@ -189,7 +202,8 @@ impl HashCacheFlusher {
 
         HashCacheFlusher {
             thread_handle: Some(thread_handle),
-            control_channel: Some(Mutex::new(tx)),
+            control_channel: Some(ctrl_tx),
+            err_channel: err_rx,
         }
     }
 }
