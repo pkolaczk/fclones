@@ -707,6 +707,7 @@ fn scan_files(ctx: &GroupCtx<'_>) -> Vec<Vec<FileInfo>> {
     walk.follow_links = config.follow_links;
     walk.report_links = config.symbolic_links;
     walk.no_ignore = config.no_ignore;
+    walk.same_fs = config.one_fs;
     walk.path_selector = ctx.path_selector.clone();
     walk.log = Some(ctx.log);
     walk.on_visit = spinner_tick;
