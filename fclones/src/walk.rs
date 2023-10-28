@@ -4,6 +4,7 @@ use std::fs::{read_link, symlink_metadata, DirEntry, FileType, ReadDir};
 use std::sync::Arc;
 use std::{fs, io};
 
+use crate::FileId;
 use dashmap::DashSet;
 use ignore::gitignore::{Gitignore, GitignoreBuilder};
 use rayon::Scope;
@@ -120,6 +121,12 @@ impl IgnoreStack {
     }
 }
 
+#[cfg(unix)]
+type DeviceId = u64;
+
+#[cfg(windows)]
+type DeviceId = u128;
+
 /// Describes walk configuration.
 /// Many walks can be initiated from the same instance.
 pub struct Walk<'a> {
@@ -136,6 +143,8 @@ pub struct Walk<'a> {
     pub report_links: bool,
     /// Don't honor .gitignore and .fdignore.
     pub no_ignore: bool,
+    /// Don't leave the fs of the root paths.
+    pub same_fs: bool,
     /// Controls selecting or ignoring files by matching file and path names with regexes / globs.
     pub path_selector: PathSelector,
     /// The function to call for each visited file. The directories are not reported.
@@ -161,6 +170,7 @@ impl<'a> Walk<'a> {
             follow_links: false,
             report_links: false,
             no_ignore: false,
+            same_fs: false,
             path_selector: PathSelector::new(base_dir),
             on_visit: &|_| {},
             log: None,
@@ -197,7 +207,14 @@ impl<'a> Walk<'a> {
                         "Skipping directory {} because recursive scan is disabled.",
                         p.display()
                     )),
-                    _ => scope.spawn(|scope| self.visit_path(p, scope, 0, ignore, &state)),
+                    Ok(metadata) => {
+                        let dev = FileId::from_metadata(&metadata).device;
+                        let state = &state;
+                        scope.spawn(move |scope| self.visit_path(p, dev, scope, 0, ignore, state))
+                    }
+                    Err(err) => {
+                        self.log_warn(format!("Cannot stat {}: {}", p.display(), err));
+                    }
                 }
             }
         });
@@ -207,6 +224,7 @@ impl<'a> Walk<'a> {
     fn visit_path<'s, 'w, F>(
         &'s self,
         path: Path,
+        dev: DeviceId,
         scope: &Scope<'w>,
         level: usize,
         gitignore: IgnoreStack,
@@ -219,7 +237,9 @@ impl<'a> Walk<'a> {
             Entry::from_path(path.clone())
                 .map_err(|e| self.log_warn(format!("Failed to stat {}: {}", path.display(), e)))
                 .into_iter()
-                .for_each(|entry| self.visit_entry(entry, scope, level, gitignore.clone(), state))
+                .for_each(|entry| {
+                    self.visit_entry(entry, dev, scope, level, gitignore.clone(), state)
+                })
         }
     }
 
@@ -228,6 +248,7 @@ impl<'a> Walk<'a> {
     fn visit_entry<'s, 'w, F>(
         &'s self,
         entry: Entry,
+        dev: DeviceId,
         scope: &Scope<'w>,
         level: usize,
         gitignore: IgnoreStack,
@@ -261,8 +282,8 @@ impl<'a> Walk<'a> {
 
         match entry.tpe {
             EntryType::File => self.visit_file(entry.path, state),
-            EntryType::Dir => self.visit_dir(entry.path, scope, level, gitignore, state),
-            EntryType::SymLink => self.visit_link(entry.path, scope, level, gitignore, state),
+            EntryType::Dir => self.visit_dir(entry.path, dev, scope, level, gitignore, state),
+            EntryType::SymLink => self.visit_link(entry.path, dev, scope, level, gitignore, state),
             EntryType::Other => {}
         }
     }
@@ -282,6 +303,7 @@ impl<'a> Walk<'a> {
     fn visit_link<'s, 'w, F>(
         &'s self,
         path: Path,
+        dev: DeviceId,
         scope: &Scope<'w>,
         level: usize,
         gitignore: IgnoreStack,
@@ -294,8 +316,8 @@ impl<'a> Walk<'a> {
             match self.resolve_link(&path) {
                 Ok((_, EntryType::File)) if self.report_links => self.visit_file(path, state),
                 Ok((target, _)) => {
-                    if self.follow_links {
-                        self.visit_path(target, scope, level, gitignore, state)
+                    if self.follow_links && (!self.same_fs || self.same_fs(&target, dev)) {
+                        self.visit_path(target, dev, scope, level, gitignore, state);
                     }
                 }
                 Err(e) => self.log_warn(format!("Failed to read link {}: {}", path.display(), e)),
@@ -308,6 +330,7 @@ impl<'a> Walk<'a> {
     fn visit_dir<'s, 'w, F>(
         &'s self,
         path: Path,
+        dev: DeviceId,
         scope: &Scope<'w>,
         level: usize,
         gitignore: IgnoreStack,
@@ -322,6 +345,9 @@ impl<'a> Walk<'a> {
         if !self.path_selector.matches_dir(&path) {
             return;
         }
+        if self.same_fs && !self.same_fs(&path, dev) {
+            return;
+        }
 
         let gitignore = if self.no_ignore {
             gitignore
@@ -333,7 +359,9 @@ impl<'a> Walk<'a> {
             Ok(rd) => {
                 for entry in Self::sorted_entries(path, rd) {
                     let gitignore = gitignore.clone();
-                    scope.spawn(move |s| self.visit_entry(entry, s, level + 1, gitignore, state))
+                    scope.spawn(move |s| {
+                        self.visit_entry(entry, dev, s, level + 1, gitignore, state)
+                    })
                 }
             }
             Err(e) => self.log_warn(format!("Failed to read dir {}: {}", path.display(), e)),
@@ -387,6 +415,21 @@ impl<'a> Walk<'a> {
             target
         };
         Ok((self.absolute(resolved), entry_type))
+    }
+
+    /// Returns true if the file belongs to the given filesystem
+    fn same_fs(&self, path: &Path, device: DeviceId) -> bool {
+        match FileId::new(path) {
+            Ok(file_id) => file_id.device == device,
+            Err(err) => {
+                self.log_warn(format!(
+                    "Cannot read device id of {}: {}",
+                    path.display(),
+                    err
+                ));
+                false
+            }
+        }
     }
 
     /// Returns absolute path with removed `.` and `..` components.

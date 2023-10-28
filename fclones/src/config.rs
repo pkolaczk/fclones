@@ -197,6 +197,13 @@ pub struct GroupConfig {
     #[arg(short('I'), long, conflicts_with("follow_links"))]
     pub isolate: bool,
 
+    /// Don't match files on different filesystems or devices
+    ///
+    /// Does not follow symbolic links crossing filesystems or devices.
+    /// Skips nested mount-points.
+    #[arg(short('1'), long)]
+    pub one_fs: bool,
+
     /// Transform each file by the specified program before matching.
     ///
     /// The value of this parameter should contain a command: the path to the program
