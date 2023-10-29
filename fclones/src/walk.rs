@@ -121,11 +121,7 @@ impl IgnoreStack {
     }
 }
 
-#[cfg(unix)]
 type DeviceId = u64;
-
-#[cfg(windows)]
-type DeviceId = u128;
 
 /// Describes walk configuration.
 /// Many walks can be initiated from the same instance.
@@ -144,7 +140,7 @@ pub struct Walk<'a> {
     /// Don't honor .gitignore and .fdignore.
     pub no_ignore: bool,
     /// Don't leave the fs of the root paths.
-    pub same_fs: bool,
+    pub one_fs: bool,
     /// Controls selecting or ignoring files by matching file and path names with regexes / globs.
     pub path_selector: PathSelector,
     /// The function to call for each visited file. The directories are not reported.
@@ -170,7 +166,7 @@ impl<'a> Walk<'a> {
             follow_links: false,
             report_links: false,
             no_ignore: false,
-            same_fs: false,
+            one_fs: false,
             path_selector: PathSelector::new(base_dir),
             on_visit: &|_| {},
             log: None,
@@ -207,10 +203,29 @@ impl<'a> Walk<'a> {
                         "Skipping directory {} because recursive scan is disabled.",
                         p.display()
                     )),
+                    #[cfg(unix)]
                     Ok(metadata) => {
                         let dev = FileId::from_metadata(&metadata).device;
                         let state = &state;
                         scope.spawn(move |scope| self.visit_path(p, dev, scope, 0, ignore, state))
+                    }
+                    #[cfg(windows)]
+                    Ok(_) => {
+                        let dev = FileId::new(&p).map(|f| f.device);
+                        match dev {
+                            Err(err) if self.one_fs => self.log_warn(format!(
+                                "Failed to get device information for {}: {}",
+                                p.display(),
+                                err
+                            )),
+                            _ => {
+                                let dev = dev.unwrap_or_default();
+                                let state = &state;
+                                scope.spawn(move |scope| {
+                                    self.visit_path(p, dev, scope, 0, ignore, state)
+                                })
+                            }
+                        }
                     }
                     Err(err) => {
                         self.log_warn(format!("Cannot stat {}: {}", p.display(), err));
@@ -316,7 +331,7 @@ impl<'a> Walk<'a> {
             match self.resolve_link(&path) {
                 Ok((_, EntryType::File)) if self.report_links => self.visit_file(path, state),
                 Ok((target, _)) => {
-                    if self.follow_links && (!self.same_fs || self.same_fs(&target, dev)) {
+                    if self.follow_links && (!self.one_fs || self.same_fs(&target, dev)) {
                         self.visit_path(target, dev, scope, level, gitignore, state);
                     }
                 }
@@ -345,7 +360,7 @@ impl<'a> Walk<'a> {
         if !self.path_selector.matches_dir(&path) {
             return;
         }
-        if self.same_fs && !self.same_fs(&path, dev) {
+        if self.one_fs && !self.same_fs(&path, dev) {
             return;
         }
 
