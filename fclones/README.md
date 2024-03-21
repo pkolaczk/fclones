@@ -341,10 +341,10 @@ List more options:
     fclones [command] -h      # short help
     fclones [command] --help  # detailed help
 
-Useful aliases:
+Useful aliases to add to your shell config:
 
-     alias dups='fclones group --cache . | fclones remove --priority oldest --dry-run 2>/dev/null' # check for duplicates
-     alias dedupe='fclones group --cache . | fclones remove --priority oldest' # removes the duplicates found
+     alias dups='fclones group --cache . | fclones remove --priority oldest --dry-run 2>/dev/null' # show duplicates
+     alias dedupe='fclones group --cache . | fclones remove --priority oldest' # remove duplicates
 
 ### Path Globbing
 `fclones` understands a subset of Bash Extended Globbing.
