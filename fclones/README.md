@@ -469,7 +469,7 @@ from multiple threads on HDD can be much slower than single-threaded access
  
 Since version 0.7.0, fclones uses separate per-device thread-pools for final hashing 
 and it will automatically tune the level of parallelism, memory buffer sizes and partial hashing sizes 
-based on the device type. These automatic settings can be overridden with `-threads` as well.
+based on the device type. These automatic settings can be overridden with `--threads` as well.
 
 The following options can be passed to `--threads`. The more specific options override the less specific ones.
 - `main:<n>` – sets the size of the main thread-pool used for random I/O: directory tree scanning, 
