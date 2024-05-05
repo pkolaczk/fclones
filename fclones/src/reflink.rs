@@ -354,7 +354,7 @@ pub mod test {
             pub static ref SEQUENTIAL_REFLINK_TESTS: Mutex<()> = Mutex::default();
         }
 
-        pub struct CrossTest<'a>(MutexGuard<'a, ()>);
+        pub struct CrossTest<'a>(#[allow(dead_code)] MutexGuard<'a, ()>);
         impl<'a> CrossTest<'a> {
             pub fn new(crosstest: bool) -> CrossTest<'a> {
                 let x = CrossTest(SEQUENTIAL_REFLINK_TESTS.lock().unwrap());

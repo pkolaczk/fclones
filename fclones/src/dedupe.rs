@@ -917,7 +917,7 @@ pub fn dedupe<'a, I, P>(
     op: DedupeOp,
     config: &'a DedupeConfig,
     log: &'a dyn Log,
-) -> impl ParallelIterator<Item = (usize, Vec<FsCommand>)> + Send + 'a
+) -> impl ParallelIterator<Item = (usize, Vec<FsCommand>)> + 'a
 where
     I: IntoIterator<Item = FileGroup<P>> + 'a,
     I::IntoIter: Send,

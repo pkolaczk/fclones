@@ -565,7 +565,7 @@ fn open_noatime(path: &Path) -> io::Result<File> {
 }
 
 thread_local! {
-    static BUF: RefCell<Vec<u8>> = RefCell::new(Vec::new());
+    static BUF: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) }
 }
 
 /// Scans up to `len` bytes in a file and sends data to the given consumer.
