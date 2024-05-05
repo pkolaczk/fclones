@@ -450,22 +450,6 @@ impl FileHash {
     }
 }
 
-pub trait AsFileHash {
-    fn as_file_hash(&self) -> &FileHash;
-}
-
-impl AsFileHash for FileHash {
-    fn as_file_hash(&self) -> &FileHash {
-        self
-    }
-}
-
-impl<T> AsFileHash for (T, FileHash) {
-    fn as_file_hash(&self) -> &FileHash {
-        &self.1
-    }
-}
-
 impl Display for FileHash {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         f.pad(hex::encode(&self.0).as_str())
@@ -535,6 +519,7 @@ impl<'de> Deserialize<'de> for FileHash {
 /// Makes it possible to operate generically on collections of files, regardless
 /// of the way how the collection is implemented. We sometimes need to work on grouped files
 /// but sometimes we just have a flat vector.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 pub(crate) trait FileCollection {
     /// Returns the number of files in the collection
     fn count(&self) -> usize;

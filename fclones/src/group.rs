@@ -760,7 +760,7 @@ where
 }
 
 /// Returns the sum of sizes of files in all groups, including duplicates
-fn unique_file_size<'a, T: 'a>(groups: impl IntoIterator<Item = &'a FileGroup<T>>) -> FileLen
+fn unique_file_size<'a, T>(groups: impl IntoIterator<Item = &'a FileGroup<T>>) -> FileLen
 where
     T: AsRef<FileId> + 'a,
 {
@@ -768,7 +768,7 @@ where
 }
 
 /// Sorts each file group by file identifiers
-fn sort_files_by_id<'a, T: 'a>(groups: impl IntoIterator<Item = &'a mut FileGroup<T>>)
+fn sort_files_by_id<'a, T>(groups: impl IntoIterator<Item = &'a mut FileGroup<T>>)
 where
     T: AsRef<FileId> + 'a,
 {

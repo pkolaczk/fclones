@@ -134,9 +134,7 @@ impl Pattern {
     pub fn glob_with(glob: &str, opts: &PatternOpts) -> Result<Pattern, PatternError> {
         let result: IResult<&str, String> = Self::glob_to_regex(Scope::TopLevel, glob);
         match result {
-            Ok((remaining, regex)) if remaining.is_empty() => {
-                Self::regex_with(regex.as_str(), opts)
-            }
+            Ok(("", regex)) => Self::regex_with(regex.as_str(), opts),
             Ok((remaining, _)) => Err(PatternError {
                 input: glob.to_string(),
                 cause: format!(
@@ -291,9 +289,9 @@ impl Add<Pattern> for Pattern {
     }
 }
 
-impl ToString for Pattern {
-    fn to_string(&self) -> String {
-        self.src.clone()
+impl Display for Pattern {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.src)
     }
 }
 

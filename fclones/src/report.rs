@@ -562,16 +562,16 @@ impl<R: BufRead + Send + 'static> ReportReader for TextReportReader<R> {
         let base_dir = Path::from(base_dir);
 
         let stats = self.read_extract(&TOTAL_RE, "total file statistics")?;
-        let total_file_size = Self::parse_file_len(stats.get(0), "total file size")?;
+        let total_file_size = Self::parse_file_len(stats.first(), "total file size")?;
         let total_file_count = Self::parse_usize(stats.get(1), "total file count")?;
         let group_count = Self::parse_usize(stats.get(2), "group count")?;
 
         let stats = self.read_extract(&REDUNDANT_RE, "redundant file statistics")?;
-        let redundant_file_size = Self::parse_file_len(stats.get(0), "redundant file size")?;
+        let redundant_file_size = Self::parse_file_len(stats.first(), "redundant file size")?;
         let redundant_file_count = Self::parse_usize(stats.get(1), "redundant file count")?;
 
         let stats = self.read_extract(&MISSING_RE, "missing file statistics")?;
-        let missing_file_size = Self::parse_file_len(stats.get(0), "missing file size")?;
+        let missing_file_size = Self::parse_file_len(stats.first(), "missing file size")?;
         let missing_file_count = Self::parse_usize(stats.get(1), "missing file count")?;
 
         Ok(ReportHeader {
