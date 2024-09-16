@@ -133,7 +133,7 @@ pub struct Parallelism {
 }
 
 // Configuration of the `group` subcommand
-#[derive(clap::Args, Debug, Default)]
+#[derive(clap::Args, Clone, Debug, Default)]
 pub struct GroupConfig {
     /// Write the report to a file instead of the standard output
     #[arg(short = 'o', long, value_name = "PATH")]
