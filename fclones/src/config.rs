@@ -729,6 +729,12 @@ pub enum Command {
         #[arg()]
         target: PathBuf,
     },
+
+    /// Print shell completion script to stdout.
+    Complete {
+        /// Shell for which the completion script is generated.
+        shell: clap_complete::Shell,
+    },
 }
 
 impl Command {
@@ -808,5 +814,11 @@ mod test {
         assert_matches!(
             config.command,
             Command::Move { target, .. } if target == PathBuf::from("target"));
+    }
+
+    #[test]
+    fn test_complete_command() {
+        let config: Config = Config::try_parse_from(vec!["fclones", "complete", "zsh"]).unwrap();
+        assert_matches!(config.command, Command::Complete { shell } if shell == clap_complete::Shell::Zsh);
     }
 }

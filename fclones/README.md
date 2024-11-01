@@ -163,6 +163,19 @@ are also attached directly to [Releases](https://github.com/pkolaczk/fclones/rel
 
 The build will write the binary to `.cargo/bin/fclones`. 
 
+### Shell completions
+
+`fclones` supports shell completions but you have to set it up manually at the moment,
+which can be done by adding the script printed by the `fclones complete` subcommand to your shell configuration.
+All shells supported by [clap_complete](https://docs.rs/clap_complete/latest/clap_complete/aot/enum.Shell.html) are supported.
+At the time of writing this includes:
+
+- Bash: Add `eval "$(fclones complete bash)"` to your `~/.bashrc`
+- Zsh: Add `source <(fclones complete zsh)` to your `~/.zshrc`
+- Fish: Add `fclones complete fish | source` to your `~/.config/fish/config.fish`
+- Elvish
+- Powershell
+
 ## Usage
 
 `fclones` offers separate commands for finding and removing files. This way, you can inspect
