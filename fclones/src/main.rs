@@ -6,7 +6,7 @@ use std::process::exit;
 use std::sync::Arc;
 use std::{fs, io};
 
-use clap::Parser;
+use clap::{CommandFactory, Parser};
 use console::style;
 use fallible_iterator::FallibleIterator;
 use itertools::Itertools;
@@ -243,6 +243,17 @@ pub fn run_dedupe(op: DedupeOp, config: DedupeConfig, log: &dyn Log) -> Result<(
     result.map_err(|e| Error::new(format!("Failed to read file list: {e}")))
 }
 
+fn generate_completions(shell: clap_complete::Shell, output: &mut dyn std::io::Write) {
+    clap_complete::generate(
+        shell,
+        &mut Config::command(),
+        std::env::args()
+            .next()
+            .unwrap_or_else(|| "fclones".to_owned()),
+        output,
+    );
+}
+
 fn main() {
     let config: Config = Config::parse();
     if let Err(e) = config.command.validate() {
@@ -286,6 +297,10 @@ fn main() {
             let target = Arc::new(fclones::Path::from(cwd)).resolve(target);
             run_dedupe(DedupeOp::Move(Arc::new(target)), config, &log)
         }
+        Command::Complete { shell } => {
+            generate_completions(shell, &mut std::io::stdout());
+            Ok(())
+        }
     };
 
     if let Err(e) = result {
@@ -318,5 +333,18 @@ mod test {
             super::extract_error_cause("error message\n\nUSAGE:\n blah blah blah"),
             "error message"
         );
+    }
+
+    #[test]
+    fn test_no_panic_in_completion_script_generation() {
+        use clap::ValueEnum;
+        for shell in clap_complete::Shell::value_variants() {
+            let mut script = Vec::new();
+
+            super::generate_completions(*shell, &mut script);
+
+            let script = String::from_utf8(script).unwrap();
+            assert!(!script.is_empty());
+        }
     }
 }
