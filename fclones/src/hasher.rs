@@ -437,7 +437,7 @@ impl FileHasher<'_> {
     }
 }
 
-impl<'a> Drop for FileHasher<'a> {
+impl Drop for FileHasher<'_> {
     fn drop(&mut self) {
         if let Some(cache) = self.cache.take() {
             if let Err(e) = cache.close() {
