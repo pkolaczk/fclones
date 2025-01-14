@@ -749,8 +749,16 @@ const fn after_help() -> &'static str {
 #[derive(clap::Parser, Debug)]
 #[command(about, author, version, after_help = after_help(), max_term_width = 100)]
 pub struct Config {
-    /// Suppress progress reporting
-    #[arg(short('q'), long)]
+    /// Override progress reporting, by default (=auto) only report when stderr is a terminal.
+    /// Possible values: true, false, auto.
+    #[arg(long, value_name = "VAL", require_equals = true,
+          value_parser(["auto", "true", "false"]), default_value = "auto",
+
+          hide_possible_values = true, hide_default_value = true)]
+    pub progress: String,
+
+    // compatibility with fclones <= 0.34, overrides --progress
+    #[arg(short('q'), long, hide = true)]
     pub quiet: bool,
 
     /// Find files

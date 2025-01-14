@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::ffi::{OsStr, OsString};
 use std::fs::File;
-use std::io::{stdin, Write};
+use std::io::{stderr, stdin, IsTerminal, Write};
 use std::process::exit;
 use std::sync::Arc;
 use std::{fs, io};
@@ -251,9 +251,12 @@ fn main() {
     }
 
     let mut log = StdLog::new();
-    if config.quiet {
-        log.no_progress = true;
-    }
+    log.no_progress = match (config.quiet, config.progress.as_str()) {
+        (true, _) => true,
+        (_, "false") => true,
+        (_, "true") => false,
+        (_, _auto) => !stderr().is_terminal(),
+    };
 
     let cwd = match std::env::current_dir() {
         Ok(cwd) => cwd,
