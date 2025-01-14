@@ -363,7 +363,7 @@ pub mod test {
             }
         }
 
-        impl<'a> Drop for CrossTest<'a> {
+        impl Drop for CrossTest<'_> {
             fn drop(&mut self) {
                 *CROSSTEST.lock().unwrap() = false;
             }
@@ -398,7 +398,7 @@ pub mod test {
         with_dir(test_root, |root| {
             // Always clean up files in /dev/shm, even after failure
             struct CleanupGuard<'a>(&'a str);
-            impl<'a> Drop for CleanupGuard<'a> {
+            impl Drop for CleanupGuard<'_> {
                 fn drop(&mut self) {
                     fs::remove_dir_all(self.0).unwrap();
                 }

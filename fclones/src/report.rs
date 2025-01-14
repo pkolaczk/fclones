@@ -708,7 +708,7 @@ mod test {
         let input = output.reopen().unwrap();
 
         let mut writer = ReportWriter::new(output, false);
-        writer.write_as_text(&header1, groups.into_iter()).unwrap();
+        writer.write_as_text(&header1, groups).unwrap();
 
         let mut reader = TextReportReader::new(BufReader::new(input));
         let header2 = reader.read_header().unwrap();
@@ -841,7 +841,7 @@ mod test {
         let input = output.reopen().unwrap();
 
         let mut writer = ReportWriter::new(output, false);
-        writer.write_as_json(&header1, groups.into_iter()).unwrap();
+        writer.write_as_json(&header1, groups).unwrap();
 
         let mut reader = JsonReportReader::new(input).unwrap();
         let header2 = reader.read_header().unwrap();
