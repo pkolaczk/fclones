@@ -134,7 +134,11 @@ fn reflink_overwrite(target: &std::path::Path, link: &std::path::Path) -> io::Re
     let src = fs::File::open(target)?;
 
     // This operation does not require `.truncate(true)` because the files are already of the same size.
-    let dest = fs::OpenOptions::new().create(true).write(true).open(link)?;
+    let dest = fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(link)?;
 
     // From /usr/include/linux/fs.h:
     // #define FICLONE		_IOW(0x94, 9, int)

@@ -384,7 +384,7 @@ impl<'a> Walk<'a> {
     }
 
     #[cfg(unix)]
-    fn sort_dir_entries_by_inode(entries: &mut Vec<DirEntry>) {
+    fn sort_dir_entries_by_inode(entries: &mut [DirEntry]) {
         use rayon::prelude::ParallelSliceMut;
         use std::os::unix::fs::DirEntryExt;
         entries.par_sort_unstable_by_key(|entry| entry.ino())
