@@ -1,9 +1,13 @@
-version: 2
+version: 2.1
+
+executors:
+  default:
+    docker:
+      - image: cimg/rust:1.74.0
 
 jobs:
   format:
-    docker:
-      - image: cimg/rust:1.74.0
+    executor: default
     steps:
       - checkout
       - run:
@@ -20,8 +24,7 @@ jobs:
             cargo fmt --all -- --check
 
   build:
-    docker:
-      - image: cimg/rust:1.74.0
+    executor: default
     environment:
       RUSTFLAGS: '-D warnings'
     steps:
@@ -47,8 +50,7 @@ jobs:
             - target/debug/deps
 
   clippy:
-    docker:
-      - image: cimg/rust:1.74.0
+    executor: default
     steps:
       - checkout
       - run:
@@ -65,8 +67,7 @@ jobs:
             cargo clippy --all -- -D warnings -D rust-2018-idioms
 
   test:
-    docker:
-      - image: cimg/rust:1.74.0
+    executor: default
     environment:
       RUSTFLAGS: '-D warnings'
     steps:
