@@ -232,7 +232,7 @@ impl Path {
         let mut hasher = MetroHash128::new();
         self.hash(&mut hasher);
         let (a, b) = hasher.finish128();
-        (a as u128) << 64 | (b as u128)
+        ((a as u128) << 64) | (b as u128)
     }
 
     fn new(component: CString) -> Path {
