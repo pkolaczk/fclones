@@ -14,7 +14,7 @@ exclude = [
     ".circleci",
     "release.sh"
 ]
-rust-version = "1.70"
+rust-version = "1.74"
 
 [dependencies]
 bincode = "1.3"
