@@ -153,7 +153,7 @@ are also attached directly to [Releases](https://github.com/pkolaczk/fclones/rel
 
 ### Third-party Packages
 * [Arch Linux](https://aur.archlinux.org/packages/fclones/) 
-* [Alpine Linux](https://pkgs.alpinelinux.org/package/edge/testing/x86_64/fclones)
+* [Alpine Linux](https://pkgs.alpinelinux.org/package/edge/community/x86_64/fclones)
 * [NixOS](https://search.nixos.org/packages?channel=unstable&show=fclones&from=0&size=50&sort=relevance&type=packages&query=fclones)
 
 ### Building from Source 
