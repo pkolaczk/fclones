@@ -539,7 +539,7 @@ Program                                                |  Version  | Language  |
 -------------------------------------------------------|-----------|-----------|------------------:|--------------
 fclones                                                |  0.12.1   | Rust      |  0:34.59          | 266 MB
 [yadf](https://github.com/jRimbault/yadf)              |  0.15.2   | Rust      |  0:59.32          | 329 MB
-[czkawka](https://qarmin.github.io/czkawka/)           |  3.1.0    | Rust      |  2:09.00          | 1.4 GB
+[czkawka](https://github.com/qarmin/czkawka/)          |  3.1.0    | Rust      |  2:09.00          | 1.4 GB
 [rmlint](https://github.com/sahib/rmlint)              |  2.9.0    | C, Python |  2:28.43          | 942 MB
 [jdupes](https://github.com/jbruchon/jdupes)           |  1.18.2   | C         |  5:01.91          | 332 MB
 [dupe-krill](https://github.com/kornelski/dupe-krill)  |  1.4.5    | Rust      |  5:09.52          | 706 MB
