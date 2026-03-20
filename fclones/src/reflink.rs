@@ -16,7 +16,12 @@ struct XAttr {
 /// Calls OS-specific reflink implementations with an option to call the more generic
 /// one during testing one on Linux ("crosstesting").
 /// The destination file is allowed to exist.
-pub fn reflink(src: &PathAndMetadata, dest: &PathAndMetadata, log: &dyn Log) -> io::Result<()> {
+pub fn reflink(
+    src: &PathAndMetadata,
+    dest: &PathAndMetadata,
+    ignore_xattr_errors: bool,
+    log: &dyn Log,
+) -> io::Result<()> {
     // Remember original metadata of the parent directory:
     let dest_parent = dest.path.parent();
     let dest_parent_metadata = dest_parent.map(|p| p.to_path_buf().metadata());
@@ -30,12 +35,12 @@ pub fn reflink(src: &PathAndMetadata, dest: &PathAndMetadata, log: &dyn Log) -> 
             restore_metadata(&dest_path_buf, &dest.metadata, Restore::TimestampOnly)
         } else {
             #[cfg(unix)]
-            let dest_xattrs = get_xattrs(&dest_path_buf)?;
+            let dest_xattrs = get_xattrs(&dest_path_buf, ignore_xattr_errors)?;
 
             safe_reflink(src, dest, log)?;
 
             #[cfg(unix)]
-            restore_xattrs(&dest_path_buf, dest_xattrs)?;
+            restore_xattrs(&dest_path_buf, dest_xattrs, ignore_xattr_errors)?;
 
             restore_metadata(
                 &dest_path_buf,
@@ -234,71 +239,89 @@ fn restore_metadata(
 }
 
 #[cfg(unix)]
-fn get_xattrs(path: &std::path::Path) -> io::Result<Vec<XAttr>> {
-    use itertools::Itertools;
+fn get_xattrs(path: &std::path::Path, ignore_xattr_errors: bool) -> io::Result<Vec<XAttr>> {
     use xattr::FileExt;
 
     let file = fs::File::open(path)?;
-    file.list_xattr()
-        .map_err(|e| {
-            io::Error::new(
-                e.kind(),
-                format!(
-                    "Failed to list extended attributes of {}: {}",
-                    path.display(),
-                    e
-                ),
-            )
-        })?
-        .map(|name| {
-            Ok(XAttr {
-                value: file.get_xattr(name.as_os_str()).map_err(|e| {
-                    io::Error::new(
-                        e.kind(),
-                        format!(
-                            "Failed to read extended attribute {} of {}: {}",
-                            name.to_string_lossy(),
-                            path.display(),
-                            e
-                        ),
-                    )
-                })?,
-                name,
-            })
-        })
-        .try_collect()
-}
-
-#[cfg(unix)]
-fn restore_xattrs(path: &std::path::Path, xattrs: Vec<XAttr>) -> io::Result<()> {
-    use xattr::FileExt;
-    let file = fs::File::open(path)?;
-    for name in file.list_xattr()? {
-        file.remove_xattr(&name).map_err(|e| {
-            io::Error::new(
-                e.kind(),
-                format!(
-                    "Failed to clear extended attribute {} of {}: {}",
-                    name.to_string_lossy(),
-                    path.display(),
-                    e
-                ),
-            )
-        })?;
-    }
-    for attr in xattrs {
-        if let Some(value) = attr.value {
-            file.set_xattr(&attr.name, &value).map_err(|e| {
-                io::Error::new(
+    let names = file.list_xattr().map_err(|e| {
+        io::Error::new(
+            e.kind(),
+            format!(
+                "Failed to list extended attributes of {}: {}",
+                path.display(),
+                e
+            ),
+        )
+    })?;
+    let mut result = Vec::new();
+    for name in names {
+        match file.get_xattr(name.as_os_str()) {
+            Ok(value) => result.push(XAttr { name, value }),
+            Err(e) if e.kind() == io::ErrorKind::PermissionDenied && ignore_xattr_errors => {
+                continue;
+            }
+            Err(e) => {
+                return Err(io::Error::new(
                     e.kind(),
                     format!(
-                        "Failed to set extended attribute {} of {}: {}",
-                        attr.name.to_string_lossy(),
+                        "Failed to read extended attribute {} of {}: {}",
+                        name.to_string_lossy(),
                         path.display(),
                         e
                     ),
-                )
-            })?;
+                ))
+            }
+        }
+    }
+    Ok(result)
+}
+
+#[cfg(unix)]
+fn restore_xattrs(
+    path: &std::path::Path,
+    xattrs: Vec<XAttr>,
+    ignore_xattr_errors: bool,
+) -> io::Result<()> {
+    use xattr::FileExt;
+    let file = fs::File::open(path)?;
+    for name in file.list_xattr()? {
+        match file.remove_xattr(&name) {
+            Ok(()) => {}
+            Err(e) if e.kind() == io::ErrorKind::PermissionDenied && ignore_xattr_errors => {
+                continue;
+            }
+            Err(e) => {
+                return Err(io::Error::new(
+                    e.kind(),
+                    format!(
+                        "Failed to clear extended attribute {} of {}: {}",
+                        name.to_string_lossy(),
+                        path.display(),
+                        e
+                    ),
+                ))
+            }
+        }
+    }
+    for attr in xattrs {
+        if let Some(value) = attr.value {
+            match file.set_xattr(&attr.name, &value) {
+                Ok(()) => {}
+                Err(e) if e.kind() == io::ErrorKind::PermissionDenied && ignore_xattr_errors => {
+                    continue;
+                }
+                Err(e) => {
+                    return Err(io::Error::new(
+                        e.kind(),
+                        format!(
+                            "Failed to set extended attribute {} of {}: {}",
+                            attr.name.to_string_lossy(),
+                            path.display(),
+                            e
+                        ),
+                    ))
+                }
+            }
         }
     }
     Ok(())
@@ -424,7 +447,7 @@ pub mod test {
             };
 
             assert!(
-                cmd.execute(true, &log)
+                cmd.execute(true, false, &log)
                     .unwrap_err()
                     .to_string()
                     .starts_with("Failed to deduplicate"),
@@ -471,7 +494,7 @@ pub mod test {
 
             if via_ioctl {
                 assert!(cmd
-                    .execute(true, &log)
+                    .execute(true, false, &log)
                     .unwrap_err()
                     .to_string()
                     .starts_with("Failed to deduplicate"));
@@ -481,7 +504,7 @@ pub mod test {
                 assert_eq!(read_file(&file_path_1), "foo");
                 assert_eq!(read_file(&file_path_2), "too large");
             } else {
-                cmd.execute(true, &log).unwrap();
+                cmd.execute(true, false, &log).unwrap();
 
                 assert!(file_path_2.exists());
                 assert_eq!(read_file(&file_path_2), "foo");
@@ -521,7 +544,7 @@ pub mod test {
                 target: Arc::new(file_1),
                 link: file_2,
             };
-            cmd.execute(true, &log).unwrap();
+            cmd.execute(true, false, &log).unwrap();
 
             assert!(file_path_1.exists());
             assert!(file_path_2.exists());

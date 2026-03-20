@@ -309,7 +309,12 @@ impl FsCommand {
     }
 
     /// Executes the command and returns the number of bytes reclaimed
-    pub fn execute(&self, should_lock: bool, log: &dyn Log) -> io::Result<FileLen> {
+    pub fn execute(
+        &self,
+        should_lock: bool,
+        ignore_xattr_errors: bool,
+        log: &dyn Log,
+    ) -> io::Result<FileLen> {
         match self {
             FsCommand::Remove { file } => {
                 let _ = Self::maybe_lock(&file.path, should_lock)?;
@@ -328,7 +333,7 @@ impl FsCommand {
             }
             FsCommand::RefLink { target, link } => {
                 let _ = Self::maybe_lock(&link.path, should_lock)?;
-                crate::reflink::reflink(target, link, log)?;
+                crate::reflink::reflink(target, link, ignore_xattr_errors, log)?;
                 Ok(link.metadata.len())
             }
             FsCommand::Move {
@@ -956,14 +961,19 @@ where
 /// On command execution failure, a warning is logged and the execution of remaining commands
 /// continues.
 /// Returns the number of files processed and the amount of disk space reclaimed.
-pub fn run_script<I>(script: I, should_lock: bool, log: &dyn Log) -> DedupeResult
+pub fn run_script<I>(
+    script: I,
+    should_lock: bool,
+    ignore_xattr_errors: bool,
+    log: &dyn Log,
+) -> DedupeResult
 where
     I: IntoParallelIterator<Item = (usize, Vec<FsCommand>)>,
 {
     script
         .into_par_iter()
         .flat_map(|(_, cmd_vec)| cmd_vec)
-        .map(|cmd| cmd.execute(should_lock, log))
+        .map(|cmd| cmd.execute(should_lock, ignore_xattr_errors, log))
         .inspect(|res| {
             if let Err(e) = res {
                 log.warn(e);
@@ -1117,7 +1127,7 @@ mod test {
             create_file(&file_path);
             let file = PathAndMetadata::new(Path::from(&file_path)).unwrap();
             let cmd = FsCommand::Remove { file };
-            cmd.execute(true, &log).unwrap();
+            cmd.execute(true, false, &log).unwrap();
             assert!(!file_path.exists())
         })
     }
@@ -1135,7 +1145,7 @@ mod test {
                 target: target.clone(),
                 use_rename: true,
             };
-            cmd.execute(true, &log).unwrap();
+            cmd.execute(true, false, &log).unwrap();
             assert!(!file_path.exists());
             assert!(target.to_path_buf().exists());
         })
@@ -1154,7 +1164,7 @@ mod test {
                 target: target.clone(),
                 use_rename: false,
             };
-            cmd.execute(true, &log).unwrap();
+            cmd.execute(true, false, &log).unwrap();
             assert!(!file_path.exists());
             assert!(target.to_path_buf().exists());
         })
@@ -1174,7 +1184,7 @@ mod test {
                 target: Path::from(&target),
                 use_rename: false,
             };
-            assert!(cmd.execute(true, &log).is_err());
+            assert!(cmd.execute(true, false, &log).is_err());
         })
     }
 
@@ -1193,7 +1203,7 @@ mod test {
                 target: Arc::new(file_1),
                 link: file_2,
             };
-            cmd.execute(true, &log).unwrap();
+            cmd.execute(true, false, &log).unwrap();
 
             assert!(file_path_1.exists());
             assert!(file_path_2.exists());
@@ -1221,7 +1231,7 @@ mod test {
                 target: Arc::new(file_1),
                 link: file_2,
             };
-            cmd.execute(true, &log).unwrap();
+            cmd.execute(true, false, &log).unwrap();
 
             assert!(file_path_1.exists());
             assert!(file_path_2.exists());
@@ -1502,7 +1512,7 @@ mod test {
                 ..DedupeConfig::default()
             };
             let script = dedupe(vec![group], DedupeOp::Remove, &config, &log);
-            let dedupe_result = run_script(script, !config.no_lock, &log);
+            let dedupe_result = run_script(script, !config.no_lock, false, &log);
             assert_eq!(dedupe_result.processed_count, 2);
             assert!(!root.join("file_1").exists());
             assert!(!root.join("file_2").exists());
@@ -1573,7 +1583,7 @@ mod test {
             let groups = group_files(&group_config, &log).unwrap();
             let dedupe_config = DedupeConfig::default();
             let script = dedupe(groups, DedupeOp::HardLink, &dedupe_config, &log);
-            let dedupe_result = run_script(script, false, &log);
+            let dedupe_result = run_script(script, false, false, &log);
             assert_eq!(dedupe_result.processed_count, 2);
             assert!(file_a1.exists());
             assert!(file_a2.exists());
@@ -1618,7 +1628,7 @@ mod test {
             let groups = group_files(&group_config, &log).unwrap();
             let dedupe_config = DedupeConfig::default();
             let script = dedupe(groups, DedupeOp::Remove, &dedupe_config, &log);
-            let dedupe_result = run_script(script, false, &log);
+            let dedupe_result = run_script(script, false, false, &log);
             assert_eq!(dedupe_result.processed_count, 2);
 
             assert!(file_a1.exists());

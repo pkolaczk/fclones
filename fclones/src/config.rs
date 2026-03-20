@@ -653,6 +653,15 @@ pub struct DedupeConfig {
     #[arg(long)]
     pub no_lock: bool,
 
+    /// Ignore errors when getting, setting, or removing extended attributes.
+    ///
+    /// On some systems, certain extended attributes (e.g. com.apple.provenance on macOS)
+    /// cannot be read or set by non-root processes. By default, fclones treats xattr
+    /// failures as hard errors and rolls back the operation. With this flag, permission
+    /// errors on individual xattrs are silently skipped.
+    #[arg(long)]
+    pub ignore_xattr_errors: bool,
+
     /// Allow the size of a file to be different than the size recorded during grouping.
     ///
     /// By default, files are checked for size to prevent accidentally removing a file
