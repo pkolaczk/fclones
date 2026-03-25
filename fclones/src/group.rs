@@ -120,14 +120,17 @@ impl<'a> GroupCtx<'a> {
                 Phase::TransformAndGroup,
             ])
         } else {
-            Phases::new(vec![
-                Phase::Walk,
-                Phase::GroupBySize,
+            let mut p = vec![Phase::Walk, Phase::GroupBySize];
+            if cfg!(any(target_os = "linux", target_os = "macos")) {
+                p.push(Phase::CollapseReflinks);
+            }
+            p.extend_from_slice(&[
                 Phase::FetchExtents,
                 Phase::GroupByPrefix,
                 Phase::GroupBySuffix,
                 Phase::GroupByContents,
-            ])
+            ]);
+            Phases::new(p)
         };
 
         let thread_pool_sizes = config.thread_pool_sizes();
@@ -865,6 +868,115 @@ fn remove_same_files(
     groups
 }
 
+/// Removes files from a group that share the same physical extents as another file
+/// already in the group (i.e. reflinked files). Returns the number of files removed.
+///
+/// Hardlinked/symlinked files (same FileId) are always preserved — they are already
+/// handled by the existing FileId-based dedup logic. Their extents are still registered
+/// so that reflinks sharing the same physical blocks are properly collapsed.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn deduplicate_by_extents(files: &mut Vec<FileInfo>, progress: &dyn Fn(u64)) -> usize {
+    use std::collections::HashSet;
+
+    // Count how many times each FileId appears; >1 means hardlinks/symlinks
+    let mut id_counts: HashMap<FileId, usize> = HashMap::new();
+    for f in files.iter() {
+        *id_counts.entry(f.id).or_default() += 1;
+    }
+
+    let mut seen_extents: HashSet<Vec<(u64, u64)>> = HashSet::new();
+    let mut seen_ids: HashSet<FileId> = HashSet::new();
+    let original_len = files.len();
+    files.retain(|f| {
+        progress(1);
+        let is_hardlink = id_counts.get(&f.id).copied().unwrap_or(0) > 1;
+
+        if is_hardlink {
+            // Register extents for the first occurrence of this inode so that
+            // reflinks sharing the same blocks are caught, but always keep the file.
+            if seen_ids.insert(f.id) {
+                if let Ok(extents) = get_file_extents(&f.path) {
+                    if !extents.is_empty() {
+                        seen_extents.insert(extents);
+                    }
+                }
+            }
+            true
+        } else {
+            match get_file_extents(&f.path) {
+                Ok(extents) if !extents.is_empty() => {
+                    if seen_extents.contains(&extents) {
+                        false // reflink duplicate, drop
+                    } else {
+                        seen_extents.insert(extents);
+                        true
+                    }
+                }
+                _ => true, // on error or empty extents, keep for content hashing
+            }
+        }
+    });
+    original_len - files.len()
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+fn deduplicate_by_extents(_files: &mut Vec<FileInfo>, progress: &dyn Fn(u64)) -> usize {
+    let _ = progress;
+    0
+}
+
+/// Collapses reflinked files within each group by comparing their physical extent maps.
+/// Files sharing the same extents are treated as a single replica.
+/// Returns the groups and the total count/size of collapsed files.
+/// On platforms without extent support, returns groups unchanged.
+fn collapse_reflinks(
+    ctx: &GroupCtx<'_>,
+    groups: Vec<FileGroup<FileInfo>>,
+) -> Vec<FileGroup<FileInfo>> {
+    if !cfg!(any(target_os = "linux", target_os = "macos")) {
+        return groups;
+    }
+
+    let file_count = unique_file_count(groups.iter());
+    let progress = ctx.log.progress_bar(
+        &ctx.phases.format(Phase::CollapseReflinks),
+        ProgressBarLength::Items(file_count as u64),
+    );
+
+    let shared_count = std::sync::atomic::AtomicUsize::new(0);
+    let shared_size = std::sync::atomic::AtomicU64::new(0);
+
+    let groups: Vec<_> = groups
+        .into_par_iter()
+        .update(|g| {
+            let file_len = g.file_len;
+            let dropped = deduplicate_by_extents(&mut g.files, &|n| progress.inc(n));
+            if dropped > 0 {
+                shared_count.fetch_add(dropped, Ordering::Relaxed);
+                shared_size.fetch_add(file_len.0.saturating_mul(dropped as u64), Ordering::Relaxed);
+            }
+        })
+        .filter(|g| g.matches(&ctx.group_filter))
+        .collect();
+
+    let sc = shared_count.load(Ordering::Relaxed);
+    let ss = FileLen(shared_size.load(Ordering::Relaxed));
+
+    if sc > 0 {
+        ctx.log.info(format!(
+            "Collapsed {} ({}) already shared (reflinked) files",
+            sc, ss
+        ));
+    }
+
+    let stats = stage_stats(&groups, &ctx.group_filter);
+    ctx.log.info(format!(
+        "Found {} ({}) candidates after collapsing reflinks",
+        stats.0, stats.1
+    ));
+    groups
+}
+
 #[cfg(target_os = "linux")]
 fn atomic_counter_vec(len: usize) -> Vec<std::sync::atomic::AtomicU32> {
     let mut v = Vec::with_capacity(len);
@@ -1197,9 +1309,10 @@ fn group_by_contents(
 /// 2. Get length and identifier of each file.
 /// 3. Group files by length.
 /// 4. In each group, remove duplicate files with the same identifier.
-/// 5. Group files by hash of the prefix.
-/// 6. Group files by hash of the suffix.
-/// 7. Group files by hash of their full contents.
+/// 5. Collapse reflinked files sharing the same physical extents.
+/// 6. Group files by hash of the prefix.
+/// 7. Group files by hash of the suffix.
+/// 8. Group files by hash of their full contents.
 ///
 /// # Example
 /// ```
@@ -1234,7 +1347,8 @@ pub fn group_files(config: &GroupConfig, log: &dyn Log) -> Result<Vec<FileGroup<
         }
         _ => {
             let size_groups = group_by_size(&ctx, matching_files);
-            let mut size_groups_pruned = remove_same_files(&ctx, size_groups);
+            let size_groups_pruned = remove_same_files(&ctx, size_groups);
+            let mut size_groups_pruned = collapse_reflinks(&ctx, size_groups_pruned);
             update_file_locations(&ctx, &mut size_groups_pruned);
             let prefix_len = ctx
                 .config

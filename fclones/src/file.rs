@@ -438,6 +438,95 @@ pub(crate) fn get_physical_file_location(path: &Path) -> io::Result<Option<u64>>
     }
 }
 
+/// Returns the full physical extent map of a file as a list of
+/// (physical_offset, contiguous_length) pairs.
+#[cfg(target_os = "macos")]
+pub(crate) fn get_file_extents(path: &Path) -> io::Result<Vec<(u64, u64)>> {
+    use crate::rlimit::RLIMIT_OPEN_FILES;
+    use std::os::unix::io::AsRawFd;
+
+    const F_LOG2PHYS_EXT: libc::c_int = 65;
+
+    #[repr(C, packed(4))]
+    struct Log2Phys {
+        l2p_flags: u32,
+        l2p_contigbytes: i64,
+        l2p_devoffset: i64,
+    }
+
+    let _open_files_guard = RLIMIT_OPEN_FILES.clone().access_owned();
+    let file = fs::File::open(path.to_path_buf())?;
+    let fd = file.as_raw_fd();
+    let file_len = file.metadata()?.len();
+    if file_len == 0 {
+        return Ok(Vec::new());
+    }
+
+    const MAX_EXTENTS: usize = 1_000_000;
+    let mut extents = Vec::new();
+    let mut offset: u64 = 0;
+    while offset < file_len && extents.len() < MAX_EXTENTS {
+        let mut log2phys = Log2Phys {
+            l2p_flags: 0,
+            l2p_contigbytes: (file_len - offset) as i64,
+            l2p_devoffset: offset as i64,
+        };
+        let ret = unsafe { libc::fcntl(fd, F_LOG2PHYS_EXT, &mut log2phys) };
+        if ret < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        if log2phys.l2p_contigbytes <= 0 {
+            break;
+        }
+        extents.push((
+            log2phys.l2p_devoffset as u64,
+            log2phys.l2p_contigbytes as u64,
+        ));
+        offset += log2phys.l2p_contigbytes as u64;
+    }
+    Ok(extents)
+}
+
+/// Returns the full physical extent map of a file as a list of
+/// (physical_offset, contiguous_length) pairs.
+///
+/// Returns `Ok(Vec::new())` if the file has no shared (reflinked) extents,
+/// since non-shared extent collisions are meaningless on filesystems like ext4.
+#[cfg(target_os = "linux")]
+pub(crate) fn get_file_extents(path: &Path) -> io::Result<Vec<(u64, u64)>> {
+    use crate::rlimit::RLIMIT_OPEN_FILES;
+
+    let _open_files_guard = RLIMIT_OPEN_FILES.clone().access_owned();
+    let extents_iter = fiemap::fiemap(path.to_path_buf())?;
+    let mut result = Vec::new();
+    let mut has_shared = false;
+    for extent in extents_iter {
+        let extent = extent?;
+        if extent.fe_flags.contains(fiemap::FiemapExtentFlags::SHARED) {
+            has_shared = true;
+        }
+        result.push((extent.fe_physical, extent.fe_length));
+    }
+    // Only return extents if any are marked SHARED by the kernel.
+    // On filesystems without reflink support (ext4, tmpfs), independent files
+    // can coincidentally share the same physical block offset.
+    if has_shared {
+        Ok(result)
+    } else {
+        Ok(Vec::new())
+    }
+}
+
+/// Returns the full physical extent map of a file.
+/// Not supported on this platform.
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+pub(crate) fn get_file_extents(_path: &Path) -> io::Result<Vec<(u64, u64)>> {
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "Extent mapping is not supported on this platform",
+    ))
+}
+
 #[derive(Clone, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub struct FileHash(Box<[u8]>);
 
