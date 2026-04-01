@@ -2,8 +2,10 @@
 #![allow(unused_imports)]
 
 use crate::semaphore::Semaphore;
-use lazy_static::lazy_static;
 use std::sync::Arc;
+use std::sync::LazyLock;
+
+use nix::libc;
 
 #[cfg(unix)]
 // Get the maximum number of open file descriptors for this process, and if
@@ -14,7 +16,7 @@ fn rlimit_nofile() -> libc::rlim_t {
         rlim_max: 0,
     };
     unsafe {
-        if libc::getrlimit(libc::RLIMIT_NOFILE, &mut file_limit) != 0 {
+        if libc::getrlimit(libc::RLIMIT_NOFILE, &raw mut file_limit) != 0 {
             return 200;
         }
     }
@@ -23,7 +25,7 @@ fn rlimit_nofile() -> libc::rlim_t {
         let prev = file_limit.rlim_cur;
         file_limit.rlim_cur = file_limit.rlim_max;
         unsafe {
-            if libc::setrlimit(libc::RLIMIT_NOFILE, &file_limit) == 0 {
+            if libc::setrlimit(libc::RLIMIT_NOFILE, &raw const file_limit) == 0 {
                 file_limit.rlim_max
             } else {
                 prev
@@ -38,15 +40,15 @@ fn rlimit_nofile() -> libc::rlim_t {
 // stdin, stdout, stderr, plus two as a buffer
 const OTHER_OPEN_FILES: isize = 3 + 2;
 
+// Globally track the number of opened files so many parallel operations do not raise
+// "Too many open files (os error 24)".
 #[cfg(unix)]
-lazy_static! {
-    // Globally track the number of opened files so many parallel operations do not raise
-    // "Too many open files (os error 24)".
-    pub static ref RLIMIT_OPEN_FILES: Arc<Semaphore> = Arc::new(Semaphore::new(std::cmp::max(
-        rlimit_nofile() as isize - OTHER_OPEN_FILES,
-        64 // fallback value
-    )));
-}
+pub static RLIMIT_OPEN_FILES: LazyLock<Arc<Semaphore>> = LazyLock::new(|| {
+    Arc::new(Semaphore::new(std::cmp::max(
+        (rlimit_nofile() as isize) - OTHER_OPEN_FILES,
+        64, // fallback value
+    )))
+});
 
 #[cfg(not(unix))]
 pub mod not_unix {
@@ -63,6 +65,5 @@ pub mod not_unix {
     }
 }
 #[cfg(not(unix))]
-lazy_static! {
-    pub static ref RLIMIT_OPEN_FILES: not_unix::NoRlimit = not_unix::NoRlimit::new();
-}
+pub static RLIMIT_OPEN_FILES: LazyLock<not_unix::NoRlimit> =
+    LazyLock::new(|| not_unix::NoRlimit::new());

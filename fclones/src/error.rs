@@ -1,6 +1,8 @@
 use std::fmt::{Display, Formatter};
 use std::{fmt, io};
 
+use nix::libc;
+
 /// Error reported by top-level fclones functions
 #[derive(Debug)]
 pub struct Error {
@@ -8,6 +10,7 @@ pub struct Error {
 }
 
 impl Error {
+    #[must_use]
     pub fn new(msg: String) -> Error {
         Error { message: msg }
     }

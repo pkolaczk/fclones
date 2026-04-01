@@ -101,7 +101,7 @@ impl PathSelector {
     }
 
     /// Returns an absolute pattern.
-    /// If pattern is relative (i.e. does not start with fs root), then the base_dir is appended.
+    /// If pattern is relative (i.e. does not start with fs root), then the `base_dir` is appended.
     fn abs_pattern(base_dir: &Path, pattern: Pattern) -> Pattern {
         if Self::is_absolute(&pattern) {
             pattern

@@ -2,6 +2,8 @@ use crate::error::error_kind;
 use std::fs::File;
 use std::{fs, io};
 
+use nix::libc;
+
 use crate::path::Path;
 
 /// Portable file locking.
@@ -23,7 +25,7 @@ impl FileLock {
         }
     }
 
-    /// Creates a libc::flock initialized to zeros.
+    /// Creates a `libc::flock` initialized to zeros.
     /// Should be safe, because flock contains primitive fields only, no references.
     #[cfg(unix)]
     fn new_flock() -> libc::flock {
@@ -33,24 +35,24 @@ impl FileLock {
     #[cfg(unix)]
     #[allow(clippy::unnecessary_cast)]
     fn fcntl_lock(file: &File) -> io::Result<()> {
-        use nix::fcntl::*;
-        use std::os::unix::io::AsRawFd;
+        use nix::fcntl::FcntlArg;
+
         let mut f = Self::new_flock();
         f.l_type = libc::F_WRLCK as i16;
         f.l_whence = libc::SEEK_SET as i16;
-        let result = nix::fcntl::fcntl(file.as_raw_fd(), FcntlArg::F_SETLK(&f));
+        let result = nix::fcntl::fcntl(file, FcntlArg::F_SETLK(&f));
         Self::nix_as_io_error(result).map(|_| {})
     }
 
     #[cfg(unix)]
     #[allow(clippy::unnecessary_cast)]
     fn fcntl_unlock(file: &File) -> io::Result<()> {
-        use nix::fcntl::*;
-        use std::os::unix::io::AsRawFd;
+        use nix::fcntl::FcntlArg;
+
         let mut f = Self::new_flock();
         f.l_type = libc::F_UNLCK as i16;
         f.l_whence = libc::SEEK_SET as i16;
-        let result = nix::fcntl::fcntl(file.as_raw_fd(), FcntlArg::F_SETLK(&f));
+        let result = nix::fcntl::fcntl(file, FcntlArg::F_SETLK(&f));
         Self::nix_as_io_error(result).map(|_| {})
     }
 
@@ -66,7 +68,7 @@ impl FileLock {
             .map_err(|e| {
                 io::Error::new(
                     error_kind(&e),
-                    format!("Failed to open file {} for write: {}", path.display(), e),
+                    format!("Failed to open file {} for write: {e}", path.display()),
                 )
             })?;
 
@@ -74,9 +76,9 @@ impl FileLock {
         if let Err(e) = Self::fcntl_lock(&file) {
             return Err(io::Error::new(
                 error_kind(&e),
-                format!("Failed to lock file {}: {}", path.display(), e),
+                format!("Failed to lock file {}: {e}", path.display()),
             ));
-        };
+        }
 
         Ok(FileLock { file })
     }

@@ -7,6 +7,7 @@ use std::io::{Read, Seek};
 use std::str::FromStr;
 
 use metrohash::MetroHash128;
+use nix::libc;
 use serde::{Deserialize, Serialize};
 #[cfg(feature = "sha2")]
 use sha2::{Sha256, Sha512};
@@ -15,12 +16,12 @@ use sha3::{Sha3_256, Sha3_512};
 #[cfg(feature = "xxhash")]
 use xxhash_rust::xxh3::Xxh3;
 
+use crate::Error;
 use crate::cache::{HashCache, Key};
 use crate::file::{FileAccess, FileChunk, FileHash, FileLen, FileMetadata, FilePos};
 use crate::log::{Log, LogExt};
 use crate::path::Path;
 use crate::transform::Transform;
-use crate::Error;
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize, clap::ValueEnum)]
 pub enum HashFn {
@@ -96,12 +97,12 @@ impl StreamHasher for MetroHash128 {
     }
 
     fn update(&mut self, bytes: &[u8]) {
-        self.write(bytes)
+        self.write(bytes);
     }
 
     fn finish(self) -> FileHash {
         let (a, b) = self.finish128();
-        FileHash::from(((a as u128) << 64) | b as u128)
+        FileHash::from((u128::from(a) << 64) | u128::from(b))
     }
 }
 
@@ -112,7 +113,7 @@ impl StreamHasher for Xxh3 {
     }
 
     fn update(&mut self, bytes: &[u8]) {
-        self.update(bytes)
+        self.update(bytes);
     }
 
     fn finish(self) -> FileHash {
@@ -253,7 +254,7 @@ impl FileHasher<'_> {
         let metadata = metadata.as_ref();
         let key = cache
             .zip(metadata.as_ref())
-            .and_then(|(c, m)| c.key(chunk, m).ok());
+            .map(|(_c, m)| HashCache::key(chunk, m));
         let key = key.as_ref();
         let hash = self.load_hash(key, metadata);
         if let Some((_, hash)) = hash {
@@ -289,9 +290,8 @@ impl FileHasher<'_> {
             Err(e) if e.kind() == io::ErrorKind::NotFound => None,
             Err(e) => {
                 self.log.warn(format!(
-                    "Failed to compute hash of file {}: {}",
-                    chunk.path.to_escaped_string(),
-                    e
+                    "Failed to compute hash of file {}: {e}",
+                    chunk.path.to_escaped_string()
                 ));
                 None
             }
@@ -313,7 +313,7 @@ impl FileHasher<'_> {
         let metadata = metadata.as_ref();
         let key = cache
             .zip(metadata.as_ref())
-            .and_then(|(c, m)| c.key(chunk, m).ok());
+            .map(|(_c, m)| HashCache::key(chunk, m));
         let key = key.as_ref();
         let hash = self.load_hash(key, metadata);
         if let Some(hash) = hash {
@@ -353,20 +353,17 @@ impl FileHasher<'_> {
                 .take()
                 .unwrap()
                 .join()
-                .unwrap_or_else(|_| "".to_owned());
+                .unwrap_or_default();
             let captured_err = format_output_stream(captured_err.as_str());
             return match exit_status.code() {
-                Some(exit_code) => Err(io::Error::new(
-                    io::ErrorKind::Other,
-                    format!(
-                        "{} failed with non-zero status code: {}{}",
-                        transform.program, exit_code, captured_err
-                    ),
-                )),
-                None => Err(io::Error::new(
-                    io::ErrorKind::Other,
-                    format!("{} failed{}", transform.program, captured_err),
-                )),
+                Some(exit_code) => Err(io::Error::other(format!(
+                    "{} failed with non-zero status code: {exit_code}{captured_err}",
+                    transform.program,
+                ))),
+                None => Err(io::Error::other(format!(
+                    "{} failed{captured_err}",
+                    transform.program,
+                ))),
             };
         }
 
@@ -384,9 +381,8 @@ impl FileHasher<'_> {
             Err(e) if e.kind() == io::ErrorKind::NotFound => None,
             Err(e) => {
                 self.log.warn(format!(
-                    "Failed to compute hash of file {}: {}",
-                    chunk.path.to_escaped_string(),
-                    e
+                    "Failed to compute hash of file {}: {e}",
+                    chunk.path.to_escaped_string()
                 ));
                 None
             }
@@ -427,22 +423,21 @@ impl FileHasher<'_> {
     ) {
         if let Some(((cache, key), metadata)) =
             self.cache.as_ref().zip(key.as_ref()).zip(metadata.as_ref())
+            && let Err(e) = cache.put(key, metadata, data_len, hash)
         {
-            if let Err(e) = cache.put(key, metadata, data_len, hash) {
-                self.log.warn(format!(
-                    "Failed to store hash of file {key} in the cache: {e}"
-                ))
-            }
-        };
+            self.log.warn(format!(
+                "Failed to store hash of file {key} in the cache: {e}"
+            ));
+        }
     }
 }
 
 impl Drop for FileHasher<'_> {
     fn drop(&mut self) {
-        if let Some(cache) = self.cache.take() {
-            if let Err(e) = cache.close() {
-                self.log.warn(e);
-            }
+        if let Some(cache) = self.cache.take()
+            && let Err(e) = cache.close()
+        {
+            self.log.warn(e);
         }
     }
 }
@@ -464,15 +459,9 @@ fn to_off_t(offset: u64) -> libc::off_t {
 /// Wrapper for `posix_fadvise`. Ignores errors.
 /// This method is used to advise the system, so its failure is not critical to the result of
 /// the program. At worst, failure could hurt performance.
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "freebsd"))]
 fn fadvise(file: &File, offset: FilePos, len: FileLen, advice: nix::fcntl::PosixFadviseAdvice) {
-    use std::os::unix::io::AsRawFd;
-    let _ = nix::fcntl::posix_fadvise(
-        file.as_raw_fd(),
-        to_off_t(offset.into()),
-        to_off_t(len.into()),
-        advice,
-    );
+    let _ = nix::fcntl::posix_fadvise(file, to_off_t(offset.into()), to_off_t(len.into()), advice);
 }
 
 /// Optimizes file read performance based on how many bytes we are planning to read.
@@ -483,12 +472,13 @@ fn fadvise(file: &File, offset: FilePos, len: FileLen, advice: nix::fcntl::Posix
 fn configure_readahead(file: &File, offset: FilePos, len: FileLen, access: FileAccess) {
     #[cfg(target_os = "linux")]
     {
-        use nix::fcntl::*;
+        use nix::fcntl::PosixFadviseAdvice;
+
         let advise = |advice: PosixFadviseAdvice| fadvise(file, offset, len, advice);
         match access {
             FileAccess::Random => advise(PosixFadviseAdvice::POSIX_FADV_RANDOM),
             FileAccess::Sequential => advise(PosixFadviseAdvice::POSIX_FADV_SEQUENTIAL),
-        };
+        }
     }
 }
 
@@ -498,7 +488,8 @@ fn configure_readahead(file: &File, offset: FilePos, len: FileLen, access: FileA
 fn evict_page_cache(file: &File, offset: FilePos, len: FileLen) {
     #[cfg(target_os = "linux")]
     {
-        use nix::fcntl::*;
+        use nix::fcntl::PosixFadviseAdvice;
+
         fadvise(file, offset, len, PosixFadviseAdvice::POSIX_FADV_DONTNEED);
     }
 }
@@ -511,7 +502,7 @@ fn evict_page_cache(file: &File, offset: FilePos, len: FileLen) {
 fn evict_page_cache_if_low_mem(file: &mut File, len: FileLen) {
     #[cfg(target_os = "linux")]
     {
-        use sysinfo::{System, SystemExt};
+        use sysinfo::System;
 
         let skipped_prefix_len = FileLen(256 * 1024);
         if len > skipped_prefix_len {
@@ -519,7 +510,7 @@ fn evict_page_cache_if_low_mem(file: &mut File, len: FileLen) {
             system.refresh_memory();
             let free_mem = system.free_memory();
             let total_mem = system.total_memory();
-            let free_ratio = free_mem as f32 / total_mem as f32;
+            let free_ratio = (free_mem as f64 / total_mem as f64) as f32;
             if free_ratio < 0.05 {
                 evict_page_cache(
                     file,
@@ -542,7 +533,7 @@ fn open(path: &Path, offset: FilePos, len: FileLen, access_type: FileAccess) -> 
     Ok(file)
 }
 
-/// Opens a file for read. On unix systems passes O_NOATIME flag to drastically improve
+/// Opens a file for read. On unix systems passes `O_NOATIME` flag to drastically improve
 /// performance of reading small files.
 fn open_noatime(path: &Path) -> io::Result<File> {
     let path = path.to_path_buf();
@@ -581,7 +572,7 @@ fn scan<F: FnMut(&[u8])>(
         let new_len = max(buf.len(), buf_len);
         buf.resize(new_len, 0);
         let mut read: u64 = 0;
-        let len = len.into();
+        let len = u64::from(len);
         while read < len {
             let remaining = len - read;
             let to_read = min(remaining, buf.len() as u64) as usize;
@@ -645,7 +636,7 @@ mod test {
     use tempfile::NamedTempFile;
 
     use crate::file::{FileChunk, FileLen, FilePos};
-    use crate::hasher::{file_hash, StreamHasher};
+    use crate::hasher::{StreamHasher, file_hash};
     use crate::path::Path;
 
     fn test_file_hash<H: StreamHasher>() {
@@ -671,42 +662,42 @@ mod test {
 
     #[test]
     fn test_file_hash_metro_128() {
-        test_file_hash::<MetroHash128>()
+        test_file_hash::<MetroHash128>();
     }
 
     #[test]
     #[cfg(feature = "xxhash")]
     fn test_file_hash_xxh3() {
-        test_file_hash::<xxhash_rust::xxh3::Xxh3>()
+        test_file_hash::<xxhash_rust::xxh3::Xxh3>();
     }
 
     #[test]
     #[cfg(feature = "blake3")]
     fn test_file_hash_blake3() {
-        test_file_hash::<blake3::Hasher>()
+        test_file_hash::<blake3::Hasher>();
     }
 
     #[test]
     #[cfg(feature = "sha2")]
     fn test_file_hash_sha256() {
-        test_file_hash::<sha2::Sha256>()
+        test_file_hash::<sha2::Sha256>();
     }
 
     #[test]
     #[cfg(feature = "sha2")]
     fn test_file_hash_sha512() {
-        test_file_hash::<sha2::Sha512>()
+        test_file_hash::<sha2::Sha512>();
     }
 
     #[test]
     #[cfg(feature = "sha3")]
     fn test_file_hash_sha3_256() {
-        test_file_hash::<sha3::Sha3_256>()
+        test_file_hash::<sha3::Sha3_256>();
     }
 
     #[test]
     #[cfg(feature = "sha3")]
     fn test_file_hash_sha3_512() {
-        test_file_hash::<sha3::Sha3_512>()
+        test_file_hash::<sha3::Sha3_512>();
     }
 }

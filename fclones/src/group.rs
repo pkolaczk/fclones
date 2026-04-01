@@ -1,7 +1,7 @@
 //! Grouping identical files together.
 
 use std::cell::RefCell;
-use std::cmp::{max, min, Reverse};
+use std::cmp::{Reverse, max, min};
 use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::env::{args_os, current_dir};
@@ -11,11 +11,10 @@ use std::fs::File;
 use std::hash::Hash;
 use std::io;
 use std::io::BufWriter;
-use std::iter::FromIterator;
 use std::marker::PhantomData;
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::mpsc::{Receiver, Sender, channel};
 
 use chrono::{DateTime, Local};
 use console::Term;
@@ -23,15 +22,18 @@ use crossbeam_utils::thread;
 use indexmap::IndexMap;
 use itertools::Itertools;
 use rayon::prelude::*;
-use serde::*;
+use serde::{Deserialize, Serialize};
 use smallvec::SmallVec;
 use thread_local::ThreadLocal;
 
 use crate::arg::Arg;
-use crate::config::*;
+use crate::config::{GroupConfig, Parallelism};
 use crate::device::{DiskDevice, DiskDevices};
 use crate::error::Error;
-use crate::file::*;
+use crate::file::{
+    FileAccess, FileChunk, FileCollection, FileHash, FileId, FileInfo, FileLen, FilePos,
+    file_info_or_log_err,
+};
 use crate::hasher::FileHasher;
 use crate::log::{Log, LogExt, ProgressBarLength};
 use crate::path::Path;
@@ -148,7 +150,7 @@ impl<'a> GroupCtx<'a> {
             FileHasher::new(config.hash_fn, transform, log)
         };
 
-        Self::check_pool_config(thread_pool_sizes, &devices)?;
+        Self::check_pool_config(&thread_pool_sizes, &devices)?;
 
         Ok(GroupCtx {
             config,
@@ -163,13 +165,13 @@ impl<'a> GroupCtx<'a> {
 
     /// Checks if all thread pool names refer to existing pools or devices
     fn check_pool_config(
-        thread_pool_sizes: HashMap<OsString, Parallelism>,
+        thread_pool_sizes: &HashMap<OsString, Parallelism>,
         devices: &DiskDevices,
     ) -> Result<(), Error> {
         let mut allowed_pool_names = DiskDevices::device_types();
         allowed_pool_names.push("main");
         allowed_pool_names.push("default");
-        for (name, _) in thread_pool_sizes.iter() {
+        for name in thread_pool_sizes.keys() {
             let name = name.to_string_lossy();
             match name.strip_prefix("dev:") {
                 Some(name) if devices.get_by_name(OsStr::new(name)).is_none() => {
@@ -233,11 +235,13 @@ pub struct FileGroupFilter {
 
 impl<F> FileGroup<F> {
     /// Returns the count of all files in the group
+    #[must_use]
     pub fn file_count(&self) -> usize {
         self.files.len()
     }
 
     /// Returns the total size of all files in the group
+    #[must_use]
     pub fn total_size(&self) -> FileLen {
         self.file_len * self.file_count() as u64
     }
@@ -324,6 +328,7 @@ impl<F: AsRef<Path> + core::fmt::Debug> FileGroup<F> {
 impl<F: AsRef<FileId>> FileGroup<F> {
     /// Returns the number of files with distinct identifiers.
     /// Files must be sorted by id.
+    #[must_use]
     pub fn unique_count(&self) -> usize {
         self.files
             .iter()
@@ -333,6 +338,7 @@ impl<F: AsRef<FileId>> FileGroup<F> {
 
     /// Returns the total size of data in files with distinct identifiers.
     /// Files must be sorted by id.
+    #[must_use]
     pub fn unique_size(&self) -> FileLen {
         self.file_len * self.unique_count() as u64
     }
@@ -351,6 +357,7 @@ impl<F: AsRef<Path> + AsRef<FileId>> FileGroup<F> {
     /// (`filter.replication` is `Replication::Underreplicated`). This is because even if
     /// the number of replicas is currently higher than the maximum number of allowed replicas,
     /// the group can be split in later stages and the number of replicas in the group may drop.
+    #[must_use]
     pub fn matches(&self, filter: &FileGroupFilter) -> bool {
         match filter.replication {
             Replication::Overreplicated(rf) => self.subgroup_count(filter) > rf,
@@ -361,6 +368,7 @@ impl<F: AsRef<Path> + AsRef<FileId>> FileGroup<F> {
     /// Returns true if the file group should be included in the final report.
     /// The number of replicas in the group must be appropriate for the condition
     /// specified in `filter.replication`.
+    #[must_use]
     pub fn matches_strictly(&self, filter: &FileGroupFilter) -> bool {
         let count = self.subgroup_count(filter);
         match filter.replication {
@@ -376,6 +384,7 @@ impl<F: AsRef<Path> + AsRef<FileId>> FileGroup<F> {
     ///
     /// If the number of files is greater than the minimum number of replicas, or
     /// if `filter.replication` is set to `Replication::Overreplicated` 0 is returned.
+    #[must_use]
     pub fn missing_count(&self, filter: &FileGroupFilter) -> usize {
         match filter.replication {
             Replication::Overreplicated(_) => 0,
@@ -396,6 +405,7 @@ impl<F: AsRef<Path> + AsRef<FileId>> FileGroup<F> {
     ///
     /// If the result would be negative in any of the above cases or if `filter.replication`
     /// is set to `Replication::Underreplicated`, 0 is returned.
+    #[must_use]
     pub fn redundant_count(&self, filter: &FileGroupFilter) -> usize {
         match filter.replication {
             Replication::Underreplicated(_) => 0,
@@ -419,6 +429,7 @@ impl<F: AsRef<Path> + AsRef<FileId>> FileGroup<F> {
     }
 
     /// Returns either the number of files redundant or missing, depending on the type of search.
+    #[must_use]
     pub fn reported_count(&self, filter: &FileGroupFilter) -> usize {
         match filter.replication {
             Replication::Overreplicated(_) => self.redundant_count(filter),
@@ -443,7 +454,7 @@ impl<F: AsRef<Path> + AsRef<FileId>> FileGroup<F> {
             self.files = FileSubGroup::group(self.files.drain(..), root_paths, true)
                 .into_iter()
                 .flat_map(|g| g.files)
-                .collect()
+                .collect();
         }
     }
 }
@@ -464,6 +475,7 @@ pub struct FileSubGroup<F> {
 }
 
 impl<F> FileSubGroup<F> {
+    #[must_use]
     pub fn empty() -> FileSubGroup<F> {
         FileSubGroup { files: vec![] }
     }
@@ -471,7 +483,7 @@ impl<F> FileSubGroup<F> {
         FileSubGroup { files: vec![f] }
     }
     pub fn push(&mut self, file: F) {
-        self.files.push(file)
+        self.files.push(file);
     }
 }
 
@@ -497,7 +509,7 @@ impl<F: AsRef<Path> + AsRef<FileId>> FileSubGroup<F> {
         roots: &[Path],
         group_by_id: bool,
     ) -> Vec<FileSubGroup<F>> {
-        let mut prefix_groups = Vec::from_iter(roots.iter().map(|_| FileSubGroup::empty()));
+        let mut prefix_groups: Vec<_> = roots.iter().map(|_| FileSubGroup::empty()).collect();
         let mut id_groups = IndexMap::new(); // important: keep order of insertion
         for f in files {
             let path: &Path = f.as_ref();
@@ -629,7 +641,7 @@ where
 
                 // Run hashing on the thread-pool dedicated to the device.
                 // Group files by their identifiers so we hash only one file per unique id.
-                for (_, fg) in &files.into_iter().group_by(|f| f.file_info.id) {
+                for (_, fg) in &files.into_iter().chunk_by(|f| f.file_info.id) {
                     let mut fg = fg.collect_vec();
                     let tx = tx.clone();
                     let guard = semaphore.clone().access_owned();
@@ -729,13 +741,15 @@ fn scan_files(ctx: &GroupCtx<'_>) -> Vec<Vec<FileInfo>> {
         file_count.load(Ordering::Relaxed)
     ));
 
-    let files: Vec<_> = file_collector.into_iter().map(|r| r.into_inner()).collect();
+    let files: Vec<_> = file_collector
+        .into_iter()
+        .map(RefCell::into_inner)
+        .collect();
 
-    let file_count: usize = files.iter().map(|v| v.len()).sum();
+    let file_count: usize = files.iter().map(Vec::len).sum();
     let total_size: u64 = files.iter().flat_map(|v| v.iter().map(|i| i.len.0)).sum();
     ctx.log.info(format!(
-        "Found {} ({}) files matching selection criteria",
-        file_count,
+        "Found {file_count} ({}) files matching selection criteria",
         FileLen(total_size)
     ));
     files
@@ -743,12 +757,12 @@ fn scan_files(ctx: &GroupCtx<'_>) -> Vec<Vec<FileInfo>> {
 
 /// Returns the sum of number of files in all groups
 fn file_count<'a, T: 'a>(groups: impl IntoIterator<Item = &'a FileGroup<T>>) -> usize {
-    groups.into_iter().map(|g| g.file_count()).sum()
+    groups.into_iter().map(FileGroup::file_count).sum()
 }
 
 /// Returns the sum of sizes of files in all groups, including duplicates
 fn total_size<'a, T: 'a>(groups: impl IntoIterator<Item = &'a FileGroup<T>>) -> FileLen {
-    groups.into_iter().map(|g| g.total_size()).sum()
+    groups.into_iter().map(FileGroup::total_size).sum()
 }
 
 /// Returns the sum of number of files in all groups
@@ -756,7 +770,7 @@ fn unique_file_count<'a, T>(groups: impl IntoIterator<Item = &'a FileGroup<T>>) 
 where
     T: AsRef<FileId> + 'a,
 {
-    groups.into_iter().map(|g| g.unique_count()).sum()
+    groups.into_iter().map(FileGroup::unique_count).sum()
 }
 
 /// Returns the sum of sizes of files in all groups, including duplicates
@@ -764,7 +778,7 @@ fn unique_file_size<'a, T>(groups: impl IntoIterator<Item = &'a FileGroup<T>>) -
 where
     T: AsRef<FileId> + 'a,
 {
-    groups.into_iter().map(|g| g.unique_size()).sum()
+    groups.into_iter().map(FileGroup::unique_size).sum()
 }
 
 /// Sorts each file group by file identifiers
@@ -772,8 +786,8 @@ fn sort_files_by_id<'a, T>(groups: impl IntoIterator<Item = &'a mut FileGroup<T>
 where
     T: AsRef<FileId> + 'a,
 {
-    for g in groups.into_iter() {
-        g.sort_by_id()
+    for g in groups {
+        g.sort_by_id();
     }
 }
 
@@ -791,15 +805,15 @@ fn stage_stats(groups: &[FileGroup<FileInfo>], filter: &FileGroupFilter) -> (usi
 }
 
 fn group_by_size(ctx: &GroupCtx<'_>, files: Vec<Vec<FileInfo>>) -> Vec<FileGroup<FileInfo>> {
-    let file_count: usize = files.iter().map(|v| v.len()).sum();
+    let file_count: usize = files.iter().map(Vec::len).sum();
     let progress = ctx.log.progress_bar(
         &ctx.phases.format(Phase::GroupBySize),
         ProgressBarLength::Items(file_count as u64),
     );
 
     let mut groups = GroupMap::new(|info: FileInfo| (info.len, info));
-    for files in files.into_iter() {
-        for file in files.into_iter() {
+    for files in files {
+        for file in files {
             progress.inc(1);
             groups.add(file);
         }
@@ -830,10 +844,10 @@ where
 {
     let mut groups = GroupMap::new(|fi: FileInfo| (fi.location, fi));
     for f in files.drain(..) {
-        groups.add(f)
+        groups.add(f);
     }
 
-    for (_, file_group) in groups.into_iter() {
+    for (_, file_group) in groups {
         if file_group.len() == 1 {
             files.extend(file_group.into_iter().inspect(|p| progress(&p.path)));
         } else {
@@ -842,7 +856,7 @@ where
                     .into_iter()
                     .inspect(|p| progress(&p.path))
                     .unique_by(|p| p.path.hash128()),
-            )
+            );
         }
     }
 }
@@ -884,17 +898,17 @@ fn update_file_locations(ctx: &GroupCtx<'_>, groups: &mut (impl FileCollection +
     let err_counters = atomic_counter_vec(ctx.devices.len());
     groups.for_each_mut(|fi| {
         let device: &DiskDevice = &ctx.devices[fi.get_device_index()];
-        if device.disk_kind != sysinfo::DiskKind::SSD {
-            if let Err(e) = fi.fetch_physical_location() {
-                // Do not print a notice about slower access when fetching file extents has
-                // failed because a file vanished -- now it will never be accessed anyhow.
-                const ENOENT_NO_SUCH_FILE: i32 = 2;
-                if e.raw_os_error() != Some(ENOENT_NO_SUCH_FILE) {
-                    handle_fetch_physical_location_err(ctx, &err_counters, fi, e)
-                }
+        if device.disk_kind != sysinfo::DiskKind::SSD
+            && let Err(e) = fi.fetch_physical_location()
+        {
+            // Do not print a notice about slower access when fetching file extents has
+            // failed because a file vanished -- now it will never be accessed anyhow.
+            const ENOENT_NO_SUCH_FILE: i32 = 2;
+            if e.raw_os_error() != Some(ENOENT_NO_SUCH_FILE) {
+                handle_fetch_physical_location_err(ctx, &err_counters, fi, &e);
             }
         }
-        progress.inc(1)
+        progress.inc(1);
     });
 }
 
@@ -911,12 +925,12 @@ fn handle_fetch_physical_location_err(
     ctx: &GroupCtx<'_>,
     err_counters: &[std::sync::atomic::AtomicU32],
     file_info: &FileInfo,
-    error: io::Error,
+    error: &io::Error,
 ) {
     const MAX_ERR_COUNT_TO_LOG: u32 = 10;
     let device = &ctx.devices[file_info.get_device_index()];
     let counter = &err_counters[device.index];
-    if crate::error::error_kind(&error) == io::ErrorKind::Unsupported {
+    if crate::error::error_kind(error) == io::ErrorKind::Unsupported {
         if counter.swap(MAX_ERR_COUNT_TO_LOG, Ordering::Release) < MAX_ERR_COUNT_TO_LOG {
             ctx.log.warn(format!(
                 "File system {} on device {} doesn't support FIEMAP ioctl API. \
@@ -929,10 +943,9 @@ fn handle_fetch_physical_location_err(
         }
     } else if counter.load(Ordering::Acquire) < MAX_ERR_COUNT_TO_LOG {
         ctx.log.warn(format!(
-            "Failed to fetch file extents mapping for file {}: {}. \
+            "Failed to fetch file extents mapping for file {}: {error}. \
             This is generally harmless, but it might decrease random access performance.",
-            file_info.path.display(),
-            error
+            file_info.path.display()
         ));
         let err_count = counter.fetch_add(1, Ordering::AcqRel);
         if err_count == MAX_ERR_COUNT_TO_LOG {
@@ -940,7 +953,7 @@ fn handle_fetch_physical_location_err(
                 "Too many errors trying to fetch file extent mappings on device {}. \
                 Subsequent errors for this device will be ignored.",
                 device.name.to_string_lossy()
-            ))
+            ));
         }
     }
 }
@@ -1010,7 +1023,7 @@ fn prefix_len<'a>(
     partitions: &DiskDevices,
     files: impl ParallelIterator<Item = &'a FileInfo>,
 ) -> FileLen {
-    max_device_property(partitions, files, |dd| dd.max_prefix_len())
+    max_device_property(partitions, files, DiskDevice::max_prefix_len)
 }
 
 /// Groups files by a hash of their first few thousand bytes.
@@ -1062,14 +1075,14 @@ fn suffix_len<'a>(
     partitions: &DiskDevices,
     files: impl ParallelIterator<Item = &'a FileInfo>,
 ) -> FileLen {
-    max_device_property(partitions, files, |dd| dd.suffix_len())
+    max_device_property(partitions, files, DiskDevice::suffix_len)
 }
 
 fn suffix_threshold<'a>(
     partitions: &DiskDevices,
     files: impl ParallelIterator<Item = &'a FileInfo>,
 ) -> FileLen {
-    max_device_property(partitions, files, |dd| dd.suffix_threshold())
+    max_device_property(partitions, files, DiskDevice::suffix_threshold)
 }
 
 fn group_by_suffix(
@@ -1225,28 +1238,25 @@ pub fn group_files(config: &GroupConfig, log: &dyn Log) -> Result<Vec<FileGroup<
     drop(spinner);
     let matching_files = scan_files(&ctx);
 
-    let mut groups = match &ctx.hasher.transform {
-        Some(_transform) => {
-            let mut files = matching_files.into_iter().flatten().collect_vec();
-            deduplicate(&mut files, |_| {});
-            update_file_locations(&ctx, &mut files);
-            group_transformed(&ctx, files)
-        }
-        _ => {
-            let size_groups = group_by_size(&ctx, matching_files);
-            let mut size_groups_pruned = remove_same_files(&ctx, size_groups);
-            update_file_locations(&ctx, &mut size_groups_pruned);
-            let prefix_len = ctx
-                .config
-                .max_prefix_size
-                .unwrap_or_else(|| prefix_len(&ctx.devices, flat_iter(&size_groups_pruned)));
-            let prefix_groups = group_by_prefix(&ctx, prefix_len, size_groups_pruned);
-            let suffix_groups = group_by_suffix(&ctx, prefix_groups);
-            if !ctx.config.skip_content_hash {
-                group_by_contents(&ctx, prefix_len, suffix_groups)
-            } else {
-                suffix_groups
-            }
+    let mut groups = if let Some(_transform) = &ctx.hasher.transform {
+        let mut files = matching_files.into_iter().flatten().collect_vec();
+        deduplicate(&mut files, |_| {});
+        update_file_locations(&ctx, &mut files);
+        group_transformed(&ctx, files)
+    } else {
+        let size_groups = group_by_size(&ctx, matching_files);
+        let mut size_groups_pruned = remove_same_files(&ctx, size_groups);
+        update_file_locations(&ctx, &mut size_groups_pruned);
+        let prefix_len = ctx
+            .config
+            .max_prefix_size
+            .unwrap_or_else(|| prefix_len(&ctx.devices, flat_iter(&size_groups_pruned)));
+        let prefix_groups = group_by_prefix(&ctx, prefix_len, size_groups_pruned);
+        let suffix_groups = group_by_suffix(&ctx, prefix_groups);
+        if ctx.config.skip_content_hash {
+            suffix_groups
+        } else {
+            group_by_contents(&ctx, prefix_len, suffix_groups)
         }
     };
     groups.par_sort_by_key(|g| Reverse((g.file_len, g.file_hash.u128_prefix())));
@@ -1301,35 +1311,33 @@ pub fn write_report(
         }),
     };
 
-    match &config.output {
-        Some(path) => {
-            let progress = log.progress_bar(
-                "Writing report",
-                ProgressBarLength::Items(groups.len() as u64),
-            );
-            let iter = groups.iter().inspect(|_g| progress.inc(1));
-            let file = BufWriter::new(File::create(path)?);
-            let mut reporter = ReportWriter::new(file, false);
-            reporter.write(config.format, &header, iter)
-        }
-        None => {
-            let term = Term::stdout();
-            let color = term.is_term();
-            let mut reporter = ReportWriter::new(BufWriter::new(term), color);
-            reporter.write(config.format, &header, groups.iter())
-        }
+    if let Some(path) = &config.output {
+        let progress = log.progress_bar(
+            "Writing report",
+            ProgressBarLength::Items(groups.len() as u64),
+        );
+        let iter = groups.iter().inspect(|_g| progress.inc(1));
+        let file = BufWriter::new(File::create(path)?);
+        let mut reporter = ReportWriter::new(file, false);
+        reporter.write(config.format, &header, iter)
+    } else {
+        let term = Term::stdout();
+        let color = term.is_term();
+        let mut reporter = ReportWriter::new(BufWriter::new(term), color);
+        reporter.write(config.format, &header, groups.iter())
     }
 }
 
 #[cfg(test)]
 mod test {
 
-    use std::fs::{create_dir, hard_link, File, OpenOptions};
+    use std::fs::{File, OpenOptions, create_dir, hard_link};
     use std::io::{Read, Write};
     use std::path::PathBuf;
-    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::sync::Mutex;
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
+    use crate::file::InodeId;
     use crate::log::StdLog;
     use rand::seq::SliceRandom;
     use sysinfo::DiskKind;
@@ -1383,7 +1391,7 @@ mod test {
                         inode: 2,
                     },
                     len: FileLen(200),
-                    location: 35847587,
+                    location: 35_847_587,
                     path: Path::from("file2"),
                 },
             ],
@@ -1395,7 +1403,7 @@ mod test {
             |_| true,
             &devices,
             FileAccess::Random,
-            |(fi, _)| Some(FileHash::from(fi.location as u128)),
+            |(fi, _)| Some(FileHash::from(u128::from(fi.location))),
         );
 
         assert_eq!(result.len(), 2);
@@ -1441,7 +1449,7 @@ mod test {
             FileAccess::Random,
             |(fi, _)| {
                 hash_call_count.fetch_add(1, Ordering::Relaxed);
-                Some(FileHash::from(fi.location as u128))
+                Some(FileHash::from(u128::from(fi.location)))
             },
         );
 
@@ -1478,7 +1486,7 @@ mod test {
                         inode: 2,
                     },
                     len: FileLen(200),
-                    location: 35847587,
+                    location: 35_847_587,
                     path: Path::from("file2"),
                 }],
             },
@@ -1490,7 +1498,7 @@ mod test {
             |_| true,
             &devices,
             FileAccess::Random,
-            |(_, _)| Some(FileHash::from(123456)),
+            |(_, _)| Some(FileHash::from(123_456)),
         );
 
         assert_eq!(result.len(), 1);
@@ -1523,7 +1531,7 @@ mod test {
             FileAccess::Random,
             |(fi, _)| {
                 called.store(true, Ordering::Release);
-                Some(FileHash::from(fi.location as u128))
+                Some(FileHash::from(u128::from(fi.location)))
             },
         );
 
@@ -1553,7 +1561,7 @@ mod test {
                         inode: 2,
                     },
                     len: FileLen(200),
-                    location: 35847587,
+                    location: 35_847_587,
                     path: Path::from("file2"),
                 },
             ],
@@ -1565,10 +1573,10 @@ mod test {
             |g| g.files.len() >= 2,
             &devices,
             FileAccess::Random,
-            |(fi, _)| Some(FileHash::from(fi.location as u128)),
+            |(fi, _)| Some(FileHash::from(u128::from(fi.location))),
         );
 
-        assert!(result.is_empty())
+        assert!(result.is_empty());
     }
 
     #[test]
@@ -1590,9 +1598,9 @@ mod test {
                     location: i as u64,
                     path: Path::from(format!("file{i}")),
                 }],
-            })
+            });
         }
-        input.shuffle(&mut rand::thread_rng());
+        input.shuffle(&mut rand::rng());
 
         let processing_order = Mutex::new(Vec::new());
         rehash(
@@ -1603,7 +1611,7 @@ mod test {
             FileAccess::Random,
             |(fi, _)| {
                 processing_order.lock().unwrap().push(fi.location as i32);
-                Some(FileHash::from(fi.location as u128))
+                Some(FileHash::from(u128::from(fi.location)))
             },
         );
         let processing_order = processing_order.into_inner().unwrap();
@@ -1614,9 +1622,9 @@ mod test {
         // is low.
         let mut distance = 0;
         for i in 0..processing_order.len() - 1 {
-            distance += i32::abs(processing_order[i] - processing_order[i + 1])
+            distance += i32::abs(processing_order[i] - processing_order[i + 1]);
         }
-        assert!(distance < (thread_count * count) as i32)
+        assert!(distance < (thread_count * count) as i32);
     }
 
     #[test]
@@ -1644,8 +1652,8 @@ mod test {
         with_dir("main/identical_large_files", |root| {
             let file1 = root.join("file1");
             let file2 = root.join("file2");
-            write_test_file(&file1, &[0; MAX_PREFIX_LEN], &[1; 4096], &[2; 4096]);
-            write_test_file(&file2, &[0; MAX_PREFIX_LEN], &[1; 4096], &[2; 4096]);
+            write_test_file(&file1, &vec![0; MAX_PREFIX_LEN], &[1; 4096], &[2; 4096]);
+            write_test_file(&file2, &vec![0; MAX_PREFIX_LEN], &[1; 4096], &[2; 4096]);
 
             let log = test_log();
             let config = GroupConfig {
@@ -1710,8 +1718,8 @@ mod test {
         with_dir("main/files_differing_by_suffix", |root| {
             let file1 = root.join("file1");
             let file2 = root.join("file2");
-            let prefix = [0; MAX_PREFIX_LEN];
-            let mid = [1; MAX_PREFIX_LEN + MAX_SUFFIX_LEN];
+            let prefix = vec![0; MAX_PREFIX_LEN];
+            let mid = vec![1; MAX_PREFIX_LEN + MAX_SUFFIX_LEN];
             write_test_file(&file1, &prefix, &mid, b"suffix1");
             write_test_file(&file2, &prefix, &mid, b"suffix2");
 
@@ -1734,8 +1742,8 @@ mod test {
         with_dir("main/files_differing_by_middle", |root| {
             let file1 = root.join("file1");
             let file2 = root.join("file2");
-            let prefix = [0; MAX_PREFIX_LEN];
-            let suffix = [1; MAX_SUFFIX_LEN];
+            let prefix = vec![0; MAX_PREFIX_LEN];
+            let suffix = vec![1; MAX_SUFFIX_LEN];
             write_test_file(&file1, &prefix, b"middle1", &suffix);
             write_test_file(&file2, &prefix, b"middle2", &suffix);
 
@@ -1915,7 +1923,7 @@ mod test {
             let results = group_files(&config, &log).unwrap();
             assert_eq!(results.len(), 1);
             assert_eq!(results[0].files.len(), 2);
-        })
+        });
     }
 
     #[test]
@@ -1967,7 +1975,7 @@ mod test {
                 .unwrap()
                 .read_to_string(&mut report)
                 .unwrap();
-            assert!(report.contains("file1"))
+            assert!(report.contains("file1"));
         });
     }
 
@@ -2009,7 +2017,7 @@ mod test {
                     files: vec![file("/r3/f3a", 5)]
                 }
             ]
-        )
+        );
     }
 
     #[test]

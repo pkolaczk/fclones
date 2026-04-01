@@ -3,6 +3,7 @@ use std::fs::Metadata;
 use std::io;
 
 use filetime::FileTime;
+use nix::libc;
 
 use crate::dedupe::{FsCommand, PathAndMetadata};
 use crate::log::{Log, LogExt};
@@ -52,18 +53,17 @@ pub fn reflink(src: &PathAndMetadata, dest: &PathAndMetadata, log: &dyn Log) -> 
     });
 
     // Restore the original metadata of the deduplicated files's parent directory:
-    if let Some(parent) = dest_parent {
-        if let Some(metadata) = dest_parent_metadata {
-            let result = metadata.and_then(|metadata| {
-                restore_metadata(&parent.to_path_buf(), &metadata, Restore::TimestampOnly)
-            });
-            if let Err(e) = result {
-                log.warn(format!(
-                    "Failed keep metadata for {}: {}",
-                    parent.display(),
-                    e
-                ))
-            }
+    if let Some(parent) = dest_parent
+        && let Some(metadata) = dest_parent_metadata
+    {
+        let result = metadata.and_then(|metadata| {
+            restore_metadata(&parent.to_path_buf(), &metadata, Restore::TimestampOnly)
+        });
+        if let Err(e) = result {
+            log.warn(format!(
+                "Failed keep metadata for {}: {e}",
+                parent.display()
+            ));
         }
     }
 
@@ -93,10 +93,9 @@ fn linux_reflink(src: &PathAndMetadata, dest: &PathAndMetadata, log: &dyn Log) -
     let remove_temporary = |temporary| {
         if let Err(e) = FsCommand::remove(&temporary) {
             log.warn(format!(
-                "Failed to remove temporary {}: {}",
-                temporary.display(),
-                e
-            ))
+                "Failed to remove temporary {}: {e}",
+                temporary.display()
+            ));
         }
     };
 
@@ -110,11 +109,9 @@ fn linux_reflink(src: &PathAndMetadata, dest: &PathAndMetadata, log: &dyn Log) -
         Err(e) => {
             if let Err(remove_err) = FsCommand::unsafe_rename(&tmp, &dest.path) {
                 log.warn(format!(
-                    "Failed to undo deduplication from {} to {}: {}",
-                    &dest,
-                    tmp.display(),
-                    remove_err
-                ))
+                    "Failed to undo deduplication from {dest} to {}: {remove_err}",
+                    tmp.display()
+                ));
             }
             Err(e)
         }
@@ -131,6 +128,12 @@ fn reflink_overwrite(target: &std::path::Path, link: &std::path::Path) -> io::Re
     use nix::request_code_write;
     use std::os::unix::prelude::AsRawFd;
 
+    // From /usr/include/linux/fs.h:
+    // #define FICLONE		_IOW(0x94, 9, int)
+    const FICLONE_TYPE: u8 = 0x94;
+    const FICLONE_NR: u8 = 9;
+    const FICLONE_SIZE: usize = std::mem::size_of::<libc::c_int>();
+
     let src = fs::File::open(target)?;
 
     // This operation does not require `.truncate(true)` because the files are already of the same size.
@@ -139,12 +142,6 @@ fn reflink_overwrite(target: &std::path::Path, link: &std::path::Path) -> io::Re
         .truncate(false)
         .write(true)
         .open(link)?;
-
-    // From /usr/include/linux/fs.h:
-    // #define FICLONE		_IOW(0x94, 9, int)
-    const FICLONE_TYPE: u8 = 0x94;
-    const FICLONE_NR: u8 = 9;
-    const FICLONE_SIZE: usize = std::mem::size_of::<libc::c_int>();
 
     let ret = unsafe {
         libc::ioctl(
@@ -159,10 +156,10 @@ fn reflink_overwrite(target: &std::path::Path, link: &std::path::Path) -> io::Re
         let err = io::Error::last_os_error();
         let code = err.raw_os_error().unwrap(); // unwrap () Ok, created from `last_os_error()`
         if code == libc::EOPNOTSUPP { // 95
-             // Filesystem does not supported reflinks.
-             // No cleanup required, file is left untouched.
+            // Filesystem does not supported reflinks.
+            // No cleanup required, file is left untouched.
         } else if code == libc::EINVAL { // 22
-             // Source filesize was larger than destination.
+            // Source filesize was larger than destination.
         }
         Err(err)
     } else {
@@ -179,21 +176,21 @@ fn restore_owner(path: &std::path::Path, metadata: &Metadata) -> io::Result<()> 
     let uid = metadata.uid();
     let gid = metadata.gid();
     path.set_group(gid).map_err(|e| {
-        io::Error::new(
-            io::ErrorKind::Other,
-            format!("Failed to set file group of {}: {}", path.display(), e),
-        )
+        io::Error::other(format!(
+            "Failed to set file group of {}: {e}",
+            path.display()
+        ))
     })?;
     path.set_owner(uid).map_err(|e| {
-        io::Error::new(
-            io::ErrorKind::Other,
-            format!("Failed to set file owner of {}: {}", path.display(), e),
-        )
+        io::Error::other(format!(
+            "Failed to set file owner of {}: {e}",
+            path.display()
+        ))
     })?;
     Ok(())
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 enum Restore {
     TimestampOnly,
     TimestampOwnersPermissions,
@@ -212,9 +209,8 @@ fn restore_metadata(
         io::Error::new(
             e.kind(),
             format!(
-                "Failed to set access and modification times for {}: {}",
-                path.display(),
-                e
+                "Failed to set access and modification times for {}: {e}",
+                path.display()
             ),
         )
     })?;
@@ -223,7 +219,7 @@ fn restore_metadata(
         fs::set_permissions(path, metadata.permissions()).map_err(|e| {
             io::Error::new(
                 e.kind(),
-                format!("Failed to set permissions for {}: {}", path.display(), e),
+                format!("Failed to set permissions for {}: {e}", path.display()),
             )
         })?;
 
@@ -244,9 +240,8 @@ fn get_xattrs(path: &std::path::Path) -> io::Result<Vec<XAttr>> {
             io::Error::new(
                 e.kind(),
                 format!(
-                    "Failed to list extended attributes of {}: {}",
-                    path.display(),
-                    e
+                    "Failed to list extended attributes of {}: {e}",
+                    path.display()
                 ),
             )
         })?
@@ -256,10 +251,9 @@ fn get_xattrs(path: &std::path::Path) -> io::Result<Vec<XAttr>> {
                     io::Error::new(
                         e.kind(),
                         format!(
-                            "Failed to read extended attribute {} of {}: {}",
+                            "Failed to read extended attribute {} of {}: {e}",
                             name.to_string_lossy(),
-                            path.display(),
-                            e
+                            path.display()
                         ),
                     )
                 })?,
@@ -278,10 +272,9 @@ fn restore_xattrs(path: &std::path::Path, xattrs: Vec<XAttr>) -> io::Result<()> 
             io::Error::new(
                 e.kind(),
                 format!(
-                    "Failed to clear extended attribute {} of {}: {}",
+                    "Failed to clear extended attribute {} of {}: {e}",
                     name.to_string_lossy(),
-                    path.display(),
-                    e
+                    path.display()
                 ),
             )
         })?;
@@ -292,10 +285,9 @@ fn restore_xattrs(path: &std::path::Path, xattrs: Vec<XAttr>) -> io::Result<()> 
                 io::Error::new(
                     e.kind(),
                     format!(
-                        "Failed to set extended attribute {} of {}: {}",
+                        "Failed to set extended attribute {} of {}: {e}",
                         attr.name.to_string_lossy(),
-                        path.display(),
-                        e
+                        path.display()
                     ),
                 )
             })?;
@@ -351,12 +343,8 @@ pub mod test {
 
         use std::sync::{Mutex, MutexGuard};
 
-        use lazy_static::lazy_static;
-
-        lazy_static! {
-            pub static ref CROSSTEST: Mutex<bool> = Mutex::new(false);
-            pub static ref SEQUENTIAL_REFLINK_TESTS: Mutex<()> = Mutex::default();
-        }
+        pub static CROSSTEST: Mutex<bool> = Mutex::new(false);
+        pub static SEQUENTIAL_REFLINK_TESTS: Mutex<()> = Mutex::new(());
 
         pub struct CrossTest<'a>(#[allow(dead_code)] MutexGuard<'a, ()>);
         impl<'a> CrossTest<'a> {
@@ -433,7 +421,7 @@ pub mod test {
 
             assert!(file_path_2.exists());
             assert_eq!(read_file(&file_path_2), "foo");
-        })
+        });
     }
 
     #[test]
@@ -470,11 +458,12 @@ pub mod test {
             };
 
             if via_ioctl {
-                assert!(cmd
-                    .execute(true, &log)
-                    .unwrap_err()
-                    .to_string()
-                    .starts_with("Failed to deduplicate"));
+                assert!(
+                    cmd.execute(true, &log)
+                        .unwrap_err()
+                        .to_string()
+                        .starts_with("Failed to deduplicate")
+                );
 
                 assert!(file_path_1.exists());
                 assert!(file_path_2.exists());
@@ -486,7 +475,7 @@ pub mod test {
                 assert!(file_path_2.exists());
                 assert_eq!(read_file(&file_path_2), "foo");
             }
-        })
+        });
     }
 
     #[test]
@@ -526,7 +515,7 @@ pub mod test {
             assert!(file_path_1.exists());
             assert!(file_path_2.exists());
             assert_eq!(read_file(&file_path_2), "foo");
-        })
+        });
     }
 
     #[test]

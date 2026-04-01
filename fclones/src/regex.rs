@@ -1,6 +1,6 @@
 use std::cmp::min;
 
-/// Adds poor-man's partial matching support to the standard regex::Regex
+/// Adds poor-man's partial matching support to the standard `regex::Regex`
 /// Note this is very limited and slightly broken stub for partial matching.
 /// False positives for partial matching are allowed.
 #[derive(Clone, Debug)]

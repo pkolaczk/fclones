@@ -12,7 +12,7 @@ pub enum Phase {
 }
 
 impl Phase {
-    pub fn name(&self) -> &'static str {
+    pub fn name(self) -> &'static str {
         match self {
             Phase::Walk => "Scanning files",
             Phase::FetchExtents => "Fetching extends",
@@ -39,7 +39,7 @@ impl Phases {
     pub fn format(&self, phase: Phase) -> String {
         let phase_no = self.0.iter().position(|p| *p == phase).unwrap();
         let phase_count = self.0.len();
-        format!("{}/{}: {}", phase_no + 1, phase_count, phase.name())
+        format!("{}/{phase_count}: {}", phase_no + 1, phase.name())
     }
 }
 

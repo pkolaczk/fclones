@@ -1,6 +1,6 @@
 //! Command line argument parsing and quoting utilities.
 //!
-//! Provides lossless OsString conversions to and from String by shell-like escaping and quoting.
+//! Provides lossless `OsString` conversions to and from String by shell-like escaping and quoting.
 
 use std::error::Error;
 use std::ffi::{OsStr, OsString};
@@ -26,7 +26,7 @@ impl Arg {
     }
 
     pub fn quote(&self) -> String {
-        quote(self.0.to_os_string())
+        quote(self.0.clone())
     }
 
     pub fn as_os_str(&self) -> &OsStr {
@@ -196,11 +196,11 @@ enum State {
     Comment,
 }
 
-/// Appends a character to OsString
+/// Appends a character to `OsString`
 fn append(s: &mut OsString, c: char) {
     let mut buf = [0; 4];
     let c = c.encode_utf8(&mut buf);
-    s.push(c)
+    s.push(c);
 }
 
 /// Splits command line into separate arguments, in much the same way Unix shell would, but without
@@ -223,7 +223,7 @@ fn append(s: &mut OsString, c: char) {
 ///
 /// # Compatibility with other implementations
 ///
-/// It should be fully compatible with g_shell_parse_argv from GLib, except that in GLib
+/// It should be fully compatible with `g_shell_parse_argv` from `GLib`, except that in `GLib`
 /// it is an error not to have any words after tokenization.
 ///
 /// It is also very close to shlex.split available in Python standard library, when used in POSIX
@@ -238,7 +238,10 @@ pub fn split(s: &str) -> Result<Vec<Arg>, ParseError> {
     // Based on shell-words crate by Tomasz Miąsko
     // Handling of dollar quotes added by Piotr Kołaczkowski
 
-    use State::*;
+    use State::{
+        Backslash, Comment, Delimiter, Dollar, DollarQuoted, DollarQuotedBackslash, DoubleQuoted,
+        DoubleQuotedBackslash, SingleQuoted, Unquoted, UnquotedBackslash,
+    };
 
     let mut words = Vec::new();
     let mut word = OsString::new();
@@ -257,7 +260,7 @@ pub fn split(s: &str) -> Result<Vec<Arg>, ParseError> {
                 Some('\'') => SingleQuoted,
                 Some('\"') => DoubleQuoted,
                 Some('\\') => Backslash,
-                Some('\t') | Some(' ') | Some('\n') => Delimiter,
+                Some('\t' | ' ' | '\n') => Delimiter,
                 Some('$') => Dollar,
                 Some('#') => Comment,
                 Some(c) => {
@@ -286,7 +289,7 @@ pub fn split(s: &str) -> Result<Vec<Arg>, ParseError> {
                 Some('\"') => DoubleQuoted,
                 Some('\\') => UnquotedBackslash,
                 Some('$') => Dollar,
-                Some('\t') | Some(' ') | Some('\n') => {
+                Some('\t' | ' ' | '\n') => {
                     words.push(Arg(mem::replace(&mut word, OsString::new())));
                     Delimiter
                 }
@@ -327,7 +330,7 @@ pub fn split(s: &str) -> Result<Vec<Arg>, ParseError> {
             DoubleQuotedBackslash => match c {
                 None => return Err(ParseError::new("Unexpected end of input")),
                 Some('\n') => DoubleQuoted,
-                Some(c @ '$') | Some(c @ '`') | Some(c @ '"') | Some(c @ '\\') => {
+                Some(c @ ('$' | '`' | '"' | '\\')) => {
                     append(&mut word, c);
                     DoubleQuoted
                 }
@@ -376,14 +379,14 @@ pub fn split(s: &str) -> Result<Vec<Arg>, ParseError> {
 
 /// Joins multiple command line args into a single-line escaped representation
 pub fn join(args: &[Arg]) -> String {
-    args.iter().map(|arg| arg.quote()).join(" ")
+    args.iter().map(Arg::quote).join(" ")
 }
 
 #[cfg(test)]
 mod test {
     use std::ffi::OsString;
 
-    use crate::arg::{quote, split, Arg};
+    use crate::arg::{Arg, quote, split};
 
     #[test]
     fn quote_no_special_chars() {
@@ -417,7 +420,7 @@ mod test {
         assert_eq!(
             split("arg1 arg2").unwrap(),
             vec![Arg::from("arg1"), Arg::from("arg2")]
-        )
+        );
     }
 
     #[test]
@@ -425,7 +428,7 @@ mod test {
         assert_eq!(
             split("'arg1 with spaces' arg2").unwrap(),
             vec![Arg::from("arg1 with spaces"), Arg::from("arg2")]
-        )
+        );
     }
 
     #[test]
@@ -433,7 +436,7 @@ mod test {
         assert_eq!(
             split("\"arg1 with spaces\" arg2").unwrap(),
             vec![Arg::from("arg1 with spaces"), Arg::from("arg2")]
-        )
+        );
     }
 
     #[test]
@@ -441,7 +444,7 @@ mod test {
         assert_eq!(
             split("\"escaped \\\" quotes\"").unwrap(),
             vec![Arg::from("escaped \" quotes")]
-        )
+        );
     }
 
     #[test]
@@ -457,7 +460,7 @@ mod test {
         assert_eq!(
             split("escaped\\ space").unwrap(),
             vec![Arg::from("escaped space")]
-        )
+        );
     }
 
     #[test]
@@ -469,6 +472,6 @@ mod test {
                 Arg::from("arg2-\n\t\\"),
                 Arg::from("arg3-\x7f")
             ]
-        )
+        );
     }
 }

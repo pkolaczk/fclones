@@ -8,7 +8,7 @@ use nom::lib::std::fmt::Display;
 use crate::progress::{ProgressBar, ProgressTracker};
 use chrono::Local;
 
-/// Determines the size of the task tracked by ProgressTracker.
+/// Determines the size of the task tracked by `ProgressTracker`.
 #[derive(Debug, Clone, Copy)]
 pub enum ProgressBarLength {
     Items(u64),
@@ -46,17 +46,17 @@ pub trait LogExt {
 impl<L: Log + ?Sized> LogExt for L {
     /// Logs an info message.
     fn info(&self, msg: impl Display) {
-        self.log(LogLevel::Info, msg.to_string())
+        self.log(LogLevel::Info, msg.to_string());
     }
 
     /// Logs an warning.
     fn warn(&self, msg: impl Display) {
-        self.log(LogLevel::Warn, msg.to_string())
+        self.log(LogLevel::Warn, msg.to_string());
     }
 
     /// Logs an error.
     fn err(&self, msg: impl Display) {
-        self.log(LogLevel::Error, msg.to_string())
+        self.log(LogLevel::Error, msg.to_string());
     }
 }
 
@@ -69,6 +69,7 @@ pub struct StdLog {
 }
 
 impl StdLog {
+    #[must_use]
     pub fn new() -> StdLog {
         StdLog {
             progress_bar: Mutex::new(Weak::default()),
@@ -160,14 +161,12 @@ impl Log for StdLog {
             LogLevel::Error => style("error:").for_stderr().red(),
         };
         let msg = format!(
-            "{} {}: {} {}",
+            "{} {}: {level} {msg}",
             style(timestamp.format(Self::TIMESTAMP_FMT))
                 .for_stderr()
                 .dim()
                 .white(),
-            style(&self.program_name).for_stderr().yellow(),
-            level,
-            msg
+            style(&self.program_name).for_stderr().yellow()
         );
         self.eprintln(msg);
     }

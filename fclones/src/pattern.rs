@@ -1,14 +1,13 @@
 use std::fmt::{Display, Formatter};
 use std::ops::Add;
-use std::path::{Path, MAIN_SEPARATOR};
+use std::path::{MAIN_SEPARATOR, Path};
 
 use nom::branch::alt;
 use nom::bytes::complete::tag;
 use nom::character::complete::{anychar, none_of};
 use nom::combinator::{cond, map};
 use nom::multi::{many0, separated_list0};
-use nom::sequence::tuple;
-use nom::IResult;
+use nom::{IResult, Parser};
 use regex::escape;
 
 use crate::path::PATH_ESCAPE_CHAR;
@@ -63,7 +62,7 @@ impl PatternOpts {
     }
 }
 
-#[derive(PartialEq, Debug)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 enum Scope {
     TopLevel,
     CurlyBrackets,
@@ -172,50 +171,51 @@ impl Pattern {
 
     /// Parses a UNIX glob and converts it to a regular expression
     fn glob_to_regex(scope: Scope, glob: &str) -> IResult<&str, String> {
+        fn mk_string(contents: &[String], prefix: &str, sep: &str, suffix: &str) -> String {
+            format!("{prefix}{}{suffix}", contents.join(sep))
+        }
+
         // pass escaped characters as-is:
-        let p_escaped = map(tuple((tag(PATH_ESCAPE_CHAR), anychar)), |(_, c)| {
+        let p_escaped = map((tag(PATH_ESCAPE_CHAR), anychar), |(_, c)| {
             escape(c.to_string().as_str())
         });
 
-        fn mk_string(contents: Vec<String>, prefix: &str, sep: &str, suffix: &str) -> String {
-            format!("{}{}{}", prefix, contents.join(sep), suffix)
-        }
-
         // { glob1, glob2, ..., globN } -> ( regex1, regex2, ..., regexN )
         let p_alt = map(
-            tuple((
+            (
                 tag("{"),
                 separated_list0(tag(","), |g| Self::glob_to_regex(Scope::CurlyBrackets, g)),
                 tag("}"),
-            )),
-            |(_, list, _)| mk_string(list, "(", "|", ")"),
+            ),
+            |(_, list, _)| mk_string(&list, "(", "|", ")"),
         );
 
         let p_ext_glob = |s| {
             map(
-                tuple((
+                (
                     tag("("),
                     separated_list0(tag("|"), |g| Self::glob_to_regex(Scope::RoundBrackets, g)),
                     tag(")"),
-                )),
+                ),
                 |(_, list, _)| list,
-            )(s)
+            )
+            .parse(s)
         };
 
-        let p_ext_optional = map(tuple((tag("?"), p_ext_glob)), |(_, g)| {
-            mk_string(g, "(", "|", ")?")
+        let p_ext_optional = map((tag("?"), p_ext_glob), |(_, g)| {
+            mk_string(&g, "(", "|", ")?")
         });
-        let p_ext_many = map(tuple((tag("*"), p_ext_glob)), |(_, g)| {
-            mk_string(g, "(", "|", ")*")
+        let p_ext_many = map((tag("*"), p_ext_glob), |(_, g)| {
+            mk_string(&g, "(", "|", ")*")
         });
-        let p_ext_at_least_once = map(tuple((tag("+"), p_ext_glob)), |(_, g)| {
-            mk_string(g, "(", "|", ")+")
+        let p_ext_at_least_once = map((tag("+"), p_ext_glob), |(_, g)| {
+            mk_string(&g, "(", "|", ")+")
         });
-        let p_ext_exactly_once = map(tuple((tag("@"), p_ext_glob)), |(_, g)| {
-            mk_string(g, "(", "|", ")")
+        let p_ext_exactly_once = map((tag("@"), p_ext_glob), |(_, g)| {
+            mk_string(&g, "(", "|", ")")
         });
-        let p_ext_never = map(tuple((tag("!"), p_ext_glob)), |(_, g)| {
-            mk_string(g, "(?!", "|", ")")
+        let p_ext_never = map((tag("!"), p_ext_glob), |(_, g)| {
+            mk_string(&g, "(?!", "|", ")")
         });
 
         // ** -> .*
@@ -225,15 +225,15 @@ impl Pattern {
 
         // * -> [^/]*
         let p_single_star =
-            |s| map(tag("*"), |_| "[^".to_string() + escaped_sep.as_str() + "]*")(s);
+            |s| map(tag("*"), |_| "[^".to_string() + escaped_sep.as_str() + "]*").parse(s);
 
         // ? -> .
         let p_question_mark =
-            |s| map(tag("?"), |_| "[^".to_string() + escaped_sep.as_str() + "]")(s);
+            |s| map(tag("?"), |_| "[^".to_string() + escaped_sep.as_str() + "]").parse(s);
 
         // [ characters ] -> [ characters ]
         let p_neg_character_set = map(
-            tuple((tag("[!"), many0(none_of("]")), tag("]"))),
+            (tag("[!"), many0(none_of("]")), tag("]")),
             |(_, characters, _)| {
                 "[^".to_string() + &characters.into_iter().collect::<String>() + "]"
             },
@@ -241,7 +241,7 @@ impl Pattern {
 
         // [ characters ] -> [ characters ]
         let p_character_set = map(
-            tuple((tag("["), many0(none_of("]")), tag("]"))),
+            (tag("["), many0(none_of("]")), tag("]")),
             |(_, characters, _)| {
                 "[".to_string() + &characters.into_iter().collect::<String>() + "]"
             },
@@ -251,11 +251,11 @@ impl Pattern {
 
         // if we are nested, we can't just pass these through without interpretation
         let p_any_char = map(
-            tuple((
+            (
                 cond(scope == Scope::TopLevel, anychar),
                 cond(scope == Scope::CurlyBrackets, none_of("{,}")),
                 cond(scope == Scope::RoundBrackets, none_of("(|)")),
-            )),
+            ),
             |(a, b, c)| escape(a.or(b).or(c).unwrap().to_string().as_str()),
         );
 
@@ -277,7 +277,7 @@ impl Pattern {
         ));
 
         let mut parse_all = map(many0(p_token), |s| s.join(""));
-        (parse_all)(glob)
+        parse_all.parse(glob)
     }
 }
 
@@ -393,7 +393,7 @@ mod test {
         assert_eq!(
             Pattern::literal("test*?{}\\").to_string(),
             "test\\*\\?\\{\\}\\\\"
-        )
+        );
     }
 
     #[test]
@@ -409,7 +409,7 @@ mod test {
         assert_eq!(
             (Pattern::literal("/foo/bar/") + Pattern::glob("*").unwrap()).to_string(),
             Pattern::glob("/foo/bar/*").unwrap().to_string()
-        )
+        );
     }
 
     #[test]

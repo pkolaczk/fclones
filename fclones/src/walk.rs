@@ -1,6 +1,6 @@
 use std::default::Default;
 use std::env::current_dir;
-use std::fs::{read_link, symlink_metadata, DirEntry, FileType, ReadDir};
+use std::fs::{DirEntry, FileType, ReadDir, read_link, symlink_metadata};
 use std::sync::Arc;
 use std::{fs, io};
 
@@ -55,7 +55,7 @@ impl Entry {
         symlink_metadata(path.to_path_buf()).map(|meta| Entry::new(meta.file_type(), path))
     }
 
-    pub fn from_dir_entry(base: &Arc<Path>, dir_entry: DirEntry) -> io::Result<Entry> {
+    pub fn from_dir_entry(base: &Arc<Path>, dir_entry: &DirEntry) -> io::Result<Entry> {
         let path = base.join(Path::from(dir_entry.file_name()));
         dir_entry.file_type().map(|ft| Entry::new(ft, path))
     }
@@ -68,10 +68,10 @@ impl IgnoreStack {
     /// Returns ignore stack initialized with global gitignore settings.
     fn new(log: Option<&dyn Log>) -> Self {
         let gitignore = GitignoreBuilder::new("/").build_global();
-        if let Some(err) = gitignore.1 {
-            if let Some(log) = log {
-                log.warn(format!("Error loading global gitignore rules: {err}"))
-            }
+        if let Some(err) = gitignore.1
+            && let Some(log) = log
+        {
+            log.warn(format!("Error loading global gitignore rules: {err}"));
         }
         IgnoreStack(Arc::new(vec![gitignore.0]))
     }
@@ -94,14 +94,13 @@ impl IgnoreStack {
             return self.clone();
         }
         let gitignore = Gitignore::new(&path_buf);
-        if let Some(err) = gitignore.1 {
-            if let Some(log) = log {
-                log.warn(format!(
-                    "Error while loading ignore file {}: {}",
-                    path.display(),
-                    err
-                ))
-            }
+        if let Some(err) = gitignore.1
+            && let Some(log) = log
+        {
+            log.warn(format!(
+                "Error while loading ignore file {}: {err}",
+                path.display()
+            ));
         }
         let mut stack = self.0.as_ref().clone();
         stack.push(gitignore.0);
@@ -195,28 +194,30 @@ impl<'a> Walk<'a> {
                 IgnoreStack::new(self.log)
             };
 
-            for p in roots.into_iter() {
+            for p in roots {
                 let p = self.absolute(p);
                 let ignore = ignore.clone();
                 match fs::metadata(p.to_path_buf()) {
-                    Ok(metadata) if metadata.is_dir() && self.depth == 0 => self.log_warn(format!(
-                        "Skipping directory {} because recursive scan is disabled.",
-                        p.display()
-                    )),
+                    Ok(metadata) if metadata.is_dir() && self.depth == 0 => {
+                        self.log_warn(&format!(
+                            "Skipping directory {} because recursive scan is disabled.",
+                            p.display()
+                        ));
+                    }
                     #[cfg(unix)]
                     Ok(metadata) => {
                         let dev = FileId::from_metadata(&metadata).device;
                         let state = &state;
-                        scope.spawn(move |scope| self.visit_path(p, dev, scope, 0, ignore, state))
+                        scope
+                            .spawn(move |scope| self.visit_path(&p, dev, scope, 0, &ignore, state));
                     }
                     #[cfg(windows)]
                     Ok(_) => {
                         let dev = FileId::new(&p).map(|f| f.device);
                         match dev {
                             Err(err) if self.one_fs => self.log_warn(format!(
-                                "Failed to get device information for {}: {}",
-                                p.display(),
-                                err
+                                "Failed to get device information for {}: {err}",
+                                p.display()
                             )),
                             _ => {
                                 let dev = dev.unwrap_or_default();
@@ -228,7 +229,7 @@ impl<'a> Walk<'a> {
                         }
                     }
                     Err(err) => {
-                        self.log_warn(format!("Cannot stat {}: {}", p.display(), err));
+                        self.log_warn(&format!("Cannot stat {}: {err}", p.display()));
                     }
                 }
             }
@@ -238,23 +239,23 @@ impl<'a> Walk<'a> {
     /// Visits path of any type (can be a symlink target, file or dir)
     fn visit_path<'s, 'w, F>(
         &'s self,
-        path: Path,
+        path: &Path,
         dev: DeviceId,
         scope: &Scope<'w>,
         level: usize,
-        gitignore: IgnoreStack,
+        gitignore: &IgnoreStack,
         state: &'w WalkState<F>,
     ) where
         F: Fn(Path) + Sync + Send,
         's: 'w,
     {
-        if self.path_selector.matches_dir(&path) {
+        if self.path_selector.matches_dir(path) {
             Entry::from_path(path.clone())
-                .map_err(|e| self.log_warn(format!("Failed to stat {}: {}", path.display(), e)))
+                .map_err(|e| self.log_warn(&format!("Failed to stat {}: {e}", path.display())))
                 .into_iter()
                 .for_each(|entry| {
-                    self.visit_entry(entry, dev, scope, level, gitignore.clone(), state)
-                })
+                    self.visit_entry(entry, dev, scope, level, gitignore.clone(), state);
+                });
         }
     }
 
@@ -276,12 +277,11 @@ impl<'a> Walk<'a> {
         (self.on_visit)(&entry.path);
 
         // Skip hidden files
-        if !self.hidden {
-            if let Some(name) = entry.path.file_name_cstr() {
-                if name.to_string_lossy().starts_with('.') {
-                    return;
-                }
-            }
+        if !self.hidden
+            && let Some(name) = entry.path.file_name_cstr()
+            && name.to_string_lossy().starts_with('.')
+        {
+            return;
         }
 
         // Skip already visited paths. We're checking only when follow_links is true,
@@ -298,7 +298,7 @@ impl<'a> Walk<'a> {
         match entry.tpe {
             EntryType::File => self.visit_file(entry.path, state),
             EntryType::Dir => self.visit_dir(entry.path, dev, scope, level, gitignore, state),
-            EntryType::SymLink => self.visit_link(entry.path, dev, scope, level, gitignore, state),
+            EntryType::SymLink => self.visit_link(entry.path, dev, scope, level, &gitignore, state),
             EntryType::Other => {}
         }
     }
@@ -309,7 +309,7 @@ impl<'a> Walk<'a> {
         F: Fn(Path) + Sync + Send,
     {
         if self.path_selector.matches_full_path(&path) {
-            (state.consumer)(path)
+            (state.consumer)(path);
         }
     }
 
@@ -321,7 +321,7 @@ impl<'a> Walk<'a> {
         dev: DeviceId,
         scope: &Scope<'w>,
         level: usize,
-        gitignore: IgnoreStack,
+        gitignore: &IgnoreStack,
         state: &'w WalkState<F>,
     ) where
         F: Fn(Path) + Sync + Send,
@@ -332,10 +332,10 @@ impl<'a> Walk<'a> {
                 Ok((_, EntryType::File)) if self.report_links => self.visit_file(path, state),
                 Ok((target, _)) => {
                     if self.follow_links && (!self.one_fs || self.same_fs(&target, dev)) {
-                        self.visit_path(target, dev, scope, level, gitignore, state);
+                        self.visit_path(&target, dev, scope, level, gitignore, state);
                     }
                 }
-                Err(e) => self.log_warn(format!("Failed to read link {}: {}", path.display(), e)),
+                Err(e) => self.log_warn(&format!("Failed to read link {}: {e}", path.display())),
             }
         }
     }
@@ -375,19 +375,19 @@ impl<'a> Walk<'a> {
                 for entry in Self::sorted_entries(path, rd) {
                     let gitignore = gitignore.clone();
                     scope.spawn(move |s| {
-                        self.visit_entry(entry, dev, s, level + 1, gitignore, state)
-                    })
+                        self.visit_entry(entry, dev, s, level + 1, gitignore, state);
+                    });
                 }
             }
-            Err(e) => self.log_warn(format!("Failed to read dir {}: {}", path.display(), e)),
+            Err(e) => self.log_warn(&format!("Failed to read dir {}: {e}", path.display())),
         }
     }
 
     #[cfg(unix)]
     fn sort_dir_entries_by_inode(entries: &mut [DirEntry]) {
         use rayon::prelude::ParallelSliceMut;
-        use std::os::unix::fs::DirEntryExt;
-        entries.par_sort_unstable_by_key(|entry| entry.ino())
+
+        entries.par_sort_unstable_by_key(std::os::unix::fs::DirEntryExt::ino);
     }
 
     #[cfg(not(unix))]
@@ -403,12 +403,12 @@ impl<'a> Walk<'a> {
         let mut links = vec![];
         let mut dirs = vec![];
         let path = Arc::new(parent);
-        let mut entries: Vec<DirEntry> = rd.filter_map(|e| e.ok()).collect();
+        let mut entries: Vec<DirEntry> = rd.filter_map(Result::ok).collect();
         // Accessing entries in the order of identifiers should be faster on rotational drives
         Self::sort_dir_entries_by_inode(&mut entries);
         entries
             .into_iter()
-            .filter_map(|e| Entry::from_dir_entry(&path, e).ok())
+            .filter_map(|e| Entry::from_dir_entry(&path, &e).ok())
             .for_each(|e| match e.tpe {
                 EntryType::File => files.push(e),
                 EntryType::SymLink => links.push(e),
@@ -437,10 +437,9 @@ impl<'a> Walk<'a> {
         match FileId::new(path) {
             Ok(file_id) => file_id.device == device,
             Err(err) => {
-                self.log_warn(format!(
-                    "Cannot read device id of {}: {}",
-                    path.display(),
-                    err
+                self.log_warn(&format!(
+                    "Cannot read device id of {}: {err}",
+                    path.display()
                 ));
                 false
             }
@@ -453,7 +452,7 @@ impl<'a> Walk<'a> {
     /// File symlinks are not resolved, because we need
     fn absolute(&self, mut path: Path) -> Path {
         if path.is_relative() {
-            path = self.base_dir.join(path)
+            path = self.base_dir.join(path);
         }
         if path.to_path_buf().is_file() {
             // for files we are sure there will be a parent and a file name
@@ -466,8 +465,8 @@ impl<'a> Walk<'a> {
     }
 
     /// Logs a warning
-    fn log_warn(&self, msg: String) {
-        self.log.iter().for_each(|l| l.warn(&msg))
+    fn log_warn(&self, msg: &str) {
+        self.log.iter().for_each(|l| l.warn(msg));
     }
 }
 
@@ -479,7 +478,7 @@ impl Default for Walk<'_> {
 
 #[cfg(test)]
 mod test {
-    use std::fs::{create_dir, File};
+    use std::fs::{File, create_dir};
     use std::path::PathBuf;
     use std::sync::Mutex;
 
@@ -495,7 +494,7 @@ mod test {
             File::create(&file1).unwrap();
             File::create(&file2).unwrap();
             let walk = Walk::new();
-            assert_eq!(run_walk(walk, test_root.clone()), vec![file1, file2]);
+            assert_eq!(run_walk(&walk, test_root.clone()), vec![file1, file2]);
         });
     }
 
@@ -507,7 +506,7 @@ mod test {
             let file = dir.join("file.txt");
             File::create(&file).unwrap();
             let walk = Walk::new();
-            assert_eq!(run_walk(walk, test_root.clone()), vec![file]);
+            assert_eq!(run_walk(&walk, test_root.clone()), vec![file]);
         });
     }
 
@@ -522,7 +521,7 @@ mod test {
             symlink(PathBuf::from("file.txt"), &link).unwrap(); // link -> file.txt
             let mut walk = Walk::new();
             walk.follow_links = true;
-            assert_eq!(run_walk(walk, link), vec![file]);
+            assert_eq!(run_walk(&walk, link), vec![file]);
         });
     }
 
@@ -540,12 +539,12 @@ mod test {
 
             let mut walk1 = Walk::new();
             walk1.report_links = true;
-            assert_eq!(run_walk(walk1, link1.clone()), vec![link1]);
+            assert_eq!(run_walk(&walk1, link1.clone()), vec![link1]);
 
             // a link to a link should also be reported
             let mut walk2 = Walk::new();
             walk2.report_links = true;
-            assert_eq!(run_walk(walk2, link2.clone()), vec![link2]);
+            assert_eq!(run_walk(&walk2, link2.clone()), vec![link2]);
         });
     }
 
@@ -564,7 +563,7 @@ mod test {
 
             let mut walk = Walk::new();
             walk.follow_links = true;
-            assert_eq!(run_walk(walk, link), vec![file]);
+            assert_eq!(run_walk(&walk, link), vec![file]);
         });
     }
 
@@ -583,7 +582,7 @@ mod test {
 
             let mut walk = Walk::new();
             walk.follow_links = true;
-            assert_eq!(run_walk(walk, link), vec![file]);
+            assert_eq!(run_walk(&walk, link), vec![file]);
         });
     }
 
@@ -603,7 +602,7 @@ mod test {
 
             let mut walk = Walk::new();
             walk.follow_links = true;
-            assert_eq!(run_walk(walk, test_root.clone()), vec![file]);
+            assert_eq!(run_walk(&walk, test_root.clone()), vec![file]);
         });
     }
 
@@ -619,11 +618,11 @@ mod test {
 
             let mut walk = Walk::new();
             walk.hidden = false;
-            assert!(run_walk(walk, test_root.clone()).is_empty());
+            assert!(run_walk(&walk, test_root.clone()).is_empty());
 
             let mut walk = Walk::new();
             walk.hidden = true;
-            assert_eq!(run_walk(walk, test_root.clone()).len(), 2);
+            assert_eq!(run_walk(&walk, test_root.clone()).len(), 2);
         });
     }
 
@@ -644,28 +643,28 @@ mod test {
             create_file(&test_root.join("dir").join("bar").join("file"));
 
             let walk = Walk::new();
-            assert!(run_walk(walk, test_root.clone()).is_empty());
+            assert!(run_walk(&walk, test_root.clone()).is_empty());
 
             let mut walk = Walk::new();
             walk.no_ignore = true;
-            assert_eq!(run_walk(walk, test_root.clone()).len(), 3)
+            assert_eq!(run_walk(&walk, test_root.clone()).len(), 3);
         });
     }
 
     #[test]
     fn respect_gitignore() {
-        respect_ignore("target/test/walk/gitignore/", ".gitignore")
+        respect_ignore("target/test/walk/gitignore/", ".gitignore");
     }
 
     #[test]
     fn respect_fdignore() {
-        respect_ignore("target/test/walk/fdignore/", ".fdignore")
+        respect_ignore("target/test/walk/fdignore/", ".fdignore");
     }
 
-    fn run_walk(walk: Walk, root: PathBuf) -> Vec<PathBuf> {
+    fn run_walk(walk: &Walk, root: PathBuf) -> Vec<PathBuf> {
         let results = Mutex::new(Vec::new());
         walk.run(vec![Path::from(root)], |path| {
-            results.lock().unwrap().push(path.to_path_buf())
+            results.lock().unwrap().push(path.to_path_buf());
         });
 
         let mut results = results.into_inner().unwrap();

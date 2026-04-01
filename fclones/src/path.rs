@@ -42,6 +42,7 @@ pub struct Path {
 }
 
 impl Path {
+    #[must_use]
     pub fn canonicalize(&self) -> Path {
         let path_buf = self.to_path_buf();
         match dunce::canonicalize(path_buf.clone()) {
@@ -50,10 +51,12 @@ impl Path {
         }
     }
 
+    #[must_use]
     pub fn is_absolute(&self) -> bool {
         self.root().is_some()
     }
 
+    #[must_use]
     pub fn is_relative(&self) -> bool {
         self.root().is_none()
     }
@@ -62,6 +65,7 @@ impl Path {
     /// In Unix, returns "/".
     /// In Windows this can return a root with prefix e.g. "C:\".
     /// If path is relative, returns None.
+    #[must_use]
     pub fn root(&self) -> Option<&Path> {
         let mut result = self;
         loop {
@@ -69,7 +73,7 @@ impl Path {
                 return Some(result);
             }
             if let Some(parent) = &result.parent {
-                result = parent.as_ref()
+                result = parent.as_ref();
             } else {
                 break;
             }
@@ -79,12 +83,14 @@ impl Path {
 
     /// Moves this [`Path`] under an [`Arc`].
     /// You need to wrap [`Path`] before joining anything to it.
+    #[must_use]
     pub fn share(self) -> Arc<Self> {
         Arc::new(self)
     }
 
     /// Copies this path from under an [`Arc`].
     /// Generally cheap, because only the last component is copied.
+    #[must_use]
     pub fn unshare(self: &Arc<Path>) -> Path {
         self.as_ref().clone()
     }
@@ -117,11 +123,10 @@ impl Path {
 
     /// Returns the name of the last component of this path or None
     /// if the path is directory (e.g. root dir or parent dir).
+    #[must_use]
     pub fn file_name(&self) -> Option<OsString> {
         match self.component.as_bytes() {
-            b"/" => None,
-            b".." => None,
-            b"." => None,
+            b"/" | b".." | b"." => None,
             _ => Some(c_to_os_str(self.component.as_c_str())),
         }
     }
@@ -129,17 +134,17 @@ impl Path {
     /// Returns the name of the last component of this path or None
     /// if the path is directory (e.g. root dir or parent dir).
     /// Doesn't allocate anything on the heap.
+    #[must_use]
     pub fn file_name_cstr(&self) -> Option<&CStr> {
         match self.component.as_bytes() {
-            b"/" => None,
-            b".." => None,
-            b"." => None,
+            b"/" | b".." | b"." => None,
             _ => Some(self.component.as_c_str()),
         }
     }
 
     /// Returns the parent directory of this path.
     /// Doesn't allocate anything on the heap.
+    #[must_use]
     pub fn parent(&self) -> Option<&Arc<Path>> {
         self.parent.as_ref()
     }
@@ -147,6 +152,7 @@ impl Path {
     /// Returns a path that joined to `base` would give this path.
     /// If base is the same as this path, returns current directory.
     /// If this path doesn't have a `base` prefix, returns `None`.
+    #[must_use]
     pub fn strip_prefix(&self, base: &Path) -> Option<Path> {
         let mut self_components = self.components().into_iter().peekable();
         let mut base_components = base.components().into_iter().peekable();
@@ -163,6 +169,7 @@ impl Path {
     /// If this path is absolute, strips the root component and returns a relative path.
     /// Otherwise returns a clone of this path.
     /// E.g. `/foo/bar` becomes `foo/bar`
+    #[must_use]
     pub fn strip_root(&self) -> Path {
         if let Some(root) = self.root() {
             self.strip_prefix(root).unwrap()
@@ -172,6 +179,7 @@ impl Path {
     }
 
     /// Returns true if self is a prefix of another path
+    #[must_use]
     pub fn is_prefix_of(&self, other: &Path) -> bool {
         let mut self_components = self.components().into_iter().peekable();
         let mut other_components = other.components().into_iter().peekable();
@@ -187,6 +195,7 @@ impl Path {
 
     /// Converts this path to a standard library path buffer.
     /// We need this to be able to use this path with other standard library I/O functions.
+    #[must_use]
     pub fn to_path_buf(&self) -> PathBuf {
         let mut result = PathBuf::from(OsString::with_capacity(self.capacity()));
         self.for_each_component(|c| result.push(c_to_os_str(c)));
@@ -196,11 +205,13 @@ impl Path {
     /// Converts this path to an UTF encoded string.
     /// Any non-Unicode sequences are replaced with
     /// [`U+FFFD REPLACEMENT CHARACTER`][U+FFFD].
+    #[must_use]
     pub fn to_string_lossy(&self) -> String {
         self.to_path_buf().to_string_lossy().to_string()
     }
 
     /// Returns a lossless string representation in [STFU8 format](https://crates.io/crates/stfu8).
+    #[must_use]
     pub fn to_escaped_string(&self) -> String {
         to_stfu8(self.to_path_buf().into_os_string())
     }
@@ -215,12 +226,14 @@ impl Path {
     /// If the path contains special shell characters like '\\' or '*', it is single-quoted.
     /// This function also takes care of the characters that cannot be represented in UTF-8
     /// by escaping them with `$'\xXX'` or `$'\uXXXX'` syntax.
+    #[must_use]
     pub fn quote(&self) -> String {
         arg::quote(self.to_path_buf().into_os_string())
     }
 
     /// Returns a representation suitable for display in the console.
     /// Control characters like newline or linefeed are escaped.
+    #[must_use]
     pub fn display(&self) -> String {
         self.quote()
     }
@@ -228,11 +241,12 @@ impl Path {
     /// Returns a hash of the full path. Useful for deduplicating paths without making path clones.
     /// We need 128-bits so that collisions are not a problem.
     /// Thanks to using a long hash we can be sure collisions won't be a problem.
+    #[must_use]
     pub fn hash128(&self) -> u128 {
         let mut hasher = MetroHash128::new();
         self.hash(&mut hasher);
         let (a, b) = hasher.finish128();
-        ((a as u128) << 64) | (b as u128)
+        (u128::from(a) << 64) | u128::from(b)
     }
 
     fn new(component: CString) -> Path {
@@ -260,6 +274,7 @@ impl Path {
     }
 
     /// Returns the number of components in this path
+    #[must_use]
     pub fn component_count(&self) -> usize {
         let mut count = 0;
         self.for_each_component(|_| count += 1);
@@ -268,13 +283,13 @@ impl Path {
 
     /// Executes a function for each component, left to right
     fn for_each_component<F: FnMut(&CStr)>(&self, mut f: F) {
-        self.for_each_component_ref(&mut f)
+        self.for_each_component_ref(&mut f);
     }
 
     /// Executes a function for each component, left to right
     fn for_each_component_ref<F: FnMut(&CStr)>(&self, f: &mut F) {
         self.parent.iter().for_each(|p| p.for_each_component_ref(f));
-        (f)(self.component.as_c_str())
+        f(self.component.as_c_str());
     }
 
     /// Estimates size of this path in bytes
@@ -297,7 +312,7 @@ impl Path {
             Some(c) => Path::new(CString::from(c)),
         };
         for c in iter {
-            result = Arc::new(result).push(CString::from(c))
+            result = Arc::new(result).push(CString::from(c));
         }
         result
     }
@@ -315,7 +330,7 @@ impl Default for Path {
     }
 }
 
-/// Converts std path Component to a new CString
+/// Converts std path Component to a new `CString`
 fn component_to_c_string(c: &Component<'_>) -> CString {
     os_to_c_str(c.as_os_str())
 }
@@ -331,7 +346,7 @@ where
             &components.next().unwrap_or(Component::CurDir),
         ));
         for c in components {
-            result = Arc::new(result).push(component_to_c_string(&c))
+            result = Arc::new(result).push(component_to_c_string(&c));
         }
         result
     }
@@ -407,7 +422,7 @@ mod string {
 #[cfg(test)]
 mod test {
     use super::*;
-    use serde_test::{assert_ser_tokens, Token};
+    use serde_test::{Token, assert_ser_tokens};
 
     fn test_convert(s: &str) {
         assert_eq!(PathBuf::from(s), Path::from(s).to_path_buf());
@@ -500,13 +515,13 @@ mod test {
     fn is_prefix_of() {
         assert!(Path::from("/foo/bar").is_prefix_of(&Path::from("/foo/bar")));
         assert!(Path::from("/foo/bar").is_prefix_of(&Path::from("/foo/bar/baz")));
-        assert!(!Path::from("/foo/bar").is_prefix_of(&Path::from("/foo")))
+        assert!(!Path::from("/foo/bar").is_prefix_of(&Path::from("/foo")));
     }
 
     #[test]
     fn encode_decode_stfu8() {
         fn roundtrip(s: &str) {
-            assert_eq!(Path::from_escaped_string(s).unwrap().to_escaped_string(), s)
+            assert_eq!(Path::from_escaped_string(s).unwrap().to_escaped_string(), s);
         }
         roundtrip("a/b/c");
         roundtrip("ą/ś/ć");
@@ -524,6 +539,6 @@ mod test {
 
     #[test]
     fn serialize() {
-        assert_ser_tokens(&Path::from("a \n b"), &[Token::String("a \\n b")])
+        assert_ser_tokens(&Path::from("a \n b"), &[Token::String("a \\n b")]);
     }
 }

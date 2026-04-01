@@ -60,20 +60,18 @@ impl HashCache {
     ) -> Result<HashCache, Error> {
         create_dir_all(database_path.to_path_buf()).map_err(|e| {
             format!(
-                "Count not create hash database directory {}: {}",
-                database_path.to_escaped_string(),
-                e
+                "Count not create hash database directory {}: {e}",
+                database_path.to_escaped_string()
             )
         })?;
         let db = sled::open(database_path.to_path_buf()).map_err(|e| {
             format!(
-                "Failed to open hash database at {}: {}",
-                database_path.to_escaped_string(),
-                e
+                "Failed to open hash database at {}: {e}",
+                database_path.to_escaped_string()
             )
         })?;
 
-        let tree_id = format!("hash_db:{:?}:{}", algorithm, transform.unwrap_or("<none>"));
+        let tree_id = format!("hash_db:{algorithm:?}:{}", transform.unwrap_or("<none>"));
         let cache = Arc::new(typed_sled::Tree::open(&db, tree_id));
         let flusher = HashCacheFlusher::start(&cache);
         Ok(HashCache { cache, flusher })
@@ -133,9 +131,8 @@ impl HashCache {
             .cache
             .get(key)
             .map_err(|e| format!("Failed to retrieve entry from cache: {e}"))?;
-        let value = match value {
-            Some(v) => v,
-            None => return Ok(None), // not found in cache
+        let Some(value) = value else {
+            return Ok(None); // not found in cache
         };
 
         let modified = metadata
@@ -156,13 +153,12 @@ impl HashCache {
     ///
     /// Using file identifiers as cache keys instead of paths allows the user for moving or renaming
     /// files without losing their cached hash data.
-    pub fn key(&self, chunk: &FileChunk<'_>, metadata: &FileMetadata) -> Result<Key, Error> {
-        let key = Key {
+    pub fn key(chunk: &FileChunk<'_>, metadata: &FileMetadata) -> Key {
+        Key {
             file_id: metadata.file_id(),
             chunk_pos: chunk.pos,
             chunk_len: chunk.len,
-        };
-        Ok(key)
+        }
     }
 
     /// Flushes all unwritten data and closes the cache.
@@ -189,13 +185,13 @@ impl HashCacheFlusher {
 
         let thread_handle = thread::spawn(move || {
             while let Err(RecvTimeoutError::Timeout) = ctrl_rx.recv_timeout(FLUSH_INTERVAL) {
-                if let Some(cache) = cache.upgrade() {
-                    if let Err(e) = cache.flush() {
-                        err_tx
-                            .send(format!("Failed to flush the hash cache: {e}").into())
-                            .unwrap_or_default();
-                        return;
-                    }
+                if let Some(cache) = cache.upgrade()
+                    && let Err(e) = cache.flush()
+                {
+                    err_tx
+                        .send(format!("Failed to flush the hash cache: {e}").into())
+                        .unwrap_or_default();
+                    return;
                 }
             }
         });
@@ -238,7 +234,7 @@ mod test {
 
             let cache_path = Path::from(root.join("cache"));
             let cache = HashCache::open(&cache_path, None, HashFn::Metro).unwrap();
-            let key = cache.key(&chunk, &metadata).unwrap();
+            let key = HashCache::key(&chunk, &metadata);
             let orig_hash = FileHash::from(12345);
 
             let data_len = FileLen(200);
@@ -247,13 +243,15 @@ mod test {
                 .unwrap();
             let cached_hash = cache.get(&key, &metadata).unwrap();
 
-            assert_eq!(cached_hash, Some((data_len, orig_hash)))
+            assert_eq!(cached_hash, Some((data_len, orig_hash)));
         });
     }
 
     #[test]
     fn return_none_if_file_has_changed() {
         with_dir("cache/return_none_if_file_has_changed", |root| {
+            use std::io::Write;
+
             let path = root.join("file");
             create_file(&path);
             let path = Path::from(&path);
@@ -262,14 +260,12 @@ mod test {
 
             let cache_path = Path::from(root.join("cache"));
             let cache = HashCache::open(&cache_path, None, HashFn::Metro).unwrap();
-            let key = cache.key(&chunk, &metadata).unwrap();
+            let key = HashCache::key(&chunk, &metadata);
             cache
                 .put(&key, &metadata, chunk.len, FileHash::from(12345))
                 .unwrap();
 
             // modify the file
-            use std::io::Write;
-
             let mut f = OpenOptions::new()
                 .append(true)
                 .open(path.to_path_buf())
@@ -279,7 +275,7 @@ mod test {
 
             let metadata = FileMetadata::new(&path).unwrap();
             let cached_hash = cache.get(&key, &metadata).unwrap();
-            assert_eq!(cached_hash, None)
+            assert_eq!(cached_hash, None);
         });
     }
 
@@ -294,17 +290,17 @@ mod test {
 
             let cache_path = Path::from(root.join("cache"));
             let cache = HashCache::open(&cache_path, None, HashFn::Metro).unwrap();
-            let key = cache.key(&chunk, &metadata).unwrap();
+            let key = HashCache::key(&chunk, &metadata);
 
             cache
                 .put(&key, &metadata, chunk.len, FileHash::from(12345))
                 .unwrap();
 
             let chunk = FileChunk::new(&path, FilePos(1000), FileLen(2000));
-            let key = cache.key(&chunk, &metadata).unwrap();
+            let key = HashCache::key(&chunk, &metadata);
             let cached_hash = cache.get(&key, &metadata).unwrap();
 
-            assert_eq!(cached_hash, None)
+            assert_eq!(cached_hash, None);
         });
     }
 
@@ -321,7 +317,7 @@ mod test {
 
                 let cache_path = Path::from(root.join("cache"));
                 let cache = HashCache::open(&cache_path, None, HashFn::Metro).unwrap();
-                let key = cache.key(&chunk, &metadata).unwrap();
+                let key = HashCache::key(&chunk, &metadata);
 
                 let orig_hash = FileHash::from(12345);
                 let data_len = FileLen(200);

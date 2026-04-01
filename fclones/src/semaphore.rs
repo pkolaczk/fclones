@@ -113,8 +113,8 @@ mod tests {
     use std::prelude::v1::*;
 
     use super::Semaphore;
-    use std::sync::mpsc::channel;
     use std::sync::Arc;
+    use std::sync::mpsc::channel;
     use std::thread;
 
     #[test]

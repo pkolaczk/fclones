@@ -1,7 +1,9 @@
-/target
-/vendor
+syntax: glob
+
+/target/
+/vendor/
 **/*.rs.bk
-.idea
-.vscode
+.idea/
+.vscode/
 .rpm
 *.iml

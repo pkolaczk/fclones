@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::ffi::{OsStr, OsString};
 use std::fs::File;
-use std::io::{stderr, stdin, IsTerminal, Write};
+use std::io::{IsTerminal, Write, stderr, stdin};
 use std::process::exit;
 use std::sync::Arc;
 use std::{fs, io};
@@ -15,9 +15,9 @@ use regex::Regex;
 use fclones::config::{Command, Config, DedupeConfig, GroupConfig, Parallelism};
 use fclones::log::{Log, LogExt, ProgressBarLength, StdLog};
 use fclones::progress::{NoProgressBar, ProgressTracker};
-use fclones::report::{open_report, ReportHeader};
-use fclones::{dedupe, log_script, run_script, DedupeOp};
-use fclones::{group_files, write_report, Error};
+use fclones::report::{ReportHeader, open_report};
+use fclones::{DedupeOp, dedupe, log_script, run_script};
+use fclones::{Error, group_files, write_report};
 
 /// Strips a red "error:" prefix and usage information added by clap.
 /// Removes ansi formatting.
@@ -63,7 +63,7 @@ fn check_input_paths_exist(config: &GroupConfig, log: &dyn Log) -> Result<(), Er
                 false
             }
             Err(e) => {
-                log.err(format!("Can't access {}: {}", p.display(), e));
+                log.err(format!("Can't access {}: {e}", p.display()));
                 access_error = true;
                 false
             }
@@ -81,14 +81,13 @@ fn check_input_paths_exist(config: &GroupConfig, log: &dyn Log) -> Result<(), Er
 
 /// Attempts to create the output file and returns an error if it fails.
 fn check_can_create_output_file(config: &GroupConfig) -> Result<(), Error> {
-    if let Some(output) = &config.output {
-        if let Err(e) = File::create(output) {
-            return Err(Error::new(format!(
-                "Cannot create output file {}: {}",
-                output.display(),
-                e
-            )));
-        }
+    if let Some(output) = &config.output
+        && let Err(e) = File::create(output)
+    {
+        return Err(Error::new(format!(
+            "Cannot create output file {}: {e}",
+            output.display()
+        )));
     }
     Ok(())
 }
@@ -129,7 +128,7 @@ fn get_output_writer(config: &DedupeConfig) -> Result<Box<dyn Write + Send>, Err
     match &config.output {
         Some(path) => {
             let f = File::create(path)
-                .map_err(|e| format!("Failed to create output file {}: {}", path.display(), e))?;
+                .map_err(|e| format!("Failed to create output file {}: {e}", path.display()))?;
             Ok(Box::new(f))
         }
         None => Ok(Box::new(io::stdout())),
@@ -230,14 +229,14 @@ pub fn run_dedupe(op: DedupeOp, config: DedupeConfig, log: &dyn Log) -> Result<(
         let out = get_output_writer(&dedupe_config)?;
         let result = log_script(script, out).map_err(|e| format!("Output error: {e}"))?;
         log.info(format!(
-            "Would process {} files and reclaim {}{} space",
-            result.processed_count, upto, result.reclaimed_space
+            "Would process {} files and reclaim {upto}{} space",
+            result.processed_count, result.reclaimed_space
         ));
     } else {
         let result = run_script(script, !dedupe_config.no_lock, log);
         log.info(format!(
-            "Processed {} files and reclaimed {}{} space",
-            result.processed_count, upto, result.reclaimed_space
+            "Processed {} files and reclaimed {upto}{} space",
+            result.processed_count, result.reclaimed_space
         ));
     };
     result.map_err(|e| Error::new(format!("Failed to read file list: {e}")))
@@ -257,7 +256,7 @@ fn generate_completions(shell: clap_complete::Shell, output: &mut dyn std::io::W
 fn main() {
     let config: Config = Config::parse();
     if let Err(e) = config.command.validate() {
-        eprintln!("{} {}", style("error:").for_stderr().bold().red(), e);
+        eprintln!("{} {e}", style("error:").for_stderr().bold().red());
         exit(1);
     }
 

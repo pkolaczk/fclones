@@ -1,20 +1,20 @@
 //! Removing redundant files.
 
-use std::cmp::{max, min, Reverse};
+use std::cmp::{Reverse, max, min};
 use std::collections::HashMap;
 use std::fmt::{Display, Formatter};
 use std::hash::{Hash, Hasher};
 use std::io::{ErrorKind, Write};
 use std::ops::{Add, AddAssign};
-use std::sync::mpsc::channel;
 use std::sync::Arc;
+use std::sync::mpsc::channel;
 use std::time::SystemTime;
 use std::{fmt, fs, io};
 
 use chrono::{DateTime, FixedOffset, Local};
 use priority_queue::PriorityQueue;
-use rand::distributions::Alphanumeric;
-use rand::Rng;
+use rand::RngExt;
+use rand::distr::Alphanumeric;
 use rayon::iter::{IntoParallelIterator, ParallelBridge, ParallelIterator};
 
 use crate::config::{DedupeConfig, Priority};
@@ -54,10 +54,10 @@ impl PathAndMetadata {
         let metadata = FileMetadata::new(&path).map_err(|e| {
             io::Error::new(
                 e.kind(),
-                format!("Failed to read metadata of {}: {}", path.display(), e),
+                format!("Failed to read metadata of {}: {e}", path.display()),
             )
         })?;
-        Ok(PathAndMetadata { metadata, path })
+        Ok(PathAndMetadata { path, metadata })
     }
 }
 
@@ -134,7 +134,7 @@ impl FsCommand {
         fs::remove_file(path.to_path_buf()).map_err(|e| {
             io::Error::new(
                 e.kind(),
-                format!("Failed to remove file {}: {}", path.display(), e),
+                format!("Failed to remove file {}: {e}", path.display()),
             )
         })
     }
@@ -154,10 +154,9 @@ impl FsCommand {
             io::Error::new(
                 e.kind(),
                 format!(
-                    "Failed to create symbolic link {} -> {}: {}",
+                    "Failed to create symbolic link {} -> {}: {e}",
                     link.display(),
-                    target.display(),
-                    e
+                    target.display()
                 ),
             )
         })
@@ -168,10 +167,9 @@ impl FsCommand {
             io::Error::new(
                 e.kind(),
                 format!(
-                    "Failed to create hard link {} -> {}: {}",
+                    "Failed to create hard link {} -> {}: {e}",
                     link.display(),
-                    target.display(),
-                    e
+                    target.display()
                 ),
             )
         })
@@ -195,7 +193,7 @@ impl FsCommand {
         fs::create_dir_all(path.to_path_buf()).map_err(|e| {
             io::Error::new(
                 e.kind(),
-                format!("Failed to create directory {}: {}", path.display(), e),
+                format!("Failed to create directory {}: {e}", path.display()),
             )
         })
     }
@@ -207,10 +205,9 @@ impl FsCommand {
             io::Error::new(
                 e.kind(),
                 format!(
-                    "Failed to rename file from {} to {}: {}",
+                    "Failed to rename file from {} to {}: {e}",
                     source.display(),
-                    target.display(),
-                    e
+                    target.display()
                 ),
             )
         })
@@ -223,10 +220,9 @@ impl FsCommand {
             io::Error::new(
                 e.kind(),
                 format!(
-                    "Failed to copy file from {} to {}: {}",
+                    "Failed to copy file from {} to {}: {e}",
                     source.display(),
-                    target.display(),
-                    e
+                    target.display()
                 ),
             )
         })?;
@@ -260,7 +256,7 @@ impl FsCommand {
             .expect("must be a regular file with a name");
         name.push(".");
         name.push(
-            rand::thread_rng()
+            rand::rng()
                 .sample_iter(&Alphanumeric)
                 .take(24)
                 .map(char::from)
@@ -288,22 +284,17 @@ impl FsCommand {
                 // Try to undo the move if possible
                 if let Err(remove_err) = Self::unsafe_rename(&tmp, path) {
                     log.warn(format!(
-                        "Failed to undo move from {} to {}: {}",
-                        &path.display(),
-                        &tmp.display(),
-                        remove_err
-                    ))
+                        "Failed to undo move from {} to {}: {remove_err}",
+                        path.display(),
+                        tmp.display()
+                    ));
                 }
                 return Err(e);
             }
         };
         // Cleanup the temp file.
         if let Err(e) = Self::remove(&tmp) {
-            log.warn(format!(
-                "Failed to remove temporary {}: {}",
-                &tmp.display(),
-                e
-            ))
+            log.warn(format!("Failed to remove temporary {}: {e}", tmp.display()));
         }
         Ok(result)
     }
@@ -384,7 +375,7 @@ impl FsCommand {
                 let tmp = Self::temp_file(&link.path);
                 let target = target.path.quote();
                 let link = link.path.quote();
-                result.push(format!("mv {} {}", link, tmp.quote()));
+                result.push(format!("mv {link} {}", tmp.quote()));
                 result.push(format!("ln -s {target} {link}"));
                 result.push(format!("rm {}", tmp.quote()));
             }
@@ -392,7 +383,7 @@ impl FsCommand {
                 let tmp = Self::temp_file(&link.path);
                 let target = target.path.quote();
                 let link = link.path.quote();
-                result.push(format!("mv {} {}", link, tmp.quote()));
+                result.push(format!("mv {link} {}", tmp.quote()));
                 result.push(format!("ln {target} {link}"));
                 result.push(format!("rm {}", tmp.quote()));
             }
@@ -401,12 +392,12 @@ impl FsCommand {
                 let target = target.path.quote();
                 let link = link.path.quote();
                 // Not really what happens on Linux, there the `mv` is also a reflink.
-                result.push(format!("mv {} {}", link, tmp.quote()));
+                result.push(format!("mv {link} {}", tmp.quote()));
                 if cfg!(target_os = "macos") {
                     result.push(format!("cp -c {target} {link}"));
                 } else {
                     result.push(format!("cp --reflink=always {target} {link}"));
-                };
+                }
                 result.push(format!("rm {}", tmp.quote()));
             }
             FsCommand::Move {
@@ -417,10 +408,10 @@ impl FsCommand {
                 let source = source.path.quote();
                 let target = target.quote();
                 if *use_rename {
-                    result.push(format!("mv {} {}", &source, &target));
+                    result.push(format!("mv {source} {target}"));
                 } else {
-                    result.push(format!("cp {} {}", &source, &target));
-                    result.push(format!("rm {}", &source));
+                    result.push(format!("cp {source} {target}"));
+                    result.push(format!("rm {source}"));
                 }
             }
         }
@@ -433,26 +424,26 @@ impl FsCommand {
         match self {
             FsCommand::Remove { file, .. } => {
                 let path = file.path.quote();
-                result.push(format!("del {}", path));
+                result.push(format!("del {path}"));
             }
             FsCommand::SoftLink { target, link, .. } => {
                 let tmp = Self::temp_file(&link.path);
                 let target = target.path.quote();
                 let link = link.path.quote();
-                result.push(format!("move {} {}", link, tmp.quote()));
-                result.push(format!("mklink {} {}", target, link));
+                result.push(format!("move {link} {}", tmp.quote()));
+                result.push(format!("mklink {target} {link}"));
                 result.push(format!("del {}", tmp.quote()));
             }
             FsCommand::HardLink { target, link, .. } => {
                 let tmp = Self::temp_file(&link.path);
                 let target = target.path.quote();
                 let link = link.path.quote();
-                result.push(format!("move {} {}", link, tmp.quote()));
-                result.push(format!("mklink /H {} {}", target, link));
+                result.push(format!("move {link} {}", tmp.quote()));
+                result.push(format!("mklink /H {target} {link}"));
                 result.push(format!("del {}", tmp.quote()));
             }
             FsCommand::RefLink { target, link, .. } => {
-                result.push(format!(":: deduplicate {} {}", link, target));
+                result.push(format!(":: deduplicate {link} {target}"));
             }
             FsCommand::Move {
                 source,
@@ -462,10 +453,10 @@ impl FsCommand {
                 let source = source.path.quote();
                 let target = target.quote();
                 if *use_rename {
-                    result.push(format!("move {} {}", &source, &target));
+                    result.push(format!("move {source} {target}"));
                 } else {
-                    result.push(format!("copy {} {}", &source, &target));
-                    result.push(format!("del {}", &source));
+                    result.push(format!("copy {source} {target}"));
+                    result.push(format!("del {source}"));
                 }
             }
         }
@@ -507,7 +498,7 @@ fn was_modified(files: &[PathAndMetadata], after: DateTime<FixedOffset>, log: &d
         path: p,
         metadata: m,
         ..
-    } in files.iter()
+    } in files
     {
         match m.modified() {
             Ok(file_timestamp) => {
@@ -524,9 +515,8 @@ fn was_modified(files: &[PathAndMetadata], after: DateTime<FixedOffset>, log: &d
             }
             Err(e) => {
                 log.warn(format!(
-                    "Failed to read modification time of file {}: {}",
-                    p.display(),
-                    e
+                    "Failed to read modification time of file {}: {e}",
+                    p.display()
                 ));
                 result = true;
             }
@@ -585,9 +575,8 @@ impl<P: AsRef<PathAndMetadata>> FileSubGroup<P> {
             let f = f.as_ref();
             f.metadata.created().map_err(|e| {
                 format!(
-                    "Failed to read creation time of file {}: {}",
-                    f.path.display(),
-                    e
+                    "Failed to read creation time of file {}: {e}",
+                    f.path.display()
                 )
             })
         }))?
@@ -600,9 +589,8 @@ impl<P: AsRef<PathAndMetadata>> FileSubGroup<P> {
             let f = f.as_ref();
             f.metadata.modified().map_err(|e| {
                 format!(
-                    "Failed to read modification time of file {}: {}",
-                    f.path.display(),
-                    e
+                    "Failed to read modification time of file {}: {e}",
+                    f.path.display()
                 )
             })
         }))?
@@ -615,9 +603,8 @@ impl<P: AsRef<PathAndMetadata>> FileSubGroup<P> {
             let f = f.as_ref();
             f.metadata.accessed().map_err(|e| {
                 format!(
-                    "Failed to read access time of file {}: {}",
-                    f.path.display(),
-                    e
+                    "Failed to read access time of file {}: {e}",
+                    f.path.display()
                 )
             })
         }))?
@@ -640,6 +627,7 @@ impl<P: AsRef<PathAndMetadata>> FileSubGroup<P> {
     }
 
     /// Returns true if any of the files in the subgroup must be kept
+    #[must_use]
     pub fn should_keep(&self, config: &DedupeConfig) -> bool {
         self.files
             .iter()
@@ -647,6 +635,7 @@ impl<P: AsRef<PathAndMetadata>> FileSubGroup<P> {
     }
 
     /// Returns true if all files in the subgroup can be dropped
+    #[must_use]
     pub fn may_drop(&self, config: &DedupeConfig) -> bool {
         self.files
             .iter()
@@ -654,6 +643,7 @@ impl<P: AsRef<PathAndMetadata>> FileSubGroup<P> {
     }
 
     /// Returns the number of components of the least nested path
+    #[must_use]
     pub fn min_nesting(&self) -> usize {
         self.files
             .iter()
@@ -663,6 +653,7 @@ impl<P: AsRef<PathAndMetadata>> FileSubGroup<P> {
     }
 
     /// Returns the number of components of the most nested path
+    #[must_use]
     pub fn max_nesting(&self) -> usize {
         self.files
             .iter()
@@ -686,20 +677,20 @@ where
             vec![]
         }
         Priority::Bottom => vec![],
-        Priority::Newest => try_sort_by_key(files, |m| m.created()),
+        Priority::Newest => try_sort_by_key(files, FileSubGroup::created),
         Priority::Oldest => try_sort_by_key(files, |m| m.created().map(Reverse)),
-        Priority::MostRecentlyModified => try_sort_by_key(files, |m| m.modified()),
+        Priority::MostRecentlyModified => try_sort_by_key(files, FileSubGroup::modified),
         Priority::LeastRecentlyModified => try_sort_by_key(files, |m| m.modified().map(Reverse)),
-        Priority::MostRecentlyAccessed => try_sort_by_key(files, |m| m.accessed()),
+        Priority::MostRecentlyAccessed => try_sort_by_key(files, FileSubGroup::accessed),
         Priority::LeastRecentlyAccessed => try_sort_by_key(files, |m| m.accessed().map(Reverse)),
         #[cfg(unix)]
-        Priority::MostRecentStatusChange => try_sort_by_key(files, |m| m.status_changed()),
+        Priority::MostRecentStatusChange => try_sort_by_key(files, FileSubGroup::status_changed),
         #[cfg(unix)]
         Priority::LeastRecentStatusChange => {
             try_sort_by_key(files, |m| m.status_changed().map(Reverse))
         }
         Priority::MostNested => {
-            files.sort_by_key(|m| m.max_nesting());
+            files.sort_by_key(FileSubGroup::max_nesting);
             vec![]
         }
         Priority::LeastNested => {
@@ -736,6 +727,7 @@ impl PartitionedFileGroup {
     }
 
     /// Returns a list of commands that would remove redundant files in this group when executed.
+    #[must_use]
     pub fn dedupe_script(mut self, strategy: &DedupeOp, devices: &DiskDevices) -> Vec<FsCommand> {
         if self.to_drop.is_empty() {
             return vec![];
@@ -770,7 +762,7 @@ impl PartitionedFileGroup {
                         source,
                         target,
                         use_rename,
-                    })
+                    });
                 }
             }
         }
@@ -806,8 +798,8 @@ fn partition(
 
     let error = |msg: &str| {
         Err(Error::from(format!(
-            "Could not determine files to drop in group with hash {} and len {}: {}",
-            file_hash, file_len.0, msg
+            "Could not determine files to drop in group with hash {file_hash} and len {}: {msg}",
+            file_len.0
         )))
     };
 
@@ -842,10 +834,10 @@ fn partition(
 
     // Bail out as well if any file has been modified after `config.modified_before`.
     // We need to skip the whole group, because we don't know if these files are really different.
-    if let Some(max_timestamp) = config.modified_before {
-        if was_modified(&files, max_timestamp, log) {
-            return error("Some files could be updated since the previous run of fclones");
-        }
+    if let Some(max_timestamp) = config.modified_before
+        && was_modified(&files, max_timestamp, log)
+    {
+        return error("Some files could be updated since the previous run of fclones");
     }
 
     let mut file_sub_groups =
@@ -969,7 +961,7 @@ where
                 log.warn(e);
             }
         })
-        .filter_map(|res| res.ok())
+        .filter_map(Result::ok)
         .map(|len| DedupeResult {
             processed_count: 1,
             reclaimed_space: len,
@@ -999,7 +991,7 @@ impl Eq for FsCommandGroup {}
 
 impl Hash for FsCommandGroup {
     fn hash<H: Hasher>(&self, state: &mut H) {
-        self.index.hash(state)
+        self.index.hash(state);
     }
 }
 
@@ -1031,7 +1023,7 @@ pub fn log_script(
         s.spawn(move |_| {
             script
                 .into_par_iter()
-                .for_each_with(tx, |tx, item| tx.send(item).unwrap())
+                .for_each_with(tx, |tx, item| tx.send(item).unwrap());
         });
 
         let mut queue = PriorityQueue::new();
@@ -1118,8 +1110,8 @@ mod test {
             let file = PathAndMetadata::new(Path::from(&file_path)).unwrap();
             let cmd = FsCommand::Remove { file };
             cmd.execute(true, &log).unwrap();
-            assert!(!file_path.exists())
-        })
+            assert!(!file_path.exists());
+        });
     }
 
     #[test]
@@ -1138,7 +1130,7 @@ mod test {
             cmd.execute(true, &log).unwrap();
             assert!(!file_path.exists());
             assert!(target.to_path_buf().exists());
-        })
+        });
     }
 
     #[test]
@@ -1157,7 +1149,7 @@ mod test {
             cmd.execute(true, &log).unwrap();
             assert!(!file_path.exists());
             assert!(target.to_path_buf().exists());
-        })
+        });
     }
 
     #[test]
@@ -1175,7 +1167,7 @@ mod test {
                 use_rename: false,
             };
             assert!(cmd.execute(true, &log).is_err());
-        })
+        });
     }
 
     #[test]
@@ -1197,12 +1189,14 @@ mod test {
 
             assert!(file_path_1.exists());
             assert!(file_path_2.exists());
-            assert!(fs::symlink_metadata(&file_path_2)
-                .unwrap()
-                .file_type()
-                .is_symlink());
+            assert!(
+                fs::symlink_metadata(&file_path_2)
+                    .unwrap()
+                    .file_type()
+                    .is_symlink()
+            );
             assert_eq!(read_file(&file_path_2), "foo");
-        })
+        });
     }
 
     #[test]
@@ -1226,10 +1220,10 @@ mod test {
             assert!(file_path_1.exists());
             assert!(file_path_2.exists());
             assert_eq!(read_file(&file_path_2), "foo");
-        })
+        });
     }
 
-    /// Creates 3 empty files with different creation time and returns a FileGroup describing them
+    /// Creates 3 empty files with different creation time and returns a `FileGroup` describing them
     fn make_group(root: &PathBuf, file_hash: FileHash) -> FileGroup<Path> {
         create_dir_all(root).unwrap();
         let file_1 = root.join("file_1");
@@ -1260,7 +1254,7 @@ mod test {
             let partitioned = partition(group, &config, &StdLog::new()).unwrap();
             assert_eq!(partitioned.to_keep.len(), 1);
             assert_eq!(partitioned.to_drop.len(), 2);
-        })
+        });
     }
 
     #[test]
@@ -1274,7 +1268,7 @@ mod test {
             };
             let partitioned = partition(group, &config, &StdLog::new());
             assert!(partitioned.is_err());
-        })
+        });
     }
 
     #[test]
@@ -1291,7 +1285,7 @@ mod test {
             let partitioned = partition(group, &config, &StdLog::new()).unwrap();
             assert!(!partitioned.to_drop.iter().any(|m| m.path == path));
             assert!(!partitioned.to_keep.iter().any(|m| m.path == path));
-        })
+        });
     }
 
     fn path_set(v: &[PathAndMetadata]) -> HashSet<&Path> {
@@ -1381,7 +1375,7 @@ mod test {
             let p = partition(group.clone(), &config, &StdLog::new()).unwrap();
             assert_eq!(p.to_keep.len(), 1);
             assert_eq!(&p.to_keep[0].path, &group.files[0].path);
-        })
+        });
     }
 
     #[test]
@@ -1403,7 +1397,7 @@ mod test {
             let p = partition(group.clone(), &config, &StdLog::new()).unwrap();
             assert_eq!(p.to_drop.len(), 1);
             assert_eq!(&p.to_drop[0].path, &group.files[2].path);
-        })
+        });
     }
 
     #[test]
@@ -1430,16 +1424,18 @@ mod test {
             let group = group.map(|p| PathAndMetadata::new(p).unwrap());
             let p = partition(group, &config, &StdLog::new()).unwrap();
             assert_eq!(p.to_drop.len(), 3);
-            assert!(p
-                .to_drop
-                .iter()
-                .all(|f| f.path.to_path_buf().starts_with(&root2)));
+            assert!(
+                p.to_drop
+                    .iter()
+                    .all(|f| f.path.to_path_buf().starts_with(&root2))
+            );
             assert_eq!(p.to_keep.len(), 3);
-            assert!(p
-                .to_keep
-                .iter()
-                .all(|f| f.path.to_path_buf().starts_with(&root1)));
-        })
+            assert!(
+                p.to_keep
+                    .iter()
+                    .all(|f| f.path.to_path_buf().starts_with(&root1))
+            );
+        });
     }
 
     #[test]
@@ -1477,16 +1473,18 @@ mod test {
 
             // drop A files because file_a2 appears after file_b1 in the files vector
             assert_eq!(p.to_drop.len(), 2);
-            assert!(p
-                .to_drop
-                .iter()
-                .all(|f| f.path.to_path_buf().starts_with(&root_a)));
+            assert!(
+                p.to_drop
+                    .iter()
+                    .all(|f| f.path.to_path_buf().starts_with(&root_a))
+            );
             assert_eq!(p.to_keep.len(), 2);
-            assert!(p
-                .to_keep
-                .iter()
-                .all(|f| f.path.to_path_buf().starts_with(&root_b)));
-        })
+            assert!(
+                p.to_keep
+                    .iter()
+                    .all(|f| f.path.to_path_buf().starts_with(&root_b))
+            );
+        });
     }
 
     #[test]
@@ -1585,7 +1583,7 @@ mod test {
             assert_eq!(FileId::new(&Path::from(&file_a2)).unwrap(), file_id);
             assert_eq!(FileId::new(&Path::from(&file_b1)).unwrap(), file_id);
             assert_eq!(FileId::new(&Path::from(&file_b2)).unwrap(), file_id);
-        })
+        });
     }
 
     #[test]
@@ -1628,6 +1626,6 @@ mod test {
 
             assert_eq!(read_file(&file_a1), "foo");
             assert_eq!(read_file(&file_a2), "foo");
-        })
+        });
     }
 }

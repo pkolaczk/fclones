@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::ffi::{OsStr, OsString};
 use std::fmt::{Display, Formatter};
 use std::io;
-use std::io::{stdin, BufRead, BufReader, ErrorKind};
+use std::io::{BufRead, BufReader, ErrorKind, stdin};
 use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::Arc;
@@ -12,7 +12,7 @@ use std::sync::Arc;
 use chrono::{DateTime, FixedOffset, Local};
 use clap::builder::{TypedValueParser, ValueParserFactory};
 
-use clap::{command, Arg, Error};
+use clap::{Arg, Error};
 
 use crate::file::FileLen;
 use crate::group::FileGroupFilter;
@@ -33,6 +33,7 @@ pub enum OutputFormat {
 }
 
 impl OutputFormat {
+    #[must_use]
     pub fn variants() -> Vec<&'static str> {
         vec!["default", "fdupes", "csv", "json"]
     }
@@ -63,7 +64,7 @@ impl FromStr for OutputFormat {
     }
 }
 
-/// Allows to read command line arguments as crate::path::Path.
+/// Allows to read command line arguments as `crate::path::Path`.
 #[derive(Clone)]
 pub struct PathParser;
 
@@ -80,7 +81,7 @@ impl TypedValueParser for PathParser {
     }
 }
 
-/// Allows to read command line arguments as crate::path::Path.
+/// Allows to read command line arguments as `crate::path::Path`.
 impl ValueParserFactory for Path {
     type Parser = PathParser;
 
@@ -437,6 +438,7 @@ impl GroupConfig {
             .exclude_paths(exclude_paths?))
     }
 
+    #[must_use]
     pub fn group_filter(&self) -> FileGroupFilter {
         FileGroupFilter {
             replication: if self.unique {
@@ -455,6 +457,7 @@ impl GroupConfig {
         }
     }
 
+    #[must_use]
     pub fn rf_over(&self) -> usize {
         // don't prune small groups if:
         // - there is transformation defined
@@ -468,6 +471,7 @@ impl GroupConfig {
         }
     }
 
+    #[must_use]
     pub fn rf_under(&self) -> usize {
         if self.unique {
             2
@@ -476,6 +480,7 @@ impl GroupConfig {
         }
     }
 
+    #[must_use]
     pub fn search_type(&self) -> &'static str {
         if self.unique {
             "unique"
@@ -491,7 +496,7 @@ impl GroupConfig {
     pub fn resolve_base_dir(&mut self) -> io::Result<&Path> {
         if self.base_dir.is_relative() {
             let curr_dir = Arc::from(Path::from(std::env::current_dir()?));
-            self.base_dir = curr_dir.join(&self.base_dir)
+            self.base_dir = curr_dir.join(&self.base_dir);
         }
         if !self.base_dir.to_path_buf().is_dir() {
             return Err(io::Error::new(
@@ -505,6 +510,7 @@ impl GroupConfig {
 
     /// Returns an iterator over the absolute input paths.
     /// Input paths may be provided as arguments or from standard input.
+    #[must_use]
     pub fn input_paths(&self) -> Box<dyn Iterator<Item = Path> + Send> {
         let base_dir = Arc::new(self.base_dir.clone());
         if self.stdin {
@@ -526,22 +532,24 @@ impl GroupConfig {
     fn build_transform(&self, command: &str) -> io::Result<Transform> {
         let mut tr = Transform::new(command.to_string(), self.in_place)?;
         if self.no_copy {
-            tr.copy = false
-        };
+            tr.copy = false;
+        }
         Ok(tr)
     }
 
     /// Constructs the transform object.
     /// Returns None if the transform was not set
+    #[must_use]
     pub fn transform(&self) -> Option<io::Result<Transform>> {
         self.transform
             .as_ref()
             .map(|command| self.build_transform(command))
     }
 
+    #[must_use]
     pub fn thread_pool_sizes(&self) -> HashMap<OsString, Parallelism> {
         let mut map = HashMap::new();
-        for (k, v) in self.threads.iter() {
+        for (k, v) in &self.threads {
             map.insert(k.clone(), *v);
         }
         map
@@ -779,7 +787,6 @@ mod test {
 
     use assert_matches::assert_matches;
     use clap::Parser;
-    use std::path::PathBuf;
 
     #[test]
     fn test_group_command() {
@@ -813,7 +820,7 @@ mod test {
         let config: Config = Config::try_parse_from(vec!["fclones", "move", "target"]).unwrap();
         assert_matches!(
             config.command,
-            Command::Move { target, .. } if target == PathBuf::from("target"));
+            Command::Move { target, .. } if target.as_os_str() == "target");
     }
 
     #[test]

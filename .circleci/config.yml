@@ -3,7 +3,7 @@ version: 2.1
 executors:
   default:
     docker:
-      - image: cimg/rust:1.74.0
+      - image: cimg/rust:1.89.0
 
 jobs:
   format:

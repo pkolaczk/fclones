@@ -1,6 +1,6 @@
 use std::cell::RefCell;
-use std::ffi::OsString;
-use std::fs::{create_dir_all, remove_dir_all, File, OpenOptions};
+use std::ffi::{OsStr, OsString};
+use std::fs::{File, OpenOptions, create_dir_all, remove_dir_all};
 use std::io;
 use std::io::Read;
 use std::path::PathBuf;
@@ -14,8 +14,7 @@ use nom::character::complete::{none_of, one_of};
 use nom::combinator::map;
 use nom::error::{ErrorKind, ParseError};
 use nom::multi::{many1, separated_list0};
-use nom::sequence::tuple;
-use nom::IResult;
+use nom::{IResult, Parser};
 use regex::Regex;
 use uuid::Uuid;
 
@@ -37,8 +36,7 @@ enum Input {
 impl Input {
     fn input_path(&self) -> &PathBuf {
         match self {
-            Input::StdIn(path) => path,
-            Input::Named(path) => path,
+            Input::StdIn(path) | Input::Named(path) => path,
             Input::Copied(_src, target) => target,
         }
     }
@@ -59,8 +57,7 @@ impl Drop for Input {
     /// Removes the temporary file if it was created
     fn drop(&mut self) {
         let _ = match self {
-            Input::StdIn(_) => Ok(()),
-            Input::Named(_) => Ok(()),
+            Input::StdIn(_) | Input::Named(_) => Ok(()),
             Input::Copied(_, target) => std::fs::remove_file(target),
         };
     }
@@ -71,7 +68,7 @@ impl Drop for Input {
 /// If the preprocessor program can't output data to its stdout, but supports only writing
 /// to files, it can be configured to write to a named pipe, and we read from that named pipe.
 enum Output {
-    /// Pipe data directly to StdOut
+    /// Pipe data directly to `StdOut`
     StdOut,
     /// Send data through a named pipe
     Named(PathBuf),
@@ -95,8 +92,7 @@ impl Drop for Output {
     fn drop(&mut self) {
         let _ = match self {
             Output::StdOut => Ok(()),
-            Output::Named(target) => std::fs::remove_file(target),
-            Output::InPlace(target) => std::fs::remove_file(target),
+            Output::Named(target) | Output::InPlace(target) => std::fs::remove_file(target),
         };
     }
 }
@@ -114,7 +110,7 @@ pub struct Transform {
     pub copy: bool,
     /// read output from the same location as the original
     pub in_place: bool,
-    /// will be set to the name of the program, extracted from the command_str
+    /// will be set to the name of the program, extracted from the `command_str`
     pub program: String,
 }
 
@@ -128,7 +124,7 @@ impl Transform {
                 "OUT" if cfg!(windows) => *has_out.borrow_mut() = true,
                 "IN" => *has_in.borrow_mut() = true,
                 _ => {}
-            };
+            }
             OsString::from(s)
         });
 
@@ -136,35 +132,21 @@ impl Transform {
         let has_out = has_out.into_inner();
 
         if cfg!(windows) && has_out {
-            return Err(io::Error::new(
-                io::ErrorKind::Other,
-                "$OUT not supported on Windows yet",
-            ));
+            return Err(io::Error::other("$OUT not supported on Windows yet"));
         }
         if in_place && has_out {
-            return Err(io::Error::new(
-                io::ErrorKind::Other,
-                "$OUT conflicts with --in-place",
-            ));
+            return Err(io::Error::other("$OUT conflicts with --in-place"));
         }
         if in_place && !has_in {
-            return Err(io::Error::new(
-                io::ErrorKind::Other,
-                "$IN required with --in-place",
-            ));
+            return Err(io::Error::other("$IN required with --in-place"));
         }
 
         let program = parsed
             .first()
-            .and_then(|p| PathBuf::from(p).file_name().map(|s| s.to_os_string()));
+            .and_then(|p| PathBuf::from(p).file_name().map(OsStr::to_os_string));
         let program = match program {
             Some(p) => p.into_string().unwrap(),
-            None => {
-                return Err(io::Error::new(
-                    io::ErrorKind::Other,
-                    "Command cannot be empty",
-                ))
-            }
+            None => return Err(io::Error::other("Command cannot be empty")),
         };
 
         // Check if the program is runnable, fail fast if it is not.
@@ -176,7 +158,7 @@ impl Transform {
                 return Err(io::Error::new(
                     e.kind(),
                     format!("Cannot launch {program}: {e}"),
-                ))
+                ));
             }
         }
 
@@ -197,9 +179,8 @@ impl Transform {
             Err(e) => Err(io::Error::new(
                 e.kind(),
                 format!(
-                    "Failed to create temporary directory {}: {}",
-                    tmp.display(),
-                    e
+                    "Failed to create temporary directory {}: {e}",
+                    tmp.display()
                 ),
             )),
         }
@@ -253,7 +234,7 @@ impl Transform {
         let mut output_conf = output_conf.into_inner();
 
         if self.in_place {
-            output_conf = Output::InPlace(input_conf.input_path().clone())
+            output_conf = Output::InPlace(input_conf.input_path().clone());
         }
 
         (args, input_conf, output_conf)
@@ -320,7 +301,7 @@ fn create_named_pipe(path: &std::path::Path) -> io::Result<()> {
         let io_err: io::Error = e.into();
         return Err(io::Error::new(
             io_err.kind(),
-            format!("Failed to create named pipe {}: {}", path.display(), io_err),
+            format!("Failed to create named pipe {}: {io_err}", path.display()),
         ));
     }
     Ok(())
@@ -415,7 +396,7 @@ where
     fn join_chars(chars: Vec<char>) -> OsString {
         let mut result = OsString::new();
         for c in chars {
-            result.push(c.to_string())
+            result.push(c.to_string());
         }
         result
     }
@@ -423,19 +404,17 @@ where
     fn join_str(strings: Vec<OsString>) -> OsString {
         let mut result = OsString::new();
         for c in strings {
-            result.push(c)
+            result.push(c);
         }
         result
     }
 
     let r_var = Regex::new(r"^([[:alnum:]]|_)+").unwrap();
-    let p_var = map(tuple((tag("$"), re_find(r_var))), |(_, str)| {
-        (substitute)(str)
-    });
+    let p_var = map((tag("$"), re_find(r_var)), |(_, str)| (substitute)(str));
     let p_non_var = map(many1(none_of(" $")), join_chars);
     let p_arg = map(many1(alt((p_var, p_non_var))), join_str);
     let p_whitespace = many1(one_of(" \t"));
-    let p_args = |s| separated_list0(p_whitespace, p_arg)(s);
+    let p_args = |s| separated_list0(p_whitespace, p_arg).parse(s);
     let result: IResult<&str, Vec<OsString>> = (p_args)(command);
     result.expect("Parse error").1
 }
@@ -475,7 +454,7 @@ mod test {
             let result = hasher.hash_transformed(&chunk, |_| {}).unwrap();
             assert_eq!(result.0, FileLen(content.len() as u64));
             assert_eq!(result.1, good_file_hash);
-        })
+        });
     }
 
     #[test]
@@ -498,13 +477,13 @@ mod test {
             let result = hasher.hash_transformed(&chunk, |_| {}).unwrap();
             assert_eq!(result.0, FileLen(content.len() as u64));
             assert_eq!(result.1, good_file_hash);
-        })
+        });
     }
 
     #[test]
     fn parse_command() {
         let result = super::parse_command("foo bar", |s| OsString::from(s));
-        assert_eq!(result, vec![OsString::from("foo"), OsString::from("bar")])
+        assert_eq!(result, vec![OsString::from("foo"), OsString::from("bar")]);
     }
 
     #[test]
@@ -521,6 +500,6 @@ mod test {
                 OsString::from("bar"),
                 OsString::from("in=/input")
             ]
-        )
+        );
     }
 }

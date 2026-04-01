@@ -67,7 +67,7 @@ where
 /// Beware they typically panic instead of returning `Err`.
 #[cfg(test)]
 pub mod test {
-    use std::fs::{create_dir_all, remove_dir_all, File};
+    use std::fs::{File, create_dir_all, remove_dir_all};
     use std::io::{BufReader, Read, Write};
     use std::path::PathBuf;
     use std::sync::Mutex;
@@ -75,7 +75,6 @@ pub mod test {
     use std::{fs, thread};
 
     use super::*;
-    use lazy_static::lazy_static;
 
     #[derive(Debug, PartialEq, Eq)]
     enum FsSupportsReflink {
@@ -83,10 +82,7 @@ pub mod test {
         Supported(bool),
     }
 
-    lazy_static! {
-        static ref REFLINK_SUPPORTED: Mutex<FsSupportsReflink> =
-            Mutex::new(FsSupportsReflink::Untested);
-    }
+    static REFLINK_SUPPORTED: Mutex<FsSupportsReflink> = Mutex::new(FsSupportsReflink::Untested);
 
     /// Runs test code that needs access to temporary file storage.
     /// Makes sure the test root directory exists and is empty.
@@ -100,9 +96,10 @@ pub mod test {
 
         // Quick sanity check: Joining a relative with an absolute path
         // returns an absolute path.
-        if test_root.is_absolute() && !test_root.starts_with("/dev/shm/") {
-            panic!("Internal test error: only use relative paths!");
-        }
+        assert!(
+            !test_root.is_absolute() || test_root.starts_with("/dev/shm/"),
+            "Internal test error: only use relative paths!"
+        );
 
         remove_dir_all(&test_root).ok();
         create_dir_all(&test_root).unwrap();
@@ -163,21 +160,21 @@ pub mod test {
         let mut guard = REFLINK_SUPPORTED.lock().unwrap();
 
         match *guard {
-            FsSupportsReflink::Untested => {
-                with_dir("fs_supports_reflink", |test_dir| {
-                    let src_file = test_dir.join("src_file");
-                    let dest_file = test_dir.join("dest_file");
-                    write_file(&src_file, "1");
+            FsSupportsReflink::Untested => with_dir("fs_supports_reflink", |test_dir| {
+                let src_file = test_dir.join("src_file");
+                let dest_file = test_dir.join("dest_file");
+                write_file(&src_file, "1");
 
-                    let result = reflink::reflink(src_file, dest_file).is_ok();
-                    *guard = FsSupportsReflink::Supported(result);
+                let result = reflink::reflink(src_file, dest_file).is_ok();
+                *guard = FsSupportsReflink::Supported(result);
 
-                    if !result {
-                        println!("  Notice: filesystem does not support reflinks, skipping related tests")
-                    }
-                    result
-                })
-            }
+                if !result {
+                    println!(
+                        "  Notice: filesystem does not support reflinks, skipping related tests"
+                    );
+                }
+                result
+            }),
             FsSupportsReflink::Supported(val) => val,
         }
     }

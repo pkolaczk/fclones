@@ -14,8 +14,8 @@ use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
 use bytesize::ByteSize;
 use hex::FromHexError;
 use itertools::{EitherOrBoth, Itertools};
-use rayon::iter::{IntoParallelRefIterator, IntoParallelRefMutIterator, ParallelIterator};
-use serde::*;
+use rayon::iter::{IntoParallelRefMutIterator, ParallelIterator};
+use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
 use smallvec::alloc::fmt::Formatter;
 use smallvec::alloc::str::FromStr;
 
@@ -95,6 +95,7 @@ pub struct FileLen(pub u64);
 
 impl FileLen {
     pub const MAX: FileLen = FileLen(u64::MAX);
+    #[must_use]
     pub fn as_pos(self) -> FilePos {
         FilePos(self.0)
     }
@@ -133,7 +134,7 @@ impl Add for FileLen {
 
 impl AddAssign for FileLen {
     fn add_assign(&mut self, rhs: Self) {
-        self.0 += rhs.0
+        self.0 += rhs.0;
     }
 }
 
@@ -146,7 +147,7 @@ impl Sub for FileLen {
 
 impl SubAssign for FileLen {
     fn sub_assign(&mut self, rhs: Self) {
-        self.0 -= rhs.0
+        self.0 -= rhs.0;
     }
 }
 
@@ -164,17 +165,17 @@ impl Sum<FileLen> for FileLen {
 }
 
 impl FromStr for FileLen {
-    type Err = byte_unit::ByteError;
+    type Err = byte_unit::ParseError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         let b = Byte::from_str(s)?;
-        Ok(FileLen(b.get_bytes() as u64))
+        Ok(FileLen(b.as_u64()))
     }
 }
 
 impl Display for FileLen {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        f.pad(format!("{}", ByteSize(self.0)).as_str())
+        f.pad(format!("{}", ByteSize(self.0).display().si()).as_str())
     }
 }
 
@@ -214,7 +215,7 @@ impl FileId {
             }),
             Err(e) => Err(io::Error::new(
                 e.kind(),
-                format!("Failed to read metadata of {}: {}", file.display(), e),
+                format!("Failed to read metadata of {}: {e}", file.display()),
             )),
         }
     }
@@ -238,7 +239,7 @@ impl FileId {
         use std::os::windows::io::*;
         use winapi::ctypes::c_void;
         use winapi::um::fileapi::{
-            GetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION, FILE_ID_INFO,
+            BY_HANDLE_FILE_INFORMATION, FILE_ID_INFO, GetFileInformationByHandle,
         };
         use winapi::um::minwinbase::FileIdInfo;
         use winapi::um::winbase::GetFileInformationByHandleEx;
@@ -276,6 +277,7 @@ impl FileId {
     }
 
     #[cfg(unix)]
+    #[must_use]
     pub fn from_metadata(metadata: &fs::Metadata) -> FileId {
         use std::os::unix::fs::MetadataExt;
         FileId {
@@ -302,7 +304,7 @@ impl FileMetadata {
         let metadata = fs::metadata(path_buf).map_err(|e| {
             io::Error::new(
                 e.kind(),
-                format!("Failed to read metadata of {}: {}", path.display(), e),
+                format!("Failed to read metadata of {}: {e}", path.display()),
             )
         })?;
         #[cfg(unix)]
@@ -353,10 +355,10 @@ pub struct FileInfo {
     pub(crate) location: u64,
 }
 
-const OFFSET_MASK: u64 = 0x0000FFFFFFFFFFFF;
+const OFFSET_MASK: u64 = 0x0000_FFFF_FFFF_FFFF;
 
 #[cfg(target_os = "linux")]
-const DEVICE_MASK: u64 = 0xFFFF000000000000;
+const DEVICE_MASK: u64 = 0xFFFF_0000_0000_0000;
 
 impl FileInfo {
     fn new(path: Path, devices: &DiskDevices) -> io::Result<FileInfo> {
@@ -375,6 +377,7 @@ impl FileInfo {
     }
 
     /// Returns the device index into the `DiskDevices` instance passed at creation
+    #[must_use]
     pub fn get_device_index(&self) -> usize {
         (self.location >> 48) as usize
     }
@@ -442,6 +445,7 @@ pub(crate) fn get_physical_file_location(path: &Path) -> io::Result<Option<u64>>
 pub struct FileHash(Box<[u8]>);
 
 impl FileHash {
+    #[must_use]
     pub fn u128_prefix(&self) -> u128 {
         self.0
             .as_ref()
@@ -523,8 +527,6 @@ impl<'de> Deserialize<'de> for FileHash {
 pub(crate) trait FileCollection {
     /// Returns the number of files in the collection
     fn count(&self) -> usize;
-    /// Returns the total size of files in the collection
-    fn total_size(&self) -> FileLen;
     /// Performs given action on each file in the collection
     fn for_each_mut<OP>(&mut self, op: OP)
     where
@@ -536,32 +538,24 @@ impl FileCollection for Vec<FileInfo> {
         self.len()
     }
 
-    fn total_size(&self) -> FileLen {
-        self.par_iter().map(|f| f.len).sum()
-    }
-
     fn for_each_mut<OP>(&mut self, op: OP)
     where
         OP: Fn(&mut FileInfo) + Sync + Send,
     {
-        self.par_iter_mut().for_each(op)
+        self.par_iter_mut().for_each(op);
     }
 }
 
 impl FileCollection for Vec<FileGroup<FileInfo>> {
     fn count(&self) -> usize {
-        self.iter().map(|g| g.file_count()).sum()
-    }
-
-    fn total_size(&self) -> FileLen {
-        self.par_iter().map(|g| g.total_size()).sum()
+        self.iter().map(FileGroup::file_count).sum()
     }
 
     fn for_each_mut<OP>(&mut self, op: OP)
     where
         OP: Fn(&mut FileInfo) + Sync + Send,
     {
-        self.par_iter_mut().flat_map(|g| &mut g.files).for_each(op)
+        self.par_iter_mut().flat_map(|g| &mut g.files).for_each(op);
     }
 }
 
@@ -579,6 +573,6 @@ mod test {
     fn test_format_bytes() {
         let file_len = FileLen(16000);
         let human_readable = format!("{file_len}");
-        assert_eq!(human_readable, "16.0 KB");
+        assert_eq!(human_readable, "16.0 kB");
     }
 }

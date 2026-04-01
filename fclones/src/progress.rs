@@ -2,6 +2,7 @@
 
 use crate::FileLen;
 use console::style;
+use core::time::Duration;
 use status_line::{Options, StatusLine};
 use std::fmt::{Display, Formatter};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -48,7 +49,7 @@ impl Progress {
     }
 
     /// Draws the progress bar alone (without message and numbers)
-    fn bar(&self, length: usize) -> String {
+    fn bar(length: usize) -> String {
         let mut bar = "=".repeat(length);
         if !bar.is_empty() {
             bar.pop();
@@ -58,7 +59,7 @@ impl Progress {
         bar
     }
 
-    fn animate_spinner(&self, frame: u64) -> String {
+    fn animate_spinner(frame: u64) -> String {
         let spaceship = "<===>";
         let max_pos = (MAX_BAR_LEN - spaceship.len()) as u64;
         let pos = ((frame + max_pos) % (max_pos * 2)).abs_diff(max_pos);
@@ -70,7 +71,7 @@ impl Progress {
 impl Default for Progress {
     fn default() -> Self {
         Progress {
-            msg: "".to_owned(),
+            msg: String::new(),
             value: AtomicU64::default(),
             max: None,
             unit: ProgressUnit::default(),
@@ -92,18 +93,15 @@ impl Display for Progress {
             style(self.msg.clone())
         };
 
-        match self.max {
-            Some(max) => {
-                let max_str = self.fmt_value(max);
-                let bar_len = (MAX_BAR_LEN as u64 * value / max.max(1)) as usize;
-                let bar = self.bar(bar_len);
-                write!(f, "{msg:32}[{bar:MAX_BAR_LEN$}]{value_str:>14} / {max_str}")
-            }
-            None => {
-                let frame = (self.start_time.elapsed().as_millis() / 50) as u64;
-                let bar = self.animate_spinner(frame);
-                write!(f, "{msg:32}[{bar:MAX_BAR_LEN$}]{value_str:>14}")
-            }
+        if let Some(max) = self.max {
+            let max_str = self.fmt_value(max);
+            let bar_len = (MAX_BAR_LEN as u64 * value / max.max(1)) as usize;
+            let bar = Progress::bar(bar_len);
+            write!(f, "{msg:32}[{bar:MAX_BAR_LEN$}]{value_str:>14} / {max_str}")
+        } else {
+            let frame = (self.start_time.elapsed().as_millis() / 50) as u64;
+            let bar = Progress::animate_spinner(frame);
+            write!(f, "{msg:32}[{bar:MAX_BAR_LEN$}]{value_str:>14}")
         }
     }
 }
@@ -115,6 +113,7 @@ pub struct ProgressBar {
 
 impl ProgressBar {
     /// Create a new preconfigured animated spinner with given message.
+    #[must_use]
     pub fn new_spinner(msg: &str) -> ProgressBar {
         let progress = Progress {
             msg: msg.to_string(),
@@ -126,6 +125,7 @@ impl ProgressBar {
     }
 
     /// Create a new preconfigured progress bar with given message.
+    #[must_use]
     pub fn new_progress_bar(msg: &str, len: u64) -> ProgressBar {
         let progress = Progress {
             msg: msg.to_string(),
@@ -139,6 +139,7 @@ impl ProgressBar {
 
     /// Create a new preconfigured progress bar with given message.
     /// Displays progress in bytes.
+    #[must_use]
     pub fn new_bytes_progress_bar(msg: &str, len: u64) -> ProgressBar {
         let progress = Progress {
             msg: msg.to_string(),
@@ -154,12 +155,13 @@ impl ProgressBar {
     /// Creates a new invisible progress bar.
     /// This is useful when you need to disable progress bar, but you need to pass an instance
     /// of a `ProgressBar` to something that expects it.
+    #[must_use]
     pub fn new_hidden() -> ProgressBar {
         ProgressBar {
             status_line: StatusLine::with_options(
                 Progress::default(),
                 Options {
-                    refresh_period: Default::default(),
+                    refresh_period: Duration::default(),
                     initially_visible: false,
                     enable_ansi_escapes: false,
                 },
@@ -167,6 +169,7 @@ impl ProgressBar {
         }
     }
 
+    #[must_use]
     pub fn is_visible(&self) -> bool {
         self.status_line.is_visible()
     }
@@ -208,27 +211,42 @@ mod test {
             ..Default::default()
         };
 
-        assert_eq!(p.to_string(), "Message                         [                                                  ]             0 / 100");
+        assert_eq!(
+            p.to_string(),
+            "Message                         [                                                  ]             0 / 100"
+        );
         p.value.fetch_add(2, Ordering::Relaxed);
-        assert_eq!(p.to_string(), "Message                         [>                                                 ]             2 / 100");
+        assert_eq!(
+            p.to_string(),
+            "Message                         [>                                                 ]             2 / 100"
+        );
         p.value.fetch_add(50, Ordering::Relaxed);
-        assert_eq!(p.to_string(), "Message                         [=========================>                        ]            52 / 100");
+        assert_eq!(
+            p.to_string(),
+            "Message                         [=========================>                        ]            52 / 100"
+        );
         p.value.fetch_add(48, Ordering::Relaxed);
-        assert_eq!(p.to_string(), "Message                         [=================================================>]           100 / 100");
+        assert_eq!(
+            p.to_string(),
+            "Message                         [=================================================>]           100 / 100"
+        );
     }
 
     #[test]
     fn draw_progress_bar_bytes() {
         let p = Progress {
             msg: "Message".to_string(),
-            max: Some(1000000000),
+            max: Some(1_000_000_000),
             value: AtomicU64::new(12000),
             unit: ProgressUnit::Bytes,
             color: false,
             ..Default::default()
         };
 
-        assert_eq!(p.to_string(), "Message                         [                                                  ]       12.0 KB / 1000.0 MB");
+        assert_eq!(
+            p.to_string(),
+            "Message                         [                                                  ]       12.0 kB / 1.0 GB"
+        );
     }
 
     #[test]
@@ -247,22 +265,21 @@ mod test {
         let s = p.to_string();
         assert!(
             pattern.is_match(s.as_str()),
-            "Spinner doesn't match pattern: {}",
-            s
+            "Spinner doesn't match pattern: {s}"
         );
 
-        assert_eq!(p.animate_spinner(0), "<===>");
-        assert_eq!(p.animate_spinner(1), " <===>");
-        assert_eq!(p.animate_spinner(2), "  <===>");
-        assert_eq!(p.animate_spinner(3), "   <===>");
+        assert_eq!(Progress::animate_spinner(0), "<===>");
+        assert_eq!(Progress::animate_spinner(1), " <===>");
+        assert_eq!(Progress::animate_spinner(2), "  <===>");
+        assert_eq!(Progress::animate_spinner(3), "   <===>");
 
-        assert_eq!(p.animate_spinner(85), "     <===>");
-        assert_eq!(p.animate_spinner(86), "    <===>");
-        assert_eq!(p.animate_spinner(87), "   <===>");
-        assert_eq!(p.animate_spinner(88), "  <===>");
-        assert_eq!(p.animate_spinner(89), " <===>");
-        assert_eq!(p.animate_spinner(90), "<===>");
-        assert_eq!(p.animate_spinner(91), " <===>");
-        assert_eq!(p.animate_spinner(92), "  <===>");
+        assert_eq!(Progress::animate_spinner(85), "     <===>");
+        assert_eq!(Progress::animate_spinner(86), "    <===>");
+        assert_eq!(Progress::animate_spinner(87), "   <===>");
+        assert_eq!(Progress::animate_spinner(88), "  <===>");
+        assert_eq!(Progress::animate_spinner(89), " <===>");
+        assert_eq!(Progress::animate_spinner(90), "<===>");
+        assert_eq!(Progress::animate_spinner(91), " <===>");
+        assert_eq!(Progress::animate_spinner(92), "  <===>");
     }
 }
