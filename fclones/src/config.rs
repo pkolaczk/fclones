@@ -662,6 +662,31 @@ pub struct DedupeConfig {
     /// this flag is set automatically if `--transform` was used.
     #[arg(long)]
     pub no_check_size: bool,
+
+    /// Hash function used during the original group command.
+    /// This is not set via CLI arguments, but derived from the report header.
+    #[arg(skip)]
+    pub hash_fn: Option<HashFn>,
+
+    /// Whether to validate file hashes before performing deduplication operations.
+    /// Defaults to true.
+    #[arg(long = "no-check-hash")]
+    pub no_check_hash: bool,
+
+    /// Transform command used during grouping.
+    /// This is not set via CLI arguments, but derived from the report header.
+    #[arg(skip)]
+    pub transform: Option<String>,
+
+    /// Whether the transform was in-place during grouping.
+    /// This is not set via CLI arguments, but derived from the report header.
+    #[arg(skip)]
+    pub in_place: bool,
+
+    /// Output format for dry-run report.
+    /// This is not set via CLI arguments, but derived from the report header.
+    #[arg(skip)]
+    pub format: OutputFormat,
 }
 
 #[derive(clap::Subcommand, Debug)]

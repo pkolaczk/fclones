@@ -16,14 +16,18 @@ use priority_queue::PriorityQueue;
 use rand::distributions::Alphanumeric;
 use rand::Rng;
 use rayon::iter::{IntoParallelIterator, ParallelBridge, ParallelIterator};
+use serde::*;
 
 use crate::config::{DedupeConfig, Priority};
 use crate::device::DiskDevices;
-use crate::file::{FileId, FileLen, FileMetadata};
+use crate::file::{FileChunk, FileHash, FileId, FileLen, FileMetadata, FilePos};
 use crate::group::{FileGroup, FileSubGroup};
+use crate::hasher::compute_file_hash;
+use crate::hasher::{FileHasher, HashFn};
 use crate::lock::FileLock;
 use crate::log::{Log, LogExt};
 use crate::path::Path;
+use crate::transform::Transform;
 use crate::util::{max_result, min_result, try_sort_by_key};
 use crate::{Error, TIMESTAMP_FMT};
 
@@ -40,6 +44,124 @@ pub enum DedupeOp {
     HardLink,
     /// Reflink redundant files (cp --reflink=always, only some filesystems).
     RefLink,
+}
+
+/// Reason for skipping a file group during validation
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum SkipReason {
+    /// One or more files were not found
+    FileNotFound,
+    /// One or more files could not be read
+    FileReadError(String),
+    /// One or more files are not regular files
+    NotRegularFile,
+    /// File size does not match the group's expected size
+    SizeMismatch {
+        expected: FileLen,
+        actual: FileLen,
+        path: Path,
+    },
+    /// File was modified after the specified time
+    ModifiedTooLate {
+        path: Path,
+    },
+    /// File hash does not match the group's expected hash
+    HashMismatch {
+        expected: FileHash,
+        actual: FileHash,
+        path: Path,
+    },
+    /// Hash algorithm is unknown (unable to validate hash)
+    HashAlgorithmUnknown,
+    /// Metadata could not be read for some files
+    MetadataReadError,
+    /// User specified patterns caused the whole group to be skipped
+    PatternSkip,
+}
+
+impl Display for SkipReason {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        match self {
+            SkipReason::FileNotFound => {
+                write!(f, "One or more files were not found")
+            }
+            SkipReason::FileReadError(msg) => {
+                write!(f, "File read error: {}", msg)
+            }
+            SkipReason::NotRegularFile => {
+                write!(f, "One or more files are not regular files")
+            }
+            SkipReason::SizeMismatch { expected, actual, path } => {
+                write!(
+                    f,
+                    "File '{}' has size {} (expected {})",
+                    path.display(),
+                    actual.0,
+                    expected.0
+                )
+            }
+            SkipReason::ModifiedTooLate { path } => {
+                write!(
+                    f,
+                    "File '{}' was modified after the specified time",
+                    path.display()
+                )
+            }
+            SkipReason::HashMismatch { path, .. } => {
+                write!(f, "File '{}' hash does not match", path.display())
+            }
+            SkipReason::HashAlgorithmUnknown => {
+                write!(f, "Hash algorithm is unknown - cannot validate file hashes")
+            }
+            SkipReason::MetadataReadError => {
+                write!(f, "Could not read metadata for one or more files")
+            }
+            SkipReason::PatternSkip => {
+                write!(f, "Group skipped due to pattern filters")
+            }
+        }
+    }
+}
+
+/// Statistics for deduplication operation
+#[derive(Clone, Debug, Default, Serialize)]
+pub struct DedupeResult {
+    pub processed_count: u64,
+    pub reclaimed_space: FileLen,
+    pub skipped_groups: u64,
+    pub skipped_reasons: Vec<SkippedGroup>,
+}
+
+/// A skipped group with its reason and files
+#[derive(Clone, Debug, Serialize)]
+pub struct SkippedGroup {
+    pub reason: SkipReason,
+    pub files: Vec<Path>,
+}
+
+impl Add<DedupeResult> for DedupeResult {
+    type Output = DedupeResult;
+
+    fn add(self, rhs: Self) -> Self::Output {
+        let mut skipped_reasons = self.skipped_reasons;
+        skipped_reasons.extend(rhs.skipped_reasons);
+        DedupeResult {
+            processed_count: self.processed_count + rhs.processed_count,
+            reclaimed_space: self.reclaimed_space + rhs.reclaimed_space,
+            skipped_groups: self.skipped_groups + rhs.skipped_groups,
+            skipped_reasons,
+        }
+    }
+}
+
+impl AddAssign for DedupeResult {
+    fn add_assign(&mut self, rhs: Self) {
+        self.processed_count += rhs.processed_count;
+        self.reclaimed_space += rhs.reclaimed_space;
+        self.skipped_groups += rhs.skipped_groups;
+        self.skipped_reasons.extend(rhs.skipped_reasons);
+    }
 }
 
 /// Convenience struct for holding a path to a file and its metadata together
@@ -473,31 +595,6 @@ impl FsCommand {
     }
 }
 
-/// Provides information about the number of deduplicated files and reclaimed disk space
-#[derive(Default)]
-pub struct DedupeResult {
-    pub processed_count: u64,
-    pub reclaimed_space: FileLen,
-}
-
-impl Add<DedupeResult> for DedupeResult {
-    type Output = DedupeResult;
-
-    fn add(self, rhs: Self) -> Self::Output {
-        DedupeResult {
-            processed_count: self.processed_count + rhs.processed_count,
-            reclaimed_space: self.reclaimed_space + rhs.reclaimed_space,
-        }
-    }
-}
-
-impl AddAssign for DedupeResult {
-    fn add_assign(&mut self, rhs: Self) {
-        self.processed_count += rhs.processed_count;
-        self.reclaimed_space += rhs.reclaimed_space;
-    }
-}
-
 /// Returns true if any of the files have been modified after the given timestamp.
 /// Also returns true if file timestamp could not be read.
 fn was_modified(files: &[PathAndMetadata], after: DateTime<FixedOffset>, log: &dyn Log) -> bool {
@@ -778,6 +875,86 @@ impl PartitionedFileGroup {
     }
 }
 
+/// Result of validating a file group before deduplication
+#[derive(Debug)]
+pub enum GroupValidationResult {
+    /// Group passed validation, contains the partitioned files
+    Valid(PartitionedFileGroup),
+    /// Group failed validation and should be skipped
+    Skipped(SkipReason),
+}
+
+impl GroupValidationResult {
+    /// Returns true if the result is `Valid`
+    pub fn is_valid(&self) -> bool {
+        matches!(self, GroupValidationResult::Valid(_))
+    }
+
+    /// Returns true if the result is `Skipped`
+    pub fn is_skipped(&self) -> bool {
+        matches!(self, GroupValidationResult::Skipped(_))
+    }
+
+    /// Returns the contained `Valid` value, consuming the self value.
+    /// Panics if the value is a `Skipped` with a custom panic message.
+    pub fn unwrap(self) -> PartitionedFileGroup {
+        match self {
+            GroupValidationResult::Valid(v) => v,
+            GroupValidationResult::Skipped(reason) => {
+                panic!("called `GroupValidationResult::unwrap()` on a `Skipped` value: {:?}", reason)
+            }
+        }
+    }
+
+    /// Returns the contained `Skipped` reason if the result is `Skipped`,
+    /// otherwise panics.
+    pub fn unwrap_err(self) -> SkipReason {
+        match self {
+            GroupValidationResult::Skipped(reason) => reason,
+            GroupValidationResult::Valid(_) => {
+                panic!("called `GroupValidationResult::unwrap_err()` on a `Valid` value")
+            }
+        }
+    }
+
+    /// Returns true if the result is `Skipped` (compatibility method for tests)
+    pub fn is_err(&self) -> bool {
+        self.is_skipped()
+    }
+}
+
+/// Result of processing a file group for deduplication
+#[derive(Debug)]
+pub enum GroupProcessResult {
+    /// Group was processed successfully, contains the commands to execute
+    Processed(Vec<FsCommand>),
+    /// Group was skipped, contains the reason and the list of files
+    Skipped {
+        reason: SkipReason,
+        files: Vec<Path>,
+    },
+}
+
+impl GroupProcessResult {
+    /// Returns true if the group was processed successfully
+    pub fn is_processed(&self) -> bool {
+        matches!(self, GroupProcessResult::Processed(_))
+    }
+
+    /// Returns true if the group was skipped
+    pub fn is_skipped(&self) -> bool {
+        matches!(self, GroupProcessResult::Skipped { .. })
+    }
+
+    /// Returns the commands if processed, or empty vector if skipped
+    pub fn commands_or_empty(self) -> Vec<FsCommand> {
+        match self {
+            GroupProcessResult::Processed(cmds) => cmds,
+            GroupProcessResult::Skipped { .. } => vec![],
+        }
+    }
+}
+
 /// Attempts to retrieve the metadata of all the files in the file group.
 /// If metadata is inaccessible for a file, a warning is emitted to the log, and None gets returned.
 fn fetch_files_metadata<P>(group: FileGroup<P>, log: &dyn Log) -> Option<FileGroup<PathAndMetadata>>
@@ -793,68 +970,179 @@ where
         .ok()
 }
 
+/// Validates a file group before deduplication.
+/// Checks:
+/// - All files are regular files
+/// - All files have the expected size (unless no_check_size is true)
+/// - All files were modified before the specified time (if modified_before is set)
+/// - All files have the expected hash (unless no_check_hash is true and hash_fn is available)
+///
+/// Returns Ok(()) if validation passes, or Err(SkipReason) if validation fails.
+fn validate_group(
+    group: &FileGroup<PathAndMetadata>,
+    config: &DedupeConfig,
+    log: &dyn Log,
+) -> Result<(), SkipReason> {
+    let expected_len = group.file_len;
+    let expected_hash = &group.file_hash;
+    let files = &group.files;
+
+    for file in files {
+        if !file.metadata.is_file() {
+            log.warn(format!(
+                "Skipping group: file '{}' is not a regular file",
+                file.path.display()
+            ));
+            return Err(SkipReason::NotRegularFile);
+        }
+    }
+
+    if !config.no_check_size {
+        for file in files {
+            let actual_len = file.metadata.len();
+            if actual_len != expected_len {
+                log.warn(format!(
+                    "Skipping group: file '{}' has size {} (expected {})",
+                    file.path.display(),
+                    actual_len.0,
+                    expected_len.0
+                ));
+                return Err(SkipReason::SizeMismatch {
+                    expected: expected_len,
+                    actual: actual_len,
+                    path: file.path.clone(),
+                });
+            }
+        }
+    }
+
+    if let Some(max_timestamp) = config.modified_before {
+        for file in files {
+            match file.metadata.modified() {
+                Ok(file_timestamp) => {
+                    let file_timestamp: DateTime<Local> = file_timestamp.into();
+                    let after: DateTime<Local> = max_timestamp.into();
+                    if file_timestamp > after {
+                        log.warn(format!(
+                            "Skipping group: file '{}' was updated after {} (at {})",
+                            file.path.display(),
+                            after.format(TIMESTAMP_FMT),
+                            file_timestamp.format(TIMESTAMP_FMT)
+                        ));
+                        return Err(SkipReason::ModifiedTooLate {
+                            path: file.path.clone(),
+                        });
+                    }
+                }
+                Err(e) => {
+                    log.warn(format!(
+                        "Skipping group: failed to read modification time of file '{}': {}",
+                        file.path.display(),
+                        e
+                    ));
+                    return Err(SkipReason::FileReadError(format!(
+                        "Failed to read modification time: {}",
+                        e
+                    )));
+                }
+            }
+        }
+    }
+
+    if !config.no_check_hash {
+        if let Some(hash_fn) = config.hash_fn {
+            let hasher_result = if let Some(transform_str) = &config.transform {
+                match Transform::new(transform_str.clone(), config.in_place) {
+                    Ok(transform) => {
+                        Ok(Some(FileHasher::new(hash_fn, Some(transform), log)))
+                    }
+                    Err(e) => {
+                        log.warn(format!(
+                            "Skipping group: failed to create transform: {}",
+                            e
+                        ));
+                        return Err(SkipReason::FileReadError(format!(
+                            "Failed to create transform: {}",
+                            e
+                        )));
+                    }
+                }
+            } else {
+                Ok(None)
+            };
+
+            match hasher_result {
+                Ok(hasher_opt) => {
+                    for file in files {
+                        let path = &file.path;
+                        let result = if let Some(hasher) = &hasher_opt {
+                            let chunk = FileChunk::new(path, FilePos::zero(), expected_len);
+                            hasher.hash_transformed(&chunk, |_| {}).map(|(_, hash)| hash)
+                        } else {
+                            compute_file_hash(hash_fn, path, expected_len, |_| {})
+                        };
+
+                        match result {
+                            Ok(actual_hash) => {
+                                if &actual_hash != expected_hash {
+                                    log.warn(format!(
+                                        "Skipping group: file '{}' hash does not match",
+                                        path.display()
+                                    ));
+                                    return Err(SkipReason::HashMismatch {
+                                        expected: expected_hash.clone(),
+                                        actual: actual_hash,
+                                        path: path.clone(),
+                                    });
+                                }
+                            }
+                            Err(e) => {
+                                log.warn(format!(
+                                    "Skipping group: failed to compute hash of file '{}': {}",
+                                    path.display(),
+                                    e
+                                ));
+                                return Err(SkipReason::FileReadError(format!(
+                                    "Failed to compute hash: {}",
+                                    e
+                                )));
+                            }
+                        }
+                    }
+                }
+                Err(reason) => return Err(reason),
+            }
+        } else {
+            log.warn("Hash algorithm is unknown - skipping hash validation. \
+                      Consider using --no-check-hash to suppress this warning, \
+                      or ensure the report header contains the original hash algorithm.");
+        }
+    }
+
+    Ok(())
+}
+
 /// Partitions a group of files into files to keep and files that can be safely dropped
 /// (or linked).
+/// Performs validation before partitioning. If validation fails, returns Skipped with the reason.
 fn partition(
     group: FileGroup<PathAndMetadata>,
     config: &DedupeConfig,
     log: &dyn Log,
-) -> Result<PartitionedFileGroup, Error> {
-    let file_len = group.file_len;
+) -> GroupValidationResult {
     let file_hash = group.file_hash.clone();
-    let mut files = group.files;
+    let file_len = group.file_len;
+    let files = group.files.clone();
 
-    let error = |msg: &str| {
-        Err(Error::from(format!(
-            "Could not determine files to drop in group with hash {} and len {}: {}",
-            file_hash, file_len.0, msg
-        )))
-    };
-
-    // We don't want to remove dirs or symlinks
-    files.retain(|m| {
-        let is_file = m.metadata.is_file();
-        if !is_file {
-            log.warn(format!(
-                "Skipping file {}: Not a regular file",
-                m.path.display()
-            ));
-        }
-        is_file
-    });
-
-    // If file has a different length, then we really know it has been modified.
-    // Therefore, it does not belong to the group and we can safely skip it.
-    if !config.no_check_size {
-        files.retain(|m| {
-            let len_ok = m.metadata.len() == file_len;
-            if !len_ok {
-                log.warn(format!(
-                    "Skipping file {} with length {} different than the group length {}",
-                    m.path.display(),
-                    m.metadata.len(),
-                    file_len.0,
-                ));
-            }
-            len_ok
-        });
+    if let Err(reason) = validate_group(&group, config, log) {
+        return GroupValidationResult::Skipped(reason);
     }
 
-    // Bail out as well if any file has been modified after `config.modified_before`.
-    // We need to skip the whole group, because we don't know if these files are really different.
-    if let Some(max_timestamp) = config.modified_before {
-        if was_modified(&files, max_timestamp, log) {
-            return error("Some files could be updated since the previous run of fclones");
-        }
-    }
+    let mut files = files;
 
     let mut file_sub_groups =
         FileSubGroup::group(files, &config.isolated_roots, !config.match_links);
 
-    // Sort files to remove in user selected order.
-    // The priorities at the beginning of the argument list have precedence over
-    // the priorities given at the end of the argument list, therefore we're applying
-    // them in reversed order.
     let mut sort_errors = Vec::new();
     for priority in config.priority.iter().rev() {
         sort_errors.extend(sort_by_priority(&mut file_sub_groups, priority));
@@ -864,23 +1152,23 @@ fn partition(
         for e in sort_errors {
             log.warn(e);
         }
-        return error("Metadata of some files could not be read.");
+        log.warn(format!(
+            "Skipping group with hash {} and len {}: Metadata of some files could not be read.",
+            file_hash, file_len.0
+        ));
+        return GroupValidationResult::Skipped(SkipReason::MetadataReadError);
     }
 
-    // Split the set of file subgroups into two sets - a set that we want to keep intact and a set
-    // that we can remove or replace with links:
     let (mut to_retain, mut to_drop): (Vec<_>, Vec<_>) = file_sub_groups
         .into_iter()
         .partition(|m| m.should_keep(config) || !m.may_drop(config));
 
-    // If the set to retain is smaller than the number of files we must keep (rf), then
-    // move some higher priority files from `to_drop` and append them to `to_retain`.
     let n = max(1, config.rf_over.unwrap_or(1));
     let missing_count = min(to_drop.len(), n.saturating_sub(to_retain.len()));
     to_retain.extend(to_drop.drain(0..missing_count));
 
     assert!(to_retain.len() >= n || to_drop.is_empty());
-    Ok(PartitionedFileGroup {
+    GroupValidationResult::Valid(PartitionedFileGroup {
         to_keep: to_retain.into_iter().flat_map(|g| g.files).collect(),
         to_drop: to_drop.into_iter().flat_map(|g| g.files).collect(),
     })
@@ -895,17 +1183,16 @@ fn partition(
 /// It rejects a group of files if:
 /// - metadata of any files in the group cannot be read,
 /// - any file in the group was modified after the `modified_before` configuration property
+/// - any file size does not match the recorded size (unless `no_check_size` is true)
+/// - any file hash does not match the recorded hash (unless `no_check_hash` is true)
 ///
 /// Additionally it will never emit commands to remove a file which:
-/// - has length that does not match the file length recorded in the group metadata
 /// - was matched by any of the `retain_path` or `retain_name` patterns
 /// - was not matched by all `drop_path` and `drop_name` patterns
 ///
-/// The commands in the list are grouped into vectors where each
+/// The results are grouped into vectors where each
 /// vector has its sequential id. This id allows to convert the parallel iterator into a
 /// sequential iterator with the same order as the groups in the input file.
-/// Unfortunately Rayon does not allow to convert a parallel iterator
-/// to a sequential iterator easily, so we need this hack with prepending ids of each group.
 ///
 /// # Parameters
 /// - `groups`: iterator over groups of identical files
@@ -917,7 +1204,7 @@ pub fn dedupe<'a, I, P>(
     op: DedupeOp,
     config: &'a DedupeConfig,
     log: &'a dyn Log,
-) -> impl ParallelIterator<Item = (usize, Vec<FsCommand>)> + 'a
+) -> impl ParallelIterator<Item = (usize, GroupProcessResult)> + 'a
 where
     I: IntoIterator<Item = FileGroup<P>> + 'a,
     I::IntoIter: Send,
@@ -930,21 +1217,45 @@ where
         .enumerate()
         .par_bridge()
         .map(move |(i, group)| {
-            let mut commands = Vec::new();
+            let original_files: Vec<Path> = group
+                .files
+                .iter()
+                .map(|p| p.as_ref().to_owned())
+                .collect();
+
             if let Some(group) = fetch_files_metadata(group, log) {
                 let groups = if disallow_cross_device {
                     group.partition_by_key(|p| p.metadata.device_id())
                 } else {
                     vec![group]
                 };
+
                 for group in groups {
                     match partition(group, config, log) {
-                        Ok(group) => commands.extend(group.dedupe_script(&op, &devices)),
-                        Err(e) => log.warn(e),
+                        GroupValidationResult::Valid(partitioned) => {
+                            let commands = partitioned.dedupe_script(&op, &devices);
+                            return (i, GroupProcessResult::Processed(commands));
+                        }
+                        GroupValidationResult::Skipped(reason) => {
+                            return (
+                                i,
+                                GroupProcessResult::Skipped {
+                                    reason,
+                                    files: original_files,
+                                },
+                            );
+                        }
                     }
                 }
             }
-            (i, commands)
+
+            (
+                i,
+                GroupProcessResult::Skipped {
+                    reason: SkipReason::MetadataReadError,
+                    files: original_files,
+                },
+            )
         })
 }
 
@@ -955,24 +1266,43 @@ where
 /// Commands are executed in parallel, on the default Rayon thread-pool.
 /// On command execution failure, a warning is logged and the execution of remaining commands
 /// continues.
-/// Returns the number of files processed and the amount of disk space reclaimed.
+/// Returns the number of files processed, the amount of disk space reclaimed,
+/// and statistics about skipped groups.
 pub fn run_script<I>(script: I, should_lock: bool, log: &dyn Log) -> DedupeResult
 where
-    I: IntoParallelIterator<Item = (usize, Vec<FsCommand>)>,
+    I: IntoParallelIterator<Item = (usize, GroupProcessResult)>,
 {
     script
         .into_par_iter()
-        .flat_map(|(_, cmd_vec)| cmd_vec)
-        .map(|cmd| cmd.execute(should_lock, log))
-        .inspect(|res| {
-            if let Err(e) = res {
-                log.warn(e);
+        .flat_map(|(_, result)| {
+            match result {
+                GroupProcessResult::Processed(cmds) => cmds
+                    .into_iter()
+                    .map(|cmd| {
+                        let res = cmd.execute(should_lock, log);
+                        if let Err(e) = &res {
+                            log.warn(e);
+                        }
+                        match res {
+                            Ok(len) => DedupeResult {
+                                processed_count: 1,
+                                reclaimed_space: len,
+                                skipped_groups: 0,
+                                skipped_reasons: Vec::new(),
+                            },
+                            Err(_) => DedupeResult::default(),
+                        }
+                    })
+                    .collect::<Vec<_>>(),
+                GroupProcessResult::Skipped { reason, files } => {
+                    vec![DedupeResult {
+                        processed_count: 0,
+                        reclaimed_space: FileLen(0),
+                        skipped_groups: 1,
+                        skipped_reasons: vec![SkippedGroup { reason, files }],
+                    }]
+                }
             }
-        })
-        .filter_map(|res| res.ok())
-        .map(|len| DedupeResult {
-            processed_count: 1,
-            reclaimed_space: len,
         })
         .reduce(DedupeResult::default, |a, b| a + b)
 }
@@ -980,12 +1310,12 @@ where
 /// We need this so we can put command vectors in a priority queue.
 struct FsCommandGroup {
     index: usize,
-    commands: Vec<FsCommand>,
+    result: GroupProcessResult,
 }
 
 impl FsCommandGroup {
-    pub fn new(index: usize, commands: Vec<FsCommand>) -> FsCommandGroup {
-        FsCommandGroup { index, commands }
+    pub fn new(index: usize, result: GroupProcessResult) -> FsCommandGroup {
+        FsCommandGroup { index, result }
     }
 }
 
@@ -1006,28 +1336,16 @@ impl Hash for FsCommandGroup {
 /// Prints a script generated by [`dedupe`] to stdout.
 ///
 /// Does not perform any filesystem changes.
-/// Returns the number of files processed and the amount of disk space that would be
-/// reclaimed if all commands of the script were executed with no error.
+/// Returns the number of files processed, the amount of disk space that would be
+/// reclaimed if all commands of the script were executed with no error,
+/// and statistics about skipped groups.
 pub fn log_script(
-    script: impl IntoParallelIterator<Item = (usize, Vec<FsCommand>)> + Send,
+    script: impl IntoParallelIterator<Item = (usize, GroupProcessResult)> + Send,
     mut out: impl Write + Send,
 ) -> io::Result<DedupeResult> {
-    // Unfortunately the items may come in any order from the ParallelIterator,
-    // and that order may change with each run, because multiple threads race to produce
-    // the next item. However, we want to print the commands
-    // in the same deterministic order as the groups in the input file.
-    // That's why we first send the commands to a PriorityQueue through a channel in order to
-    // get them all on a single thread. The queue sorts them by their sequential identifiers.
-    // Because the identifiers are consecutive integers, we know which item should be printed next.
-
     let (tx, rx) = channel();
 
-    // Scope needed so the script iterator doesn't need to be 'static.
-    // This way we tell the compiler the background thread we start to process the iterator
-    // terminates before exiting this function.
     crossbeam_utils::thread::scope(move |s| {
-        // Process items in parallel in a background thread, so we can read as soon as they
-        // are produced:
         s.spawn(move |_| {
             script
                 .into_par_iter()
@@ -1038,31 +1356,45 @@ pub fn log_script(
         let mut next_group_index = 0;
         let mut processed_count = 0;
         let mut reclaimed_space = FileLen(0);
+        let mut skipped_groups = 0;
+        let mut skipped_reasons: Vec<SkippedGroup> = Vec::new();
 
-        while let Ok((group_index, commands)) = rx.recv() {
-            // Push the command group we received from the iterator.
-            // We may receive them in an incorrect order, so we push them to a PriorityQueue.
+        while let Ok((group_index, result)) = rx.recv() {
             queue.push(
-                FsCommandGroup::new(group_index, commands),
-                Reverse(group_index), // we want to get items with lowest-index first
+                FsCommandGroup::new(group_index, result),
+                Reverse(group_index),
             );
 
-            // Process items in the queue as soon as possible to save memory.
             while let Some((group, _)) = queue.peek() {
-                // Only process the item if it is the next one we expect.
-                // If we see an out-of-order item, we simply need to wait for more items
-                // to be pushed.
                 if group.index != next_group_index {
                     break;
                 }
-                // We got the right item, let's pop it from the queue and log it:
                 next_group_index += 1;
-                let cmd_vec = queue.pop().unwrap().0.commands;
-                for cmd in cmd_vec {
-                    processed_count += 1;
-                    reclaimed_space += cmd.space_to_reclaim();
-                    for line in cmd.to_shell_str() {
-                        writeln!(out, "{line}")?;
+                let group_result = queue.pop().unwrap().0.result;
+
+                match group_result {
+                    GroupProcessResult::Processed(cmd_vec) => {
+                        for cmd in cmd_vec {
+                            processed_count += 1;
+                            reclaimed_space += cmd.space_to_reclaim();
+                            for line in cmd.to_shell_str() {
+                                writeln!(out, "{line}")?;
+                            }
+                        }
+                    }
+                    GroupProcessResult::Skipped { reason, files } => {
+                        skipped_groups += 1;
+                        skipped_reasons.push(SkippedGroup {
+                            reason: reason.clone(),
+                            files: files.clone(),
+                        });
+
+                        writeln!(out, "# SKIPPED: {}", reason)?;
+                        writeln!(out, "# Files in this group:")?;
+                        for file in &files {
+                            writeln!(out, "#   {}", file.display())?;
+                        }
+                        writeln!(out)?;
                     }
                 }
             }
@@ -1071,7 +1403,166 @@ pub fn log_script(
         Ok(DedupeResult {
             processed_count,
             reclaimed_space,
+            skipped_groups,
+            skipped_reasons,
         })
+    })
+    .unwrap()
+}
+
+/// A serializable representation of a filesystem command for JSON output
+#[derive(Clone, Debug, Serialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum SerializableCommand {
+    Remove {
+        file: Path,
+    },
+    Move {
+        source: Path,
+        target: Path,
+        use_rename: bool,
+    },
+    SoftLink {
+        target: Path,
+        link: Path,
+    },
+    HardLink {
+        target: Path,
+        link: Path,
+    },
+    RefLink {
+        target: Path,
+        link: Path,
+    },
+}
+
+impl From<&FsCommand> for SerializableCommand {
+    fn from(cmd: &FsCommand) -> Self {
+        match cmd {
+            FsCommand::Remove { file } => SerializableCommand::Remove {
+                file: file.path.clone(),
+            },
+            FsCommand::Move {
+                source,
+                target,
+                use_rename,
+            } => SerializableCommand::Move {
+                source: source.path.clone(),
+                target: target.clone(),
+                use_rename: *use_rename,
+            },
+            FsCommand::SoftLink { target, link } => SerializableCommand::SoftLink {
+                target: target.path.clone(),
+                link: link.path.clone(),
+            },
+            FsCommand::HardLink { target, link } => SerializableCommand::HardLink {
+                target: target.path.clone(),
+                link: link.path.clone(),
+            },
+            FsCommand::RefLink { target, link } => SerializableCommand::RefLink {
+                target: target.path.clone(),
+                link: link.path.clone(),
+            },
+        }
+    }
+}
+
+/// A group of commands for a single file group
+#[derive(Clone, Debug, Serialize)]
+pub struct CommandGroup {
+    pub group_index: usize,
+    pub commands: Vec<SerializableCommand>,
+}
+
+/// A complete dry-run report in JSON format
+#[derive(Clone, Debug, Serialize)]
+pub struct DryRunReport {
+    pub command_groups: Vec<CommandGroup>,
+    pub skipped_groups: Vec<SkippedGroup>,
+    pub stats: DedupeResult,
+}
+
+/// Prints a script generated by [`dedupe`] to stdout in JSON format.
+///
+/// Does not perform any filesystem changes.
+/// Returns the number of files processed, the amount of disk space that would be
+/// reclaimed if all commands of the script were executed with no error,
+/// and statistics about skipped groups.
+pub fn log_json(
+    script: impl IntoParallelIterator<Item = (usize, GroupProcessResult)> + Send,
+    mut out: impl Write + Send,
+) -> io::Result<DedupeResult> {
+    let (tx, rx) = channel();
+
+    crossbeam_utils::thread::scope(move |s| {
+        s.spawn(move |_| {
+            script
+                .into_par_iter()
+                .for_each_with(tx, |tx, item| tx.send(item).unwrap())
+        });
+
+        let mut queue = PriorityQueue::new();
+        let mut next_group_index = 0;
+        let mut processed_count = 0;
+        let mut reclaimed_space = FileLen(0);
+        let mut skipped_groups = 0;
+        let mut skipped_reasons: Vec<SkippedGroup> = Vec::new();
+        let mut command_groups: Vec<CommandGroup> = Vec::new();
+
+        while let Ok((group_index, result)) = rx.recv() {
+            queue.push(
+                FsCommandGroup::new(group_index, result),
+                Reverse(group_index),
+            );
+
+            while let Some((group, _)) = queue.peek() {
+                if group.index != next_group_index {
+                    break;
+                }
+                next_group_index += 1;
+                let group_result = queue.pop().unwrap().0.result;
+
+                match group_result {
+                    GroupProcessResult::Processed(cmd_vec) => {
+                        let commands: Vec<SerializableCommand> =
+                            cmd_vec.iter().map(SerializableCommand::from).collect();
+                        for cmd in &cmd_vec {
+                            processed_count += 1;
+                            reclaimed_space += cmd.space_to_reclaim();
+                        }
+                        command_groups.push(CommandGroup {
+                            group_index: next_group_index - 1,
+                            commands,
+                        });
+                    }
+                    GroupProcessResult::Skipped { reason, files } => {
+                        skipped_groups += 1;
+                        skipped_reasons.push(SkippedGroup {
+                            reason: reason.clone(),
+                            files: files.clone(),
+                        });
+                    }
+                }
+            }
+        }
+
+        let result = DedupeResult {
+            processed_count,
+            reclaimed_space,
+            skipped_groups,
+            skipped_reasons: skipped_reasons.clone(),
+        };
+
+        let report = DryRunReport {
+            command_groups,
+            skipped_groups: skipped_reasons,
+            stats: result.clone(),
+        };
+
+        serde_json::to_writer_pretty(&mut out, &report)?;
+        writeln!(out)?;
+
+        Ok(result)
     })
     .unwrap()
 }
@@ -1628,6 +2119,136 @@ mod test {
 
             assert_eq!(read_file(&file_a1), "foo");
             assert_eq!(read_file(&file_a2), "foo");
+        })
+    }
+
+    #[test]
+    fn test_partition_skips_group_with_modified_file_size() {
+        with_dir("dedupe/partition/size_mismatch", |root| {
+            let mut log = StdLog::new();
+            log.no_progress = true;
+            log.log_stderr_to_stdout = true;
+
+            let group = make_group(root, FileHash::from_str("00").unwrap());
+            let modified_file = group.files[0].clone();
+            write_file(&modified_file.to_path_buf(), "different content");
+
+            let config = DedupeConfig::default();
+            let group = group.map(|p| PathAndMetadata::new(p).unwrap());
+
+            let result = partition(group, &config, &log);
+            assert!(result.is_skipped());
+
+            if let GroupValidationResult::Skipped(reason) = result {
+                assert!(matches!(reason, SkipReason::SizeMismatch { .. }));
+            }
+        })
+    }
+
+    #[test]
+    fn test_dedupe_skips_group_with_deleted_file() {
+        with_dir("dedupe/partition/deleted_file", |root| {
+            let mut log = StdLog::new();
+            log.no_progress = true;
+            log.log_stderr_to_stdout = true;
+
+            let group = make_group(root, FileHash::from_str("00").unwrap());
+            let deleted_file = group.files[0].clone();
+            fs::remove_file(&deleted_file.to_path_buf()).unwrap();
+
+            let config = DedupeConfig::default();
+            let script = dedupe(vec![group], DedupeOp::Remove, &config, &log);
+            let dedupe_result = run_script(script, !config.no_lock, &log);
+
+            assert_eq!(dedupe_result.processed_count, 0);
+            assert_eq!(dedupe_result.skipped_groups, 1);
+            assert_eq!(dedupe_result.skipped_reasons.len(), 1);
+
+            let skipped_group = &dedupe_result.skipped_reasons[0];
+            assert!(matches!(skipped_group.reason, SkipReason::MetadataReadError));
+        })
+    }
+
+    #[test]
+    fn test_partition_skips_group_with_hash_mismatch() {
+        with_dir("dedupe/partition/hash_mismatch", |root| {
+            let mut log = StdLog::new();
+            log.no_progress = true;
+            log.log_stderr_to_stdout = true;
+
+            let file_1 = root.join("file_1");
+            let file_2 = root.join("file_2");
+            let file_3 = root.join("file_3");
+
+            write_file(&file_1, "content");
+            write_file(&file_2, "content");
+            write_file(&file_3, "content");
+
+            let group = FileGroup {
+                file_len: FileLen(7),
+                file_hash: FileHash::from_str("00000000000000000000000000000000").unwrap(),
+                files: vec![
+                    Path::from(&file_1),
+                    Path::from(&file_2),
+                    Path::from(&file_3),
+                ],
+            };
+
+            let config = DedupeConfig {
+                hash_fn: Some(HashFn::Metro),
+                no_check_hash: false,
+                ..DedupeConfig::default()
+            };
+            let group = group.map(|p| PathAndMetadata::new(p).unwrap());
+
+            let result = partition(group, &config, &log);
+            assert!(result.is_skipped());
+
+            if let GroupValidationResult::Skipped(reason) = result {
+                assert!(matches!(reason, SkipReason::HashMismatch { .. }));
+            }
+        })
+    }
+
+    #[test]
+    fn test_log_script_outputs_skipped_groups() {
+        with_dir("dedupe/partition/log_skipped", |root| {
+            let mut log = StdLog::new();
+            log.no_progress = true;
+            log.log_stderr_to_stdout = true;
+
+            let valid_group = make_group(&root.join("valid"), FileHash::from_str("00").unwrap());
+
+            let modified_file_root = root.join("modified");
+            let mut modified_group = make_group(&modified_file_root, FileHash::from_str("01").unwrap());
+            let modified_file = modified_group.files[0].clone();
+            write_file(&modified_file.to_path_buf(), "different size now");
+
+            let deleted_file_root = root.join("deleted");
+            let deleted_group = make_group(&deleted_file_root, FileHash::from_str("02").unwrap());
+            let deleted_file = deleted_group.files[0].clone();
+            fs::remove_file(&deleted_file.to_path_buf()).unwrap();
+
+            let config = DedupeConfig::default();
+            let script = dedupe(
+                vec![valid_group, modified_group, deleted_group],
+                DedupeOp::Remove,
+                &config,
+                &log,
+            );
+
+            let mut out = Vec::new();
+            let dedupe_result = log_script(script, &mut out).unwrap();
+
+            assert_eq!(dedupe_result.skipped_groups, 2);
+
+            let output = String::from_utf8(out).unwrap();
+            assert!(output.contains("# SKIPPED:"));
+            assert!(output.contains("# Files in this group:"));
+
+            let lines: Vec<&str> = output.lines().collect();
+            let skipped_comment_count = lines.iter().filter(|l| l.contains("# SKIPPED:")).count();
+            assert_eq!(skipped_comment_count, 2);
         })
     }
 }
