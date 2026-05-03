@@ -16,7 +16,8 @@ use fclones::config::{Command, Config, DedupeConfig, GroupConfig, Parallelism};
 use fclones::log::{Log, LogExt, ProgressBarLength, StdLog};
 use fclones::progress::{NoProgressBar, ProgressTracker};
 use fclones::report::{open_report, ReportHeader};
-use fclones::{dedupe, log_script, run_script, DedupeOp};
+use fclones::config::OutputFormat;
+use fclones::{dedupe, log_json, log_script, run_script, DedupeOp};
 use fclones::{group_files, write_report, Error};
 
 /// Strips a red "error:" prefix and usage information added by clap.
@@ -163,6 +164,9 @@ pub fn run_dedupe(op: DedupeOp, config: DedupeConfig, log: &dyn Log) -> Result<(
         dedupe_config.no_check_size |= c.transform.is_some();
         dedupe_config.match_links |= c.match_links;
         dedupe_config.hash_fn = Some(c.hash_fn);
+        dedupe_config.transform = c.transform.clone();
+        dedupe_config.in_place = c.in_place;
+        dedupe_config.format = c.format;
 
         if dedupe_config.rf_over.is_none() {
             dedupe_config.rf_over = Some(c.rf_over())
@@ -226,7 +230,12 @@ pub fn run_dedupe(op: DedupeOp, config: DedupeConfig, log: &dyn Log) -> Result<(
     let script = dedupe(groups, op, &dedupe_config, log);
     if dedupe_config.dry_run {
         let out = get_output_writer(&dedupe_config)?;
-        let result = log_script(script, out).map_err(|e| format!("Output error: {e}"))?;
+        let result = match dedupe_config.format {
+            OutputFormat::Json => {
+                log_json(script, out).map_err(|e| format!("Output error: {e}"))?
+            }
+            _ => log_script(script, out).map_err(|e| format!("Output error: {e}"))?,
+        };
         log.info(format!(
             "Would process {} files and reclaim {}{} space",
             result.processed_count, upto, result.reclaimed_space

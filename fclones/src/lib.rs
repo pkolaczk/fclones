@@ -26,8 +26,9 @@ mod walk;
 
 pub use config::{DedupeConfig, GroupConfig, Priority};
 pub use dedupe::{
-    dedupe, log_script, run_script, sort_by_priority, DedupeOp, DedupeResult, PartitionedFileGroup,
-    PathAndMetadata, GroupValidationResult, GroupProcessResult, SkipReason,
+    dedupe, log_json, log_script, run_script, sort_by_priority, CommandGroup, DryRunReport,
+    DedupeOp, DedupeResult, GroupProcessResult, GroupValidationResult, PartitionedFileGroup,
+    PathAndMetadata, SerializableCommand, SkipReason, SkippedGroup,
 };
 pub use device::DiskDevices;
 pub use error::Error;

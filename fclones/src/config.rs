@@ -672,6 +672,21 @@ pub struct DedupeConfig {
     /// Defaults to true.
     #[arg(long = "no-check-hash")]
     pub no_check_hash: bool,
+
+    /// Transform command used during grouping.
+    /// This is not set via CLI arguments, but derived from the report header.
+    #[arg(skip)]
+    pub transform: Option<String>,
+
+    /// Whether the transform was in-place during grouping.
+    /// This is not set via CLI arguments, but derived from the report header.
+    #[arg(skip)]
+    pub in_place: bool,
+
+    /// Output format for dry-run report.
+    /// This is not set via CLI arguments, but derived from the report header.
+    #[arg(skip)]
+    pub format: OutputFormat,
 }
 
 #[derive(clap::Subcommand, Debug)]
