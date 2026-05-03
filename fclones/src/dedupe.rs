@@ -874,6 +874,45 @@ pub enum GroupValidationResult {
     Skipped(SkipReason),
 }
 
+impl GroupValidationResult {
+    /// Returns true if the result is `Valid`
+    pub fn is_valid(&self) -> bool {
+        matches!(self, GroupValidationResult::Valid(_))
+    }
+
+    /// Returns true if the result is `Skipped`
+    pub fn is_skipped(&self) -> bool {
+        matches!(self, GroupValidationResult::Skipped(_))
+    }
+
+    /// Returns the contained `Valid` value, consuming the self value.
+    /// Panics if the value is a `Skipped` with a custom panic message.
+    pub fn unwrap(self) -> PartitionedFileGroup {
+        match self {
+            GroupValidationResult::Valid(v) => v,
+            GroupValidationResult::Skipped(reason) => {
+                panic!("called `GroupValidationResult::unwrap()` on a `Skipped` value: {:?}", reason)
+            }
+        }
+    }
+
+    /// Returns the contained `Skipped` reason if the result is `Skipped`,
+    /// otherwise panics.
+    pub fn unwrap_err(self) -> SkipReason {
+        match self {
+            GroupValidationResult::Skipped(reason) => reason,
+            GroupValidationResult::Valid(_) => {
+                panic!("called `GroupValidationResult::unwrap_err()` on a `Valid` value")
+            }
+        }
+    }
+
+    /// Returns true if the result is `Skipped` (compatibility method for tests)
+    pub fn is_err(&self) -> bool {
+        self.is_skipped()
+    }
+}
+
 /// Result of processing a file group for deduplication
 #[derive(Debug)]
 pub enum GroupProcessResult {
@@ -1878,6 +1917,136 @@ mod test {
 
             assert_eq!(read_file(&file_a1), "foo");
             assert_eq!(read_file(&file_a2), "foo");
+        })
+    }
+
+    #[test]
+    fn test_partition_skips_group_with_modified_file_size() {
+        with_dir("dedupe/partition/size_mismatch", |root| {
+            let mut log = StdLog::new();
+            log.no_progress = true;
+            log.log_stderr_to_stdout = true;
+
+            let group = make_group(root, FileHash::from_str("00").unwrap());
+            let modified_file = group.files[0].clone();
+            write_file(&modified_file.to_path_buf(), "different content");
+
+            let config = DedupeConfig::default();
+            let group = group.map(|p| PathAndMetadata::new(p).unwrap());
+
+            let result = partition(group, &config, &log);
+            assert!(result.is_skipped());
+
+            if let GroupValidationResult::Skipped(reason) = result {
+                assert!(matches!(reason, SkipReason::SizeMismatch { .. }));
+            }
+        })
+    }
+
+    #[test]
+    fn test_dedupe_skips_group_with_deleted_file() {
+        with_dir("dedupe/partition/deleted_file", |root| {
+            let mut log = StdLog::new();
+            log.no_progress = true;
+            log.log_stderr_to_stdout = true;
+
+            let group = make_group(root, FileHash::from_str("00").unwrap());
+            let deleted_file = group.files[0].clone();
+            fs::remove_file(&deleted_file.to_path_buf()).unwrap();
+
+            let config = DedupeConfig::default();
+            let script = dedupe(vec![group], DedupeOp::Remove, &config, &log);
+            let dedupe_result = run_script(script, !config.no_lock, &log);
+
+            assert_eq!(dedupe_result.processed_count, 0);
+            assert_eq!(dedupe_result.skipped_groups, 1);
+            assert_eq!(dedupe_result.skipped_reasons.len(), 1);
+
+            let (reason, _files) = &dedupe_result.skipped_reasons[0];
+            assert!(matches!(reason, SkipReason::MetadataReadError));
+        })
+    }
+
+    #[test]
+    fn test_partition_skips_group_with_hash_mismatch() {
+        with_dir("dedupe/partition/hash_mismatch", |root| {
+            let mut log = StdLog::new();
+            log.no_progress = true;
+            log.log_stderr_to_stdout = true;
+
+            let file_1 = root.join("file_1");
+            let file_2 = root.join("file_2");
+            let file_3 = root.join("file_3");
+
+            write_file(&file_1, "content");
+            write_file(&file_2, "content");
+            write_file(&file_3, "content");
+
+            let group = FileGroup {
+                file_len: FileLen(7),
+                file_hash: FileHash::from_str("00000000000000000000000000000000").unwrap(),
+                files: vec![
+                    Path::from(&file_1),
+                    Path::from(&file_2),
+                    Path::from(&file_3),
+                ],
+            };
+
+            let config = DedupeConfig {
+                hash_fn: Some(HashFn::Metro),
+                no_check_hash: false,
+                ..DedupeConfig::default()
+            };
+            let group = group.map(|p| PathAndMetadata::new(p).unwrap());
+
+            let result = partition(group, &config, &log);
+            assert!(result.is_skipped());
+
+            if let GroupValidationResult::Skipped(reason) = result {
+                assert!(matches!(reason, SkipReason::HashMismatch { .. }));
+            }
+        })
+    }
+
+    #[test]
+    fn test_log_script_outputs_skipped_groups() {
+        with_dir("dedupe/partition/log_skipped", |root| {
+            let mut log = StdLog::new();
+            log.no_progress = true;
+            log.log_stderr_to_stdout = true;
+
+            let valid_group = make_group(&root.join("valid"), FileHash::from_str("00").unwrap());
+
+            let modified_file_root = root.join("modified");
+            let mut modified_group = make_group(&modified_file_root, FileHash::from_str("01").unwrap());
+            let modified_file = modified_group.files[0].clone();
+            write_file(&modified_file.to_path_buf(), "different size now");
+
+            let deleted_file_root = root.join("deleted");
+            let deleted_group = make_group(&deleted_file_root, FileHash::from_str("02").unwrap());
+            let deleted_file = deleted_group.files[0].clone();
+            fs::remove_file(&deleted_file.to_path_buf()).unwrap();
+
+            let config = DedupeConfig::default();
+            let script = dedupe(
+                vec![valid_group, modified_group, deleted_group],
+                DedupeOp::Remove,
+                &config,
+                &log,
+            );
+
+            let mut out = Vec::new();
+            let dedupe_result = log_script(script, &mut out).unwrap();
+
+            assert_eq!(dedupe_result.skipped_groups, 2);
+
+            let output = String::from_utf8(out).unwrap();
+            assert!(output.contains("# SKIPPED:"));
+            assert!(output.contains("# Files in this group:"));
+
+            let lines: Vec<&str> = output.lines().collect();
+            let skipped_comment_count = lines.iter().filter(|l| l.contains("# SKIPPED:")).count();
+            assert_eq!(skipped_comment_count, 2);
         })
     }
 }
