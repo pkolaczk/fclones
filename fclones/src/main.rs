@@ -160,11 +160,9 @@ pub fn run_dedupe(op: DedupeOp, config: DedupeConfig, log: &dyn Log) -> Result<(
     let prev_command_config = get_command_config(&header)?;
 
     if let Command::Group(c) = &prev_command_config.command {
-        // we cannot check size if a transformation was applied, because the transformation
-        // may change the size of the data and the recorded data size
-        // would not match the physical size of the file
         dedupe_config.no_check_size |= c.transform.is_some();
         dedupe_config.match_links |= c.match_links;
+        dedupe_config.hash_fn = Some(c.hash_fn);
 
         if dedupe_config.rf_over.is_none() {
             dedupe_config.rf_over = Some(c.rf_over())
@@ -233,12 +231,24 @@ pub fn run_dedupe(op: DedupeOp, config: DedupeConfig, log: &dyn Log) -> Result<(
             "Would process {} files and reclaim {}{} space",
             result.processed_count, upto, result.reclaimed_space
         ));
+        if result.skipped_groups > 0 {
+            log.info(format!(
+                "Would skip {} groups due to validation failures",
+                result.skipped_groups
+            ));
+        }
     } else {
         let result = run_script(script, !dedupe_config.no_lock, log);
         log.info(format!(
             "Processed {} files and reclaimed {}{} space",
             result.processed_count, upto, result.reclaimed_space
         ));
+        if result.skipped_groups > 0 {
+            log.info(format!(
+                "Skipped {} groups due to validation failures",
+                result.skipped_groups
+            ));
+        }
     };
     result.map_err(|e| Error::new(format!("Failed to read file list: {e}")))
 }
