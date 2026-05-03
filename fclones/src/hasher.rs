@@ -638,6 +638,33 @@ fn file_hash<H: StreamHasher>(
     Ok(hash)
 }
 
+/// Computes hash of initial `len` bytes of a file using the specified algorithm.
+/// This is a simpler wrapper for validation purposes without caching or transform.
+pub fn compute_file_hash(
+    algorithm: HashFn,
+    path: &Path,
+    len: FileLen,
+    progress: impl Fn(usize),
+) -> io::Result<FileHash> {
+    let chunk = FileChunk::new(path, FilePos::zero(), len);
+    let buf_len = 65536;
+    match algorithm {
+        HashFn::Metro => file_hash::<MetroHash128>(&chunk, buf_len, progress),
+        #[cfg(feature = "xxhash")]
+        HashFn::Xxhash => file_hash::<Xxh3>(&chunk, buf_len, progress),
+        #[cfg(feature = "blake3")]
+        HashFn::Blake3 => file_hash::<blake3::Hasher>(&chunk, buf_len, progress),
+        #[cfg(feature = "sha2")]
+        HashFn::Sha256 => file_hash::<Sha256>(&chunk, buf_len, progress),
+        #[cfg(feature = "sha2")]
+        HashFn::Sha512 => file_hash::<Sha512>(&chunk, buf_len, progress),
+        #[cfg(feature = "sha3")]
+        HashFn::Sha3_256 => file_hash::<Sha3_256>(&chunk, buf_len, progress),
+        #[cfg(feature = "sha3")]
+        HashFn::Sha3_512 => file_hash::<Sha3_512>(&chunk, buf_len, progress),
+    }
+}
+
 #[cfg(test)]
 mod test {
     use metrohash::MetroHash128;
