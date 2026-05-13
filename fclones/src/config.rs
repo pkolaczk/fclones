@@ -300,7 +300,7 @@ pub struct GroupConfig {
     pub path_patterns: Vec<String>,
 
     /// Ignore paths matched fully by any of the given patterns.
-    #[arg(long = "exclude", value_name("PATTERN"))]
+    #[arg(long = "exclude", value_name("PATTERN"), num_args = 1..)] 
     pub exclude_patterns: Vec<String>,
 
     /// Make pattern matching case-insensitive.
