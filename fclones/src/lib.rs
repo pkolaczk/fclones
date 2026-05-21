@@ -7,6 +7,7 @@ mod arg;
 mod cache;
 mod dedupe;
 mod device;
+mod dirgroup;
 mod error;
 mod file;
 mod group;
@@ -24,12 +25,13 @@ mod transform;
 mod util;
 mod walk;
 
-pub use config::{DedupeConfig, GroupConfig, Priority};
+pub use config::{DedupeConfig, DirGroupConfig, GroupConfig, Priority};
 pub use dedupe::{
     dedupe, log_script, run_script, sort_by_priority, DedupeOp, DedupeResult, PartitionedFileGroup,
     PathAndMetadata,
 };
 pub use device::DiskDevices;
+pub use dirgroup::{dirgroup, recover_dirgroup_roots, validate_dirgroup_source_config};
 pub use error::Error;
 pub use file::{FileHash, FileId, FileInfo, FileLen};
 pub use group::{group_files, write_report, FileGroup, FileSubGroup};

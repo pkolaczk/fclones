@@ -1,7 +1,8 @@
 use std::collections::HashMap;
 use std::ffi::{OsStr, OsString};
 use std::fs::File;
-use std::io::{stderr, stdin, IsTerminal, Write};
+use std::io::{stderr, stdin, IsTerminal, Read, Write};
+use std::path::{Path as StdPath, PathBuf};
 use std::process::exit;
 use std::sync::Arc;
 use std::{fs, io};
@@ -12,12 +13,15 @@ use fallible_iterator::FallibleIterator;
 use itertools::Itertools;
 use regex::Regex;
 
-use fclones::config::{Command, Config, DedupeConfig, GroupConfig, Parallelism};
+use fclones::config::{Command, Config, DedupeConfig, DirGroupConfig, GroupConfig, Parallelism};
 use fclones::log::{Log, LogExt, ProgressBarLength, StdLog};
 use fclones::progress::{NoProgressBar, ProgressTracker};
 use fclones::report::{open_report, ReportHeader};
 use fclones::{dedupe, log_script, run_script, DedupeOp};
-use fclones::{group_files, write_report, Error};
+use fclones::{
+    dirgroup, group_files, recover_dirgroup_roots, validate_dirgroup_source_config, write_report,
+    Error, FileId, Path,
+};
 
 /// Strips a red "error:" prefix and usage information added by clap.
 /// Removes ansi formatting.
@@ -136,6 +140,115 @@ fn get_output_writer(config: &DedupeConfig) -> Result<Box<dyn Write + Send>, Err
     }
 }
 
+fn get_dirgroup_output_writer(config: &DirGroupConfig) -> Result<Box<dyn Write + Send>, Error> {
+    match &config.output {
+        Some(path) => {
+            let f = File::create(path)
+                .map_err(|e| format!("Failed to create output file {}: {}", path.display(), e))?;
+            Ok(Box::new(f))
+        }
+        None => Ok(Box::new(io::stdout())),
+    }
+}
+
+fn normalize_output_path(path: &StdPath) -> io::Result<PathBuf> {
+    match dunce::canonicalize(path) {
+        Ok(path) => Ok(path),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => {
+            let parent = path.parent().unwrap_or_else(|| StdPath::new("."));
+            let file_name = path.file_name().ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!("Output path {} has no file name", path.display()),
+                )
+            })?;
+            Ok(dunce::canonicalize(parent)?.join(file_name))
+        }
+        Err(e) => Err(e),
+    }
+}
+
+fn check_dirgroup_input_output_differ(config: &DirGroupConfig) -> Result<(), Error> {
+    let (Some(input), Some(output)) = (&config.report, &config.output) else {
+        return Ok(());
+    };
+
+    let input = dunce::canonicalize(input).map_err(|e| {
+        Error::new(format!(
+            "Cannot normalize input report {}: {}",
+            input.display(),
+            e
+        ))
+    })?;
+    let output = normalize_output_path(output).map_err(|e| {
+        Error::new(format!(
+            "Cannot normalize output path {}: {}",
+            output.display(),
+            e
+        ))
+    })?;
+
+    if input == output || existing_paths_are_same_file(&input, &output)? {
+        return Err(Error::new(format!(
+            "Input report and output path must be different: {}",
+            output.display()
+        )));
+    }
+    Ok(())
+}
+
+fn existing_paths_are_same_file(a: &StdPath, b: &StdPath) -> Result<bool, Error> {
+    if !b.exists() {
+        return Ok(false);
+    }
+
+    let a = Path::from(a);
+    let b = Path::from(b);
+    let a_id = FileId::new(&a).map_err(|e| {
+        Error::new(format!(
+            "Cannot identify input report {}: {}",
+            a.display(),
+            e
+        ))
+    })?;
+    let b_id = FileId::new(&b).map_err(|e| {
+        Error::new(format!(
+            "Cannot identify output path {}: {}",
+            b.display(),
+            e
+        ))
+    })?;
+    Ok(a_id == b_id)
+}
+
+fn check_dirgroup_output_outside_roots(
+    config: &DirGroupConfig,
+    roots: &[Path],
+) -> Result<(), Error> {
+    let Some(output) = &config.output else {
+        return Ok(());
+    };
+
+    let output = normalize_output_path(output).map_err(|e| {
+        Error::new(format!(
+            "Cannot normalize output path {}: {}",
+            output.display(),
+            e
+        ))
+    })?;
+    let output_path = Path::from(output.clone());
+    if let Some(root) = roots.iter().find(|root| root.is_prefix_of(&output_path)) {
+        return Err(Error::new(format!(
+            "Output path {} is under recovered scan root {}. fclones dirgroup output must be \
+             written outside scanned roots.",
+            output.display(),
+            root.display()
+        )));
+    }
+
+    Ok(())
+}
+
 /// Returns the configuration of a previously executed fclones command,
 /// stored in the report header.
 fn get_command_config(header: &ReportHeader) -> Result<Config, Error> {
@@ -243,6 +356,52 @@ pub fn run_dedupe(op: DedupeOp, config: DedupeConfig, log: &dyn Log) -> Result<(
     result.map_err(|e| Error::new(format!("Failed to read file list: {e}")))
 }
 
+pub fn run_dirgroup(config: DirGroupConfig, log: &dyn Log) -> Result<(), Error> {
+    let input_error = |e: io::Error| format!("Input error: {e}");
+    let source = config
+        .report
+        .as_ref()
+        .map(|path| path.display().to_string())
+        .unwrap_or_else(|| "<stdin>".to_owned());
+    let input: Box<dyn Read + Send> = match &config.report {
+        Some(path) => Box::new(File::open(path).map_err(|e| {
+            Error::new(format!(
+                "Input error: failed to open {}: {}",
+                path.display(),
+                e
+            ))
+        })?),
+        None => Box::new(stdin()),
+    };
+
+    let mut reader = open_report(input).map_err(input_error)?;
+    let header = reader.read_header().map_err(input_error)?;
+    let prev_command_config = get_command_config(&header)?;
+    let group_config = match prev_command_config.command {
+        Command::Group(c) => c,
+        _ => {
+            return Err(Error::from(
+                "Input report was not produced by fclones group",
+            ))
+        }
+    };
+
+    if group_config.stdin {
+        return Err(Error::from(
+            "Cannot infer scan roots from a report produced with fclones group --stdin",
+        ));
+    }
+    validate_dirgroup_source_config(&group_config)?;
+    check_dirgroup_input_output_differ(&config)?;
+    let roots = recover_dirgroup_roots(&group_config)?;
+    check_dirgroup_output_outside_roots(&config, &roots)?;
+    configure_main_thread_pool(&group_config.thread_pool_sizes());
+
+    let groups = reader.read_groups().map_err(input_error)?;
+    let out = get_dirgroup_output_writer(&config)?;
+    dirgroup(group_config, header, groups, out, &source, log)
+}
+
 fn generate_completions(shell: clap_complete::Shell, output: &mut dyn std::io::Write) {
     clap_complete::generate(
         shell,
@@ -279,6 +438,7 @@ fn main() {
 
     let result = match config.command {
         Command::Group(config) => run_group(config, &log),
+        Command::DirGroup(config) => run_dirgroup(config, &log),
         Command::Remove(config) => run_dedupe(DedupeOp::Remove, config, &log),
         Command::Link { config, soft: true } => run_dedupe(DedupeOp::SymbolicLink, config, &log),
         Command::Link {
@@ -313,6 +473,9 @@ fn main() {
 
 #[cfg(test)]
 mod test {
+    use std::fs::{create_dir_all, File};
+
+    use fclones::{config::DirGroupConfig, Path};
 
     #[test]
     fn test_extract_error_cause_strips_error_prefix() {
@@ -346,5 +509,119 @@ mod test {
             let script = String::from_utf8(script).unwrap();
             assert!(!script.is_empty());
         }
+    }
+
+    #[test]
+    fn test_dirgroup_rejects_same_input_output_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let report = dir.path().join("report.txt");
+        File::create(&report).unwrap();
+        let config = DirGroupConfig {
+            report: Some(report.clone()),
+            output: Some(report),
+        };
+
+        let err = super::check_dirgroup_input_output_differ(&config).unwrap_err();
+
+        assert!(err.message.contains("must be different"));
+    }
+
+    #[test]
+    fn test_dirgroup_rejects_equivalent_input_output_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let report = dir.path().join("report.txt");
+        let subdir = dir.path().join("subdir");
+        std::fs::create_dir(&subdir).unwrap();
+        File::create(&report).unwrap();
+        let equivalent_report = subdir.join("..").join("report.txt");
+        let config = DirGroupConfig {
+            report: Some(report),
+            output: Some(equivalent_report),
+        };
+
+        let err = super::check_dirgroup_input_output_differ(&config).unwrap_err();
+
+        assert!(err.message.contains("must be different"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_dirgroup_rejects_hardlinked_input_output_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let report = dir.path().join("report.txt");
+        let output = dir.path().join("report-hardlink.txt");
+        File::create(&report).unwrap();
+        std::fs::hard_link(&report, &output).unwrap();
+        let config = DirGroupConfig {
+            report: Some(report),
+            output: Some(output),
+        };
+
+        let err = super::check_dirgroup_input_output_differ(&config).unwrap_err();
+
+        assert!(err.message.contains("must be different"));
+    }
+
+    #[test]
+    fn test_dirgroup_allows_different_missing_output_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let report = dir.path().join("report.txt");
+        File::create(&report).unwrap();
+        let config = DirGroupConfig {
+            report: Some(report),
+            output: Some(dir.path().join("out.txt")),
+        };
+
+        super::check_dirgroup_input_output_differ(&config).unwrap();
+    }
+
+    #[test]
+    fn test_dirgroup_rejects_existing_output_under_scan_root() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("root");
+        create_dir_all(&root).unwrap();
+        let output = root.join("out.txt");
+        File::create(&output).unwrap();
+        let config = DirGroupConfig {
+            report: None,
+            output: Some(output),
+        };
+        let roots = vec![Path::from(root.as_path())];
+
+        let err = super::check_dirgroup_output_outside_roots(&config, &roots).unwrap_err();
+
+        assert!(err.message.contains("outside scanned roots"));
+    }
+
+    #[test]
+    fn test_dirgroup_rejects_missing_output_under_scan_root() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("root");
+        create_dir_all(&root).unwrap();
+        let output = root.join("out.txt");
+        let config = DirGroupConfig {
+            report: None,
+            output: Some(output.clone()),
+        };
+        let roots = vec![Path::from(root.as_path())];
+
+        let err = super::check_dirgroup_output_outside_roots(&config, &roots).unwrap_err();
+
+        assert!(err.message.contains("outside scanned roots"));
+        assert!(!output.exists());
+    }
+
+    #[test]
+    fn test_dirgroup_allows_output_outside_scan_root() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("root");
+        create_dir_all(&root).unwrap();
+        let config = DirGroupConfig {
+            report: None,
+            output: Some(dir.path().join("out.txt")),
+        };
+        let roots = vec![Path::from(root.as_path())];
+
+        super::check_dirgroup_output_outside_roots(&config, &roots).unwrap();
     }
 }
