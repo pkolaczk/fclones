@@ -23,6 +23,11 @@ use crate::path::Path;
 use crate::util::IteratorWrapper;
 use crate::TIMESTAMP_FMT;
 
+fn strip_line_ending(line: &str) -> &str {
+    let line = line.strip_suffix('\n').unwrap_or(line);
+    line.strip_suffix('\r').unwrap_or(line)
+}
+
 /// Describes how many redundant files were found, in how many groups,
 /// how much space can be reclaimed, etc.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -360,15 +365,15 @@ where
         loop {
             self.line_buf.clear();
             self.stream.read_line(&mut self.line_buf)?;
-            let line = self.line_buf.trim();
-            if line.is_empty() {
+            let line = strip_line_ending(&self.line_buf);
+            if line.trim().is_empty() {
                 return Ok(None);
             }
             if !line.starts_with('#') {
                 break;
             }
         }
-        Ok(Some(self.line_buf.trim()))
+        Ok(Some(strip_line_ending(&self.line_buf)))
     }
 
     fn read_group_header(&mut self) -> io::Result<Option<GroupHeader>> {
@@ -401,20 +406,26 @@ where
         for _ in 0..count {
             self.line_buf.clear();
             let n = self.stream.read_line(&mut self.line_buf)?;
-            let path_str = &self.line_buf;
             if n == 0 {
                 return Err(Error::new(
                     ErrorKind::UnexpectedEof,
                     "Unexpected end of file.",
                 ));
             }
-            if !path_str.starts_with("    ") || path_str.trim().is_empty() {
+            let path_line = strip_line_ending(&self.line_buf);
+            let Some(path_str) = path_line.strip_prefix("    ") else {
                 return Err(Error::new(
                     ErrorKind::InvalidData,
-                    format!("Path expected: {path_str}"),
+                    format!("Path expected: {}", self.line_buf),
+                ));
+            };
+            if path_str.is_empty() {
+                return Err(Error::new(
+                    ErrorKind::InvalidData,
+                    format!("Path expected: {}", self.line_buf),
                 ));
             }
-            let path = Path::from_escaped_string(path_str.trim()).map_err(|e| {
+            let path = Path::from_escaped_string(path_str).map_err(|e| {
                 Error::new(
                     ErrorKind::InvalidData,
                     format!("Invalid path {path_str}: {e}"),
@@ -475,8 +486,9 @@ impl<R: BufRead> TextReportReader<R> {
 
     fn read_extract(&mut self, regex: &Regex, name: &str) -> io::Result<Vec<String>> {
         let line = self.read_line()?;
+        let line = strip_line_ending(&line);
         Ok(regex
-            .captures(line.trim())
+            .captures(line)
             .ok_or_else(|| {
                 Error::new(
                     ErrorKind::InvalidData,
@@ -559,7 +571,12 @@ impl<R: BufRead + Send + 'static> ReportReader for TextReportReader<R> {
             )
         })?;
         let base_dir = self.read_extract(&BASE_DIR_RE, "base dir")?.swap_remove(0);
-        let base_dir = Path::from(base_dir);
+        let base_dir = Path::from_escaped_string(&base_dir).map_err(|e| {
+            Error::new(
+                ErrorKind::InvalidData,
+                format!("Malformed header: Failed to parse base dir: {e}"),
+            )
+        })?;
 
         let stats = self.read_extract(&TOTAL_RE, "total file statistics")?;
         let total_file_size = Self::parse_file_len(stats.first(), "total file size")?;
@@ -718,6 +735,38 @@ mod test {
         assert_eq!(header2.stats, header1.stats);
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn test_text_report_reader_reads_escaped_base_dir() {
+        use std::os::unix::ffi::OsStringExt;
+
+        let mut header1 = dummy_report_header();
+        header1.base_dir = Path::from(OsString::from_vec(vec![
+            b'/', b't', b'm', b'p', b'/', 0xED, 0xA0, 0xBD, 0xED, 0xB8, 0x8D,
+        ]));
+        let groups: Vec<FileGroup<Path>> = vec![];
+
+        let output = NamedTempFile::new().unwrap();
+        let input = output.reopen().unwrap();
+
+        let mut writer = ReportWriter::new(output, false);
+        writer.write_as_text(&header1, groups).unwrap();
+
+        let mut reader = TextReportReader::new(BufReader::new(input));
+        let header2 = reader.read_header().unwrap();
+        assert_eq!(header2.base_dir, header1.base_dir);
+    }
+
+    #[test]
+    fn test_text_report_reader_preserves_trailing_spaces_in_base_dir() {
+        let mut header = dummy_report_header();
+        header.base_dir = Path::from("base dir ");
+
+        let reread_header = roundtrip_header(&header, OutputFormat::Default);
+
+        assert_eq!(reread_header.base_dir, header.base_dir);
+    }
+
     fn roundtrip_groups_text(header: &ReportHeader, groups: Vec<FileGroup<Path>>) {
         let output = NamedTempFile::new().unwrap();
         let input = output.reopen().unwrap();
@@ -746,6 +795,22 @@ mod test {
                 files: vec![Path::from("c"), Path::from("d")],
             },
         ];
+
+        roundtrip_groups_text(&header, groups);
+    }
+
+    #[test]
+    fn test_text_report_reader_preserves_path_whitespace() {
+        let header = dummy_report_header();
+        let groups = vec![FileGroup {
+            file_len: FileLen(100),
+            file_hash: FileHash::from(0x00112233445566778899aabbccddeeff),
+            files: vec![
+                Path::from(" leading"),
+                Path::from("trailing "),
+                Path::from(" both "),
+            ],
+        }];
 
         roundtrip_groups_text(&header, groups);
     }

@@ -12,7 +12,7 @@ use std::sync::Arc;
 use chrono::{DateTime, FixedOffset, Local};
 use clap::builder::{TypedValueParser, ValueParserFactory};
 
-use clap::{command, Arg, Error};
+use clap::{Arg, Error};
 
 use crate::file::FileLen;
 use crate::group::FileGroupFilter;
@@ -664,6 +664,17 @@ pub struct DedupeConfig {
     pub no_check_size: bool,
 }
 
+#[derive(clap::Args, Debug, Default)]
+pub struct DirGroupConfig {
+    /// Read a fclones group report from this path instead of stdin.
+    #[arg(value_name = "REPORT")]
+    pub report: Option<PathBuf>,
+
+    /// Write the directory-group report to a file instead of stdout.
+    #[arg(short = 'o', long, value_name = "PATH")]
+    pub output: Option<PathBuf>,
+}
+
 #[derive(clap::Subcommand, Debug)]
 pub enum Command {
     /// Produce a list of groups of identical files.
@@ -673,6 +684,10 @@ pub enum Command {
     /// Writes the list of groups of files to the standard output, unless the target file
     /// is specified. This command is safe and does not modify the filesystem.
     Group(GroupConfig),
+
+    /// Aggregate duplicate files from a fclones group report into duplicate directory groups.
+    #[command(name = "dirgroup")]
+    DirGroup(DirGroupConfig),
 
     /// Replace redundant files with links.
     ///
@@ -794,6 +809,15 @@ mod test {
     fn test_dedupe_command() {
         let config: Config = Config::try_parse_from(vec!["fclones", "dedupe"]).unwrap();
         assert_matches!(config.command, Command::Dedupe { .. });
+    }
+
+    #[test]
+    fn test_dirgroup_command() {
+        let config: Config =
+            Config::try_parse_from(vec!["fclones", "dirgroup", "report.txt"]).unwrap();
+        assert_matches!(
+            config.command,
+            Command::DirGroup(c) if c.report == Some(PathBuf::from("report.txt")));
     }
 
     #[test]

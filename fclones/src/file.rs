@@ -442,6 +442,10 @@ pub(crate) fn get_physical_file_location(path: &Path) -> io::Result<Option<u64>>
 pub struct FileHash(Box<[u8]>);
 
 impl FileHash {
+    pub(crate) fn as_bytes(&self) -> &[u8] {
+        &self.0
+    }
+
     pub fn u128_prefix(&self) -> u128 {
         self.0
             .as_ref()

@@ -45,6 +45,7 @@ on either SSD or HDD storage.
   - finding files with more than N replicas
   - finding unique files
   - finding files with fewer than N replicas
+  - grouping duplicate files into duplicate directory trees
 * Advanced file selection for reducing the amount of data to process
   - scanning multiple directory roots
   - can work with a list of files piped directly from standard input
@@ -182,6 +183,7 @@ At the time of writing this includes:
 the list of found files before applying any modifications to the file system. 
 
   - `group` – identifies groups of identical files and prints them to the standard output
+  - `dirgroup` – aggregates a `group` report into duplicate directory groups
   - `remove` – removes redundant files earlier identified by `group`
   - `link` – replaces redundant files with links (default: hard links)
   - `dedupe` – does not remove any files, but deduplicates file data by using native copy-on-write capabilities of the file system (reflink) 
@@ -237,6 +239,21 @@ Follow symbolic links, but don't escape out of the home folder:
 Exclude a part of the directory tree from the scan:
 
     fclones group / --exclude '/dev/**' '/proc/**'
+
+### Finding Duplicate Directories
+
+To find duplicate directory trees, first produce a normal duplicate-file report and then aggregate it:
+
+    fclones group --no-ignore --hidden dir | fclones dirgroup
+
+You can also read a saved report:
+
+    fclones group --no-ignore --hidden dir >dupes.txt
+    fclones dirgroup dupes.txt
+
+Directories are considered duplicates when all files are duplicates and no extra files are present.
+Empty files, empty directories and symlinks are ignored. Nested directory groups are suppressed in
+favor of larger enclosing groups.
 
 ### Removing Files
 To remove duplicate files, move them to a different place or replace them by links, 
