@@ -685,8 +685,10 @@ where
         .collect()
 }
 
-/// Walks the directory tree and collects matching files in parallel into a vector
-fn scan_files(ctx: &GroupCtx<'_>) -> Vec<Vec<FileInfo>> {
+/// Walks the directory tree and collects matching files in parallel into a vector.
+/// Also returns the number and total size of the matched files -- the population that
+/// will be considered for grouping, before any duplicate groups are formed.
+fn scan_files(ctx: &GroupCtx<'_>) -> (Vec<Vec<FileInfo>>, ScanStats) {
     let file_collector = ThreadLocal::new();
     let file_count = AtomicUsize::new(0);
     let spinner = ctx
@@ -738,7 +740,13 @@ fn scan_files(ctx: &GroupCtx<'_>) -> Vec<Vec<FileInfo>> {
         file_count,
         FileLen(total_size)
     ));
-    files
+    (
+        files,
+        ScanStats {
+            file_count,
+            file_size: FileLen(total_size),
+        },
+    )
 }
 
 /// Returns the sum of number of files in all groups
@@ -1153,6 +1161,25 @@ fn group_by_contents(
     groups
 }
 
+/// Number and total size of the files that matched the selection criteria -- the
+/// population considered for grouping, before any duplicate groups are formed (and so
+/// including files that turn out to be unique). These are the figures reported on the
+/// "Found N files matching selection criteria" log line.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ScanStats {
+    pub file_count: usize,
+    pub file_size: FileLen,
+}
+
+/// Result of [`group_files`]: the duplicate groups together with statistics about the
+/// whole scan that produced them.
+pub struct GroupedFiles {
+    /// Groups of files with a common hash and length, sorted descending by file size.
+    pub groups: Vec<FileGroup<FileInfo>>,
+    /// Statistics about the files scanned to produce `groups`.
+    pub scan_stats: ScanStats,
+}
+
 /// Groups identical files together by 128-bit hash of their contents.
 /// Depending on filtering settings, can find unique, duplicate, over- or under-replicated files.
 ///
@@ -1162,8 +1189,8 @@ fn group_by_contents(
 /// subdirectories recursively (default is false).
 ///
 /// # Output
-/// Returns a vector of groups of absolute paths.
-/// Each group of files has a common hash and length.
+/// Returns a [`GroupedFiles`] with the groups of absolute paths plus statistics about
+/// the scan. Each group of files has a common hash and length.
 /// Groups are sorted descending by file size.
 ///
 /// # Errors
@@ -1212,18 +1239,18 @@ fn group_by_contents(
 /// let mut config = GroupConfig::default();
 /// config.paths = vec![Path::from("/path/to/a/dir")];
 ///
-/// let groups = group_files(&config, &log).unwrap();
-/// println!("Found {} groups: ", groups.len());
+/// let grouped = group_files(&config, &log).unwrap();
+/// println!("Found {} groups: ", grouped.groups.len());
 ///
 /// // print standard fclones report to stdout:
-/// write_report(&config, &log, &groups).unwrap();
+/// write_report(&config, &log, &grouped).unwrap();
 /// ```
-pub fn group_files(config: &GroupConfig, log: &dyn Log) -> Result<Vec<FileGroup<FileInfo>>, Error> {
+pub fn group_files(config: &GroupConfig, log: &dyn Log) -> Result<GroupedFiles, Error> {
     let spinner = log.progress_bar("Initializing", ProgressBarLength::Unknown);
     let ctx = GroupCtx::new(config, log)?;
 
     drop(spinner);
-    let matching_files = scan_files(&ctx);
+    let (matching_files, scan_stats) = scan_files(&ctx);
 
     let mut groups = match &ctx.hasher.transform {
         Some(_transform) => {
@@ -1253,7 +1280,7 @@ pub fn group_files(config: &GroupConfig, log: &dyn Log) -> Result<Vec<FileGroup<
     groups
         .par_iter_mut()
         .for_each(|g| g.sort_by_path(&ctx.group_filter.root_paths));
-    Ok(groups)
+    Ok(GroupedFiles { groups, scan_stats })
 }
 
 /// Writes the list of groups to a file or the standard output.
@@ -1262,16 +1289,13 @@ pub fn group_files(config: &GroupConfig, log: &dyn Log) -> Result<Vec<FileGroup<
 /// - `config.output`: a path to the output file, `None` for standard output
 /// - `config.format`: selects the format of the output, see [`config::OutputFormat`]
 /// - `log`: used for drawing a progress bar to standard error
-/// - `groups`: list of groups of files to print, e.g. obtained from [`group_files`]
+/// - `grouped`: groups of files to print plus scan statistics, as returned by [`group_files`]
 ///
 /// # Errors
 /// Returns [`io::Error`] on I/O write error or if the output file cannot be created.
-pub fn write_report(
-    config: &GroupConfig,
-    log: &dyn Log,
-    groups: &[FileGroup<FileInfo>],
-) -> io::Result<()> {
+pub fn write_report(config: &GroupConfig, log: &dyn Log, grouped: &GroupedFiles) -> io::Result<()> {
     let now = Local::now();
+    let groups = grouped.groups.as_slice();
 
     let total_count = file_count(groups.iter());
     let total_size = total_size(groups.iter());
@@ -1298,6 +1322,8 @@ pub fn write_report(
             redundant_file_size: redundant_size,
             missing_file_count: missing_count,
             missing_file_size: missing_size,
+            scanned_file_count: grouped.scan_stats.file_count,
+            scanned_file_size: grouped.scan_stats.file_size,
         }),
     };
 
@@ -1335,6 +1361,7 @@ mod test {
     use sysinfo::DiskKind;
 
     use crate::path::Path;
+    use crate::report::open_report;
     use crate::util::test::*;
 
     use super::*;
@@ -1632,7 +1659,7 @@ mod test {
                 paths: vec![file1.into(), file2.into()],
                 ..GroupConfig::default()
             };
-            let results = group_files(&config, &log).unwrap();
+            let results = group_files(&config, &log).unwrap().groups;
             assert_eq!(results.len(), 1);
             assert_eq!(results[0].file_len, FileLen(3));
             assert_eq!(results[0].files.len(), 2);
@@ -1652,7 +1679,7 @@ mod test {
                 paths: vec![file1.into(), file2.into()],
                 ..GroupConfig::default()
             };
-            let results = group_files(&config, &log).unwrap();
+            let results = group_files(&config, &log).unwrap().groups;
             assert_eq!(results.len(), 1);
             assert_eq!(results[0].files.len(), 2);
         });
@@ -1676,7 +1703,7 @@ mod test {
                 ..GroupConfig::default()
             };
 
-            let results = group_files(&config, &log).unwrap();
+            let results = group_files(&config, &log).unwrap().groups;
             assert_eq!(results.len(), 2);
             assert_eq!(results[0].paths(), vec![file1.canonicalize()]);
             assert_eq!(results[1].paths(), vec![file2.canonicalize()]);
@@ -1698,7 +1725,7 @@ mod test {
                 ..GroupConfig::default()
             };
 
-            let results = group_files(&config, &log).unwrap();
+            let results = group_files(&config, &log).unwrap().groups;
             assert_eq!(results.len(), 2);
             assert_eq!(results[0].files.len(), 1);
             assert_eq!(results[1].files.len(), 1);
@@ -1722,7 +1749,7 @@ mod test {
                 ..GroupConfig::default()
             };
 
-            let results = group_files(&config, &log).unwrap();
+            let results = group_files(&config, &log).unwrap().groups;
             assert_eq!(results.len(), 2);
             assert_eq!(results[0].files.len(), 1);
             assert_eq!(results[1].files.len(), 1);
@@ -1746,7 +1773,7 @@ mod test {
                 ..GroupConfig::default()
             };
 
-            let results = group_files(&config, &log).unwrap();
+            let results = group_files(&config, &log).unwrap().groups;
             assert_eq!(results.len(), 2);
             assert_eq!(results[0].files.len(), 1);
             assert_eq!(results[1].files.len(), 1);
@@ -1768,7 +1795,7 @@ mod test {
                 ..GroupConfig::default()
             };
 
-            let results = group_files(&config, &log).unwrap();
+            let results = group_files(&config, &log).unwrap().groups;
             assert_eq!(results.len(), 1);
             assert_eq!(results[0].files.len(), 2);
         });
@@ -1793,13 +1820,13 @@ mod test {
                 ..GroupConfig::default()
             };
 
-            let results = group_files(&config, &log).unwrap();
+            let results = group_files(&config, &log).unwrap().groups;
             assert_eq!(results.len(), 1);
             assert_eq!(results[0].files.len(), 2);
 
             // Symbolic links should be totally ignored:
             config.symbolic_links = false;
-            let results = group_files(&config, &log).unwrap();
+            let results = group_files(&config, &log).unwrap().groups;
             assert_eq!(results.len(), 0);
 
             // If hard_links is set to false and symbolic_links to true,
@@ -1808,7 +1835,7 @@ mod test {
             config.symbolic_links = true;
             config.match_links = false;
 
-            let results = group_files(&config, &log).unwrap();
+            let results = group_files(&config, &log).unwrap().groups;
             assert_eq!(results.len(), 1);
             assert_eq!(results[0].files.len(), 2);
         });
@@ -1829,7 +1856,7 @@ mod test {
                 ..GroupConfig::default()
             };
 
-            let results = group_files(&config, &log).unwrap();
+            let results = group_files(&config, &log).unwrap().groups;
             assert_eq!(results.len(), 1);
             assert_eq!(results[0].files.len(), 1);
         });
@@ -1856,7 +1883,7 @@ mod test {
                 ..GroupConfig::default()
             };
 
-            let results = group_files(&config, &log).unwrap();
+            let results = group_files(&config, &log).unwrap().groups;
             assert_eq!(results.len(), 1);
             assert_eq!(results[0].files.len(), 1);
         });
@@ -1883,11 +1910,11 @@ mod test {
                 ..GroupConfig::default()
             };
 
-            let results = group_files(&config, &log).unwrap();
+            let results = group_files(&config, &log).unwrap().groups;
             assert_eq!(results.len(), 0);
 
             config.isolate = false;
-            let results = group_files(&config, &log).unwrap();
+            let results = group_files(&config, &log).unwrap().groups;
             assert_eq!(results.len(), 1);
             assert_eq!(results[0].files.len(), 2);
         });
@@ -1912,7 +1939,7 @@ mod test {
                 ..GroupConfig::default()
             };
 
-            let results = group_files(&config, &log).unwrap();
+            let results = group_files(&config, &log).unwrap().groups;
             assert_eq!(results.len(), 1);
             assert_eq!(results[0].files.len(), 2);
         })
@@ -1936,7 +1963,7 @@ mod test {
                 paths: vec![file1.into(), file2.into(), file3.clone()],
                 ..GroupConfig::default()
             };
-            let results = group_files(&config, &log).unwrap();
+            let results = group_files(&config, &log).unwrap().groups;
             assert_eq!(results.len(), 1);
             assert_eq!(results[0].files[0].path, file3);
         });
@@ -1958,8 +1985,8 @@ mod test {
                 ..GroupConfig::default()
             };
 
-            let results = group_files(&config, &log).unwrap();
-            write_report(&config, &log, &results).unwrap();
+            let grouped = group_files(&config, &log).unwrap();
+            write_report(&config, &log, &grouped).unwrap();
 
             assert!(report_file.exists());
             let mut report = String::new();
@@ -1968,6 +1995,65 @@ mod test {
                 .read_to_string(&mut report)
                 .unwrap();
             assert!(report.contains("file1"))
+        });
+    }
+
+    /// The `scanned_file_*` report stats must cover every file that matched the
+    /// selection criteria — including a unique file that never ends up in a group —
+    /// whereas `total_file_*` counts only the files reported in groups. This guards
+    /// the contract that lets a JSON consumer read the scanned total from the report
+    /// instead of scraping the "Found N files matching selection criteria" log line.
+    #[test]
+    fn report_scan_stats_count_all_matched_files() {
+        with_dir("main/report_scan_stats", |root| {
+            let dup1 = root.join("dup1");
+            let dup2 = root.join("dup2");
+            let unique = root.join("unique");
+            // Two identical 3-byte files form one group; the 6-byte file is scanned
+            // but, being size-unique, is not reported in any group.
+            write_test_file(&dup1, b"aaa", b"", b"");
+            write_test_file(&dup2, b"aaa", b"", b"");
+            write_test_file(&unique, b"unique", b"", b"");
+
+            let check = |format: OutputFormat, ext: &str| {
+                let report_file = root.join(format!("report.{ext}"));
+                let log = test_log();
+                let config = GroupConfig {
+                    paths: vec![
+                        dup1.clone().into(),
+                        dup2.clone().into(),
+                        unique.clone().into(),
+                    ],
+                    format,
+                    output: Some(report_file.clone()),
+                    ..GroupConfig::default()
+                };
+
+                let grouped = group_files(&config, &log).unwrap();
+                assert_eq!(grouped.groups.len(), 1, "{format}: one duplicate group");
+                write_report(&config, &log, &grouped).unwrap();
+
+                let mut reader = open_report(File::open(&report_file).unwrap()).unwrap();
+                let stats = reader.read_header().unwrap().stats.unwrap();
+
+                // All three matched files (3 + 3 + 6 bytes), regardless of grouping.
+                assert_eq!(stats.scanned_file_count, 3, "{format}: scanned count");
+                assert_eq!(
+                    stats.scanned_file_size,
+                    FileLen(12),
+                    "{format}: scanned size"
+                );
+                // Only the two files in the reported group (3 + 3 bytes).
+                assert_eq!(stats.total_file_count, 2, "{format}: grouped count");
+                assert_eq!(stats.total_file_size, FileLen(6), "{format}: grouped size");
+                assert!(
+                    stats.scanned_file_count > stats.total_file_count,
+                    "{format}: scanned must exceed grouped when a unique file is present"
+                );
+            };
+
+            check(OutputFormat::Default, "txt");
+            check(OutputFormat::Json, "json");
         });
     }
 
