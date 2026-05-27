@@ -1570,7 +1570,7 @@ mod test {
                 ..GroupConfig::default()
             };
 
-            let groups = group_files(&group_config, &log).unwrap();
+            let groups = group_files(&group_config, &log).unwrap().groups;
             let dedupe_config = DedupeConfig::default();
             let script = dedupe(groups, DedupeOp::HardLink, &dedupe_config, &log);
             let dedupe_result = run_script(script, false, &log);
@@ -1615,7 +1615,7 @@ mod test {
                 ..GroupConfig::default()
             };
 
-            let groups = group_files(&group_config, &log).unwrap();
+            let groups = group_files(&group_config, &log).unwrap().groups;
             let dedupe_config = DedupeConfig::default();
             let script = dedupe(groups, DedupeOp::Remove, &dedupe_config, &log);
             let dedupe_result = run_script(script, false, &log);

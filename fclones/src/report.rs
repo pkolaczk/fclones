@@ -34,6 +34,22 @@ pub struct FileStats {
     pub redundant_file_size: FileLen,
     pub missing_file_count: usize,
     pub missing_file_size: FileLen,
+    /// Number of files that matched the selection criteria and were considered for
+    /// grouping, including unique files that did not end up in any group. This is the
+    /// count reported on the "Found N files matching selection criteria" log line.
+    ///
+    /// In a report produced by a version that records this field, it is greater than or
+    /// equal to `total_file_count` (which counts only files that ended up in a group).
+    /// The field defaults to 0 when reading a report written before it existed, so a
+    /// value of 0 means either that nothing matched or that the producing version did
+    /// not record the count — and in the latter case it can be below `total_file_count`.
+    #[serde(default)]
+    pub scanned_file_count: usize,
+    /// Total size of the files counted by `scanned_file_count`. Defaults to 0 when
+    /// reading a report written before this field existed; see `scanned_file_count` for
+    /// what a 0 means.
+    #[serde(default)]
+    pub scanned_file_size: FileLen,
 }
 
 /// Data in the header of the whole report.
@@ -103,6 +119,7 @@ impl<W: Write> ReportWriter<W> {
     /// # Timestamp: 2022-03-18 08:22:00.844 +0100
     /// # Command: fclones group .
     /// # Base dir: /home/pkolaczk/Projekty/fclones
+    /// # Scanned: 21897 B (21.9 KB) in 42 files
     /// # Total: 13589 B (13.6 KB) in 31 files in 14 groups
     /// # Redundant: 6819 B (6.8 KB) in 17 files
     /// # Missing: 0 B (0 B) in 0 files
@@ -135,6 +152,10 @@ impl<W: Write> ReportWriter<W> {
             header.base_dir.to_escaped_string()
         ))?;
         if let Some(stats) = &header.stats {
+            self.write_header_line(&format!(
+                "Scanned: {} B ({}) in {} files",
+                stats.scanned_file_size.0, stats.scanned_file_size, stats.scanned_file_count
+            ))?;
             self.write_header_line(&format!(
                 "Total: {} B ({}) in {} files in {} groups",
                 stats.total_file_size.0,
@@ -247,7 +268,9 @@ impl<W: Write> ReportWriter<W> {
     ///       "redundant_file_count": 17,
     ///       "redundant_file_size": 6819,
     ///       "missing_file_count": 0,
-    ///       "missing_file_size": 0
+    ///       "missing_file_size": 0,
+    ///       "scanned_file_count": 42,
+    ///       "scanned_file_size": 21897
     ///     }
     ///   },
     ///   "groups": [
@@ -473,8 +496,7 @@ impl<R: BufRead> TextReportReader<R> {
         Ok(line_buf)
     }
 
-    fn read_extract(&mut self, regex: &Regex, name: &str) -> io::Result<Vec<String>> {
-        let line = self.read_line()?;
+    fn extract(line: &str, regex: &Regex, name: &str) -> io::Result<Vec<String>> {
         Ok(regex
             .captures(line.trim())
             .ok_or_else(|| {
@@ -487,6 +509,11 @@ impl<R: BufRead> TextReportReader<R> {
             .skip(1)
             .map(|c| c.unwrap().as_str().to_owned())
             .collect())
+    }
+
+    fn read_extract(&mut self, regex: &Regex, name: &str) -> io::Result<Vec<String>> {
+        let line = self.read_line()?;
+        Self::extract(&line, regex, name)
     }
 
     fn parse_timestamp(value: &str, name: &str) -> io::Result<DateTime<FixedOffset>> {
@@ -535,6 +562,8 @@ impl<R: BufRead + Send + 'static> ReportReader for TextReportReader<R> {
             static ref TIMESTAMP_RE: Regex = Regex::new(r"^# Timestamp: (.*)").unwrap();
             static ref COMMAND_RE: Regex = Regex::new(r"^# Command: (.*)").unwrap();
             static ref BASE_DIR_RE: Regex = Regex::new(r"^# Base dir: (.*)").unwrap();
+            static ref SCANNED_RE: Regex =
+                Regex::new(r"^# Scanned: ([0-9]+) B \([^)]+\) in ([0-9]+) files").unwrap();
             static ref TOTAL_RE: Regex =
                 Regex::new(r"^# Total: ([0-9]+) B \([^)]+\) in ([0-9]+) files in ([0-9]+) groups")
                     .unwrap();
@@ -561,7 +590,21 @@ impl<R: BufRead + Send + 'static> ReportReader for TextReportReader<R> {
         let base_dir = self.read_extract(&BASE_DIR_RE, "base dir")?.swap_remove(0);
         let base_dir = Path::from(base_dir);
 
-        let stats = self.read_extract(&TOTAL_RE, "total file statistics")?;
+        // The "Scanned:" line was added after the original header format, so reports written
+        // by older versions go straight from "Base dir:" to "Total:". Treat it as optional:
+        // read one line, and if it is not the scanned line, it must already be the total line.
+        let line = self.read_line()?;
+        let (scanned_file_size, scanned_file_count, total_line) =
+            if SCANNED_RE.is_match(line.trim()) {
+                let stats = Self::extract(&line, &SCANNED_RE, "scanned file statistics")?;
+                let scanned_file_size = Self::parse_file_len(stats.first(), "scanned file size")?;
+                let scanned_file_count = Self::parse_usize(stats.get(1), "scanned file count")?;
+                (scanned_file_size, scanned_file_count, self.read_line()?)
+            } else {
+                (FileLen(0), 0, line)
+            };
+
+        let stats = Self::extract(&total_line, &TOTAL_RE, "total file statistics")?;
         let total_file_size = Self::parse_file_len(stats.first(), "total file size")?;
         let total_file_count = Self::parse_usize(stats.get(1), "total file count")?;
         let group_count = Self::parse_usize(stats.get(2), "group count")?;
@@ -587,6 +630,8 @@ impl<R: BufRead + Send + 'static> ReportReader for TextReportReader<R> {
                 redundant_file_size,
                 missing_file_count,
                 missing_file_size,
+                scanned_file_count,
+                scanned_file_size,
             }),
         })
     }
@@ -695,6 +740,8 @@ mod test {
                 redundant_file_size: FileLen(1000),
                 missing_file_count: 93,
                 missing_file_size: FileLen(300),
+                scanned_file_count: 1234,
+                scanned_file_size: FileLen(3000),
             }),
         }
     }
@@ -935,5 +982,63 @@ mod test {
         let reread_header_2 = roundtrip_header(&header, OutputFormat::Json);
         assert_eq!(header, reread_header_1);
         assert_eq!(header, reread_header_2);
+    }
+
+    /// A text report written before the "Scanned:" header line existed must still parse:
+    /// the line is optional, and the scanned stats default to zero rather than the read
+    /// failing on the now-unexpected "Total:" line.
+    #[test]
+    fn test_text_report_reader_reads_legacy_header_without_scanned_stats() {
+        let mut output = NamedTempFile::new().unwrap();
+        let input = output.reopen().unwrap();
+        writeln!(output, "# Report by fclones 0.34.0").unwrap();
+        writeln!(output, "# Timestamp: 2021-08-27 12:11:23.456 +0000").unwrap();
+        writeln!(output, "# Command: fclones find .").unwrap();
+        writeln!(output, "# Base dir: /tmp").unwrap();
+        writeln!(output, "# Total: 2500 B (2.5 KB) in 1000 files in 4 groups").unwrap();
+        writeln!(output, "# Redundant: 1000 B (1.0 KB) in 234 files").unwrap();
+        writeln!(output, "# Missing: 300 B (300 B) in 93 files").unwrap();
+        drop(output);
+
+        let mut reader = TextReportReader::new(BufReader::new(input));
+        let stats = reader.read_header().unwrap().stats.unwrap();
+        assert_eq!(stats.scanned_file_count, 0);
+        assert_eq!(stats.scanned_file_size, FileLen(0));
+        // The lines that *are* present must still be parsed into the right fields.
+        assert_eq!(stats.total_file_count, 1000);
+        assert_eq!(stats.group_count, 4);
+    }
+
+    /// A JSON report written before the `scanned_file_*` fields existed must still
+    /// deserialize, with those fields defaulting to zero (guards `#[serde(default)]`).
+    #[test]
+    fn test_json_report_reader_reads_legacy_header_without_scanned_stats() {
+        let header = dummy_report_header();
+        let groups: Vec<FileGroup<Path>> = vec![];
+
+        let mut buf: Vec<u8> = Vec::new();
+        {
+            let mut writer = ReportWriter::new(&mut buf, false);
+            writer.write_as_json(&header, groups).unwrap();
+        }
+
+        // Drop the scanned keys to emulate a report produced by an older version.
+        let mut value: serde_json::Value = serde_json::from_slice(&buf).unwrap();
+        let stats_obj = value
+            .get_mut("header")
+            .unwrap()
+            .get_mut("stats")
+            .unwrap()
+            .as_object_mut()
+            .unwrap();
+        stats_obj.remove("scanned_file_count");
+        stats_obj.remove("scanned_file_size");
+        let legacy = serde_json::to_vec(&value).unwrap();
+
+        let mut reader = JsonReportReader::new(legacy.as_slice()).unwrap();
+        let stats = reader.read_header().unwrap().stats.unwrap();
+        assert_eq!(stats.scanned_file_count, 0);
+        assert_eq!(stats.scanned_file_size, FileLen(0));
+        assert_eq!(stats.total_file_count, 1000);
     }
 }
