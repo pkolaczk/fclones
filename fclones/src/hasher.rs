@@ -356,17 +356,14 @@ impl FileHasher<'_> {
                 .unwrap_or_else(|_| "".to_owned());
             let captured_err = format_output_stream(captured_err.as_str());
             return match exit_status.code() {
-                Some(exit_code) => Err(io::Error::new(
-                    io::ErrorKind::Other,
-                    format!(
-                        "{} failed with non-zero status code: {}{}",
-                        transform.program, exit_code, captured_err
-                    ),
-                )),
-                None => Err(io::Error::new(
-                    io::ErrorKind::Other,
-                    format!("{} failed{}", transform.program, captured_err),
-                )),
+                Some(exit_code) => Err(io::Error::other(format!(
+                    "{} failed with non-zero status code: {}{}",
+                    transform.program, exit_code, captured_err
+                ))),
+                None => Err(io::Error::other(format!(
+                    "{} failed{}",
+                    transform.program, captured_err
+                ))),
             };
         }
 

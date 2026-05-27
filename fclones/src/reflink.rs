@@ -179,16 +179,18 @@ fn restore_owner(path: &std::path::Path, metadata: &Metadata) -> io::Result<()> 
     let uid = metadata.uid();
     let gid = metadata.gid();
     path.set_group(gid).map_err(|e| {
-        io::Error::new(
-            io::ErrorKind::Other,
-            format!("Failed to set file group of {}: {}", path.display(), e),
-        )
+        io::Error::other(format!(
+            "Failed to set file group of {}: {}",
+            path.display(),
+            e
+        ))
     })?;
     path.set_owner(uid).map_err(|e| {
-        io::Error::new(
-            io::ErrorKind::Other,
-            format!("Failed to set file owner of {}: {}", path.display(), e),
-        )
+        io::Error::other(format!(
+            "Failed to set file owner of {}: {}",
+            path.display(),
+            e
+        ))
     })?;
     Ok(())
 }
