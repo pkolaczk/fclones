@@ -95,21 +95,24 @@ Let's first create some files:
 Now let's identify the duplicates:
 
     $ fclones group . >dupes.txt
-    [2021-06-05 18:21:33.358] fclones:  info: Started grouping
-    [2021-06-05 18:21:33.738] fclones:  info: Scanned 7 file entries
-    [2021-06-05 18:21:33.738] fclones:  info: Found 5 (20 B) files matching selection criteria
-    [2021-06-05 18:21:33.738] fclones:  info: Found 4 (16 B) candidates after grouping by size
-    [2021-06-05 18:21:33.738] fclones:  info: Found 4 (16 B) candidates after grouping by paths and file identifiers
-    [2021-06-05 18:21:33.739] fclones:  info: Found 3 (12 B) candidates after grouping by prefix
-    [2021-06-05 18:21:33.740] fclones:  info: Found 3 (12 B) candidates after grouping by suffix
-    [2021-06-05 18:21:33.741] fclones:  info: Found 3 (12 B) redundant files
+    [2026-06-05 18:21:33.358] fclones:  info: Started grouping
+    [2026-06-05 18:21:33.738] fclones:  info: Scanned 7 file entries
+    [2026-06-05 18:21:33.738] fclones:  info: Found 5 (20 B) files matching selection criteria
+    [2026-06-05 18:21:33.738] fclones:  info: Found 4 (16 B) candidates after grouping by size
+    [2026-06-05 18:21:33.738] fclones:  info: Found 4 (16 B) candidates after grouping by paths and file identifiers
+    [2026-06-05 18:21:33.739] fclones:  info: Found 3 (12 B) candidates after grouping by prefix
+    [2026-06-05 18:21:33.740] fclones:  info: Found 3 (12 B) candidates after grouping by suffix
+    [2026-06-05 18:21:33.741] fclones:  info: Found 3 (12 B) redundant files
 
     $ cat dupes.txt
-    # Report by fclones 0.12.0
-    # Timestamp: 2021-06-05 18:21:33.741 +0200
+    # Report by fclones 0.35.0
+    # Timestamp: 2026-06-05 18:21:33.741 +0200
     # Command: fclones group .
-    # Found 2 file groups
-    # 12 B (12 B) in 3 redundant files can be removed
+    # Base dir: /tmp/test
+    # Scanned: 20 B (20 B) in 5 files
+    # Total: 20 B (20 B) in 5 files in 2 groups
+    # Redundant: 12 B (12 B) in 3 files
+    # Missing: 0 B (0 B) in 0 files
     7d6ebf613bf94dfd976d169ff6ae02c3, 4 B (4 B) * 2:
         /tmp/test/bar1.txt
         /tmp/test/bar2.txt
@@ -121,8 +124,8 @@ Now let's identify the duplicates:
 Finally we can replace the duplicates by soft links:
 
     $ fclones link --soft <dupes.txt 
-    [2021-06-05 18:25:42.488] fclones:  info: Started deduplicating
-    [2021-06-05 18:25:42.493] fclones:  info: Processed 3 files and reclaimed 12 B space
+    [2026-06-05 18:25:42.488] fclones:  info: Started deduplicating
+    [2026-06-05 18:25:42.493] fclones:  info: Processed 3 files and reclaimed 12 B space
 
     $ ls -l
     total 12
