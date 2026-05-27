@@ -136,22 +136,13 @@ impl Transform {
         let has_out = has_out.into_inner();
 
         if cfg!(windows) && has_out {
-            return Err(io::Error::new(
-                io::ErrorKind::Other,
-                "$OUT not supported on Windows yet",
-            ));
+            return Err(io::Error::other("$OUT not supported on Windows yet"));
         }
         if in_place && has_out {
-            return Err(io::Error::new(
-                io::ErrorKind::Other,
-                "$OUT conflicts with --in-place",
-            ));
+            return Err(io::Error::other("$OUT conflicts with --in-place"));
         }
         if in_place && !has_in {
-            return Err(io::Error::new(
-                io::ErrorKind::Other,
-                "$IN required with --in-place",
-            ));
+            return Err(io::Error::other("$IN required with --in-place"));
         }
 
         let program = parsed
@@ -159,12 +150,7 @@ impl Transform {
             .and_then(|p| PathBuf::from(p).file_name().map(|s| s.to_os_string()));
         let program = match program {
             Some(p) => p.into_string().unwrap(),
-            None => {
-                return Err(io::Error::new(
-                    io::ErrorKind::Other,
-                    "Command cannot be empty",
-                ))
-            }
+            None => return Err(io::Error::other("Command cannot be empty")),
         };
 
         // Check if the program is runnable, fail fast if it is not.
