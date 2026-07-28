@@ -518,9 +518,9 @@ To set the parallelism level to the number of cores for random I/O access and to
 
     fclones group <paths> --threads dev:/dev/sda:0,2 
     
-Multiple `--threads` options can be given, separated by spaces:
+`--threads` can be specified multiple times for the different thread pools:
 
-    fclones group <paths> --threads main:16 ssd:4 hdd:1,1     
+    fclones group <paths> --threads main:16 --threads ssd:4 --threads hdd:1,1     
     
     
 ## Benchmarks
