@@ -222,9 +222,9 @@ Finding duplicate files of size at least 100 MB:
 
     fclones group . -s 100M
 
-Filter by file name or path pattern:
+Filter by file name or path pattern. Each filter flag takes exactly one pattern, so repeat it for each pattern you need (or match them with one `{a,b}` glob):
 
-    fclones group . --name '*.jpg' '*.png' 
+    fclones group . --name '*.jpg' --name '*.png'
                 
 Run `fclones` on files selected by `find` (note: this is likely slower than built-in filtering):
 
@@ -236,7 +236,7 @@ Follow symbolic links, but don't escape out of the home folder:
     
 Exclude a part of the directory tree from the scan:
 
-    fclones group / --exclude '/dev/**' '/proc/**'
+    fclones group / --exclude '/dev/**' --exclude '/proc/**'
 
 ### Removing Files
 To remove duplicate files, move them to a different place or replace them by links, 
