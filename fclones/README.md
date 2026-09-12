@@ -222,7 +222,7 @@ Finding duplicate files of size at least 100 MB:
 
     fclones group . -s 100M
 
-Filter by file name or path pattern. Each filter flag takes exactly one pattern, so repeat it for each pattern you need (or match them with one `{a,b}` glob):
+Filter by file name or path pattern. Each filter flag takes one pattern; repeat the flag for several patterns, or combine them in one `{a,b}` glob:
 
     fclones group . --name '*.jpg' --name '*.png'
                 
