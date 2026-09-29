@@ -395,12 +395,19 @@ mod string {
 
     #[cfg(windows)]
     pub fn c_to_os_str(str: &CStr) -> OsString {
-        OsString::from(str.to_str().unwrap())
+        // SAFETY: `Path` components are only ever constructed by `os_to_c_str`
+        // from valid `OsStr` values or from UTF-8 string literals, so `str`
+        // always contains bytes that are properly encoded for `OsStr`
+        // (a self-synchronizing superset of UTF-8 on Windows).
+        unsafe { OsStr::from_encoded_bytes_unchecked(str.to_bytes()) }.to_os_string()
     }
 
     #[cfg(windows)]
     pub fn os_to_c_str(str: &OsStr) -> CString {
-        CString::new(str.to_str().unwrap().as_bytes()).unwrap()
+        // `as_encoded_bytes` never fails: on Windows it produces a
+        // self-synchronizing superset of UTF-8 that can losslessly represent
+        // also file names that are not valid UTF-8, e.g. lone surrogates.
+        CString::new(str.as_encoded_bytes()).unwrap()
     }
 }
 
@@ -525,5 +532,28 @@ mod test {
     #[test]
     fn serialize() {
         assert_ser_tokens(&Path::from("a \n b"), &[Token::String("a \\n b")])
+    }
+
+    /// File names that are not valid UTF-8 (e.g. names containing lone
+    /// UTF-16 surrogates, which are legal on NTFS) must round-trip
+    /// through `Path` losslessly instead of crashing.
+    /// Regression test for the panic in `os_to_c_str`.
+    #[cfg(windows)]
+    #[test]
+    fn non_utf8_file_name() {
+        use std::os::windows::ffi::OsStringExt;
+
+        // "fi\x{D800}x.txt" - contains an unpaired surrogate
+        let name = OsString::from_wide(&[
+            0x0066, 0x0069, 0xD800, 0x0078, 0x002E, 0x0074, 0x0078, 0x0074,
+        ]);
+        let path_buf = PathBuf::from("dir").join(&name);
+        let path = Path::from(&path_buf);
+        assert_eq!(path.to_path_buf(), path_buf);
+        assert_eq!(path.file_name().as_deref(), Some(name.as_os_str()));
+
+        // Direct round-trip of the string conversion helpers
+        let c_string = string::os_to_c_str(&name);
+        assert_eq!(string::c_to_os_str(c_string.as_c_str()), name);
     }
 }
