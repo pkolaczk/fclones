@@ -2081,6 +2081,72 @@ mod test {
         assert_eq!(fg.files, vec!["a1", "a1", "a2", "a2"]);
     }
 
+    #[test]
+    fn duplicate_files_isolated_relative_and_dot_roots() {
+        with_dir(
+            "main/duplicate_files_isolated_relative_and_dot_roots",
+            |root| {
+                let root1 = root.join("1");
+                let root2 = root.join("2");
+                create_dir(&root1).unwrap();
+                create_dir(&root2).unwrap();
+
+                // Create identical files within dir 1
+                let f1 = root1.join("f1");
+                let f2 = root1.join("f2");
+                write_test_file(&f1, b"fruits", b"", b"");
+                write_test_file(&f2, b"fruits", b"", b"");
+
+                // Create identical files within dir 2 (different content than dir 1)
+                let v1 = root2.join("v1");
+                let v2 = root2.join("v2");
+                write_test_file(&v1, b"vegetables", b"", b"");
+                write_test_file(&v2, b"vegetables", b"", b"");
+
+                let log = test_log();
+
+                // Scenario 1: Executing from inside dir 1 using "." and "../2"
+                let mut config = GroupConfig {
+                    base_dir: Path::from(&root1),
+                    paths: vec![Path::from("."), Path::from("../2")],
+                    isolate: true,
+                    ..GroupConfig::default()
+                };
+
+                // With --isolate, internal duplicates within root 1 and root 2 must not be reported
+                let results = group_files(&config, &log).unwrap();
+                assert_eq!(
+                results.len(),
+                0,
+                "Intra-directory duplicates were erroneously reported when using relative '.' root paths"
+            );
+
+                // Scenario 2: Without --isolate, both duplicate groups must be found
+                config.isolate = false;
+                let results = group_files(&config, &log).unwrap();
+                assert_eq!(results.len(), 2);
+
+                // Scenario 3: Relative directory names "1" and "2" from the parent directory
+                let mut config_from_parent = GroupConfig {
+                    base_dir: Path::from(root),
+                    paths: vec![Path::from("1"), Path::from("2")],
+                    isolate: true,
+                    ..GroupConfig::default()
+                };
+                let results = group_files(&config_from_parent, &log).unwrap();
+                assert_eq!(
+                results.len(),
+                0,
+                "Intra-directory duplicates were erroneously reported when using relative subdirectory paths"
+            );
+
+                config_from_parent.isolate = false;
+                let results = group_files(&config_from_parent, &log).unwrap();
+                assert_eq!(results.len(), 2);
+            },
+        );
+    }
+
     fn write_test_file(path: &PathBuf, prefix: &[u8], mid: &[u8], suffix: &[u8]) {
         let mut file = OpenOptions::new()
             .write(true)

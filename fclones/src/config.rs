@@ -506,20 +506,33 @@ impl GroupConfig {
     /// Returns an iterator over the absolute input paths.
     /// Input paths may be provided as arguments or from standard input.
     pub fn input_paths(&self) -> Box<dyn Iterator<Item = Path> + Send> {
-        let base_dir = Arc::new(self.base_dir.clone());
+        let base_dir = if self.base_dir.is_relative() {
+            let curr_dir = Arc::new(Path::from(std::env::current_dir().unwrap_or_default()));
+            Arc::new(curr_dir.join(&self.base_dir))
+        } else {
+            Arc::new(self.base_dir.clone())
+        };
+        let normalize = move |p: Path| -> Path {
+            let path = base_dir.resolve(p);
+            let path_buf = path.to_path_buf();
+            if path_buf.is_file() {
+                if let Some(parent) = path.parent() {
+                    let parent = parent.canonicalize();
+                    if let Some(file_name) = path.file_name() {
+                        return Arc::new(parent).join(Path::from(file_name));
+                    }
+                }
+            }
+            path.canonicalize()
+        };
         if self.stdin {
             Box::new(
                 BufReader::new(stdin())
                     .lines()
-                    .map(move |s| base_dir.resolve(Path::from(s.unwrap().as_str()))),
+                    .map(move |s| normalize(Path::from(s.unwrap().as_str()))),
             )
         } else {
-            Box::new(
-                self.paths
-                    .clone()
-                    .into_iter()
-                    .map(move |p| base_dir.resolve(p)),
-            )
+            Box::new(self.paths.clone().into_iter().map(normalize))
         }
     }
 

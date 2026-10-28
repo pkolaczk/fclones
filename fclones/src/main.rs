@@ -171,6 +171,27 @@ pub fn run_dedupe(op: DedupeOp, config: DedupeConfig, log: &dyn Log) -> Result<(
         }
         if dedupe_config.isolated_roots.is_empty() && c.isolate {
             dedupe_config.isolated_roots = c.input_paths().collect();
+        } else {
+            let base_dir = Arc::new(fclones::Path::from(
+                std::env::current_dir().unwrap_or_default(),
+            ));
+            dedupe_config.isolated_roots = dedupe_config
+                .isolated_roots
+                .into_iter()
+                .map(|p| {
+                    let path = base_dir.resolve(p);
+                    let path_buf = path.to_path_buf();
+                    if path_buf.is_file() {
+                        if let Some(parent) = path.parent() {
+                            let parent = parent.canonicalize();
+                            if let Some(file_name) = path.file_name() {
+                                return Arc::new(parent).join(fclones::Path::from(file_name));
+                            }
+                        }
+                    }
+                    path.canonicalize()
+                })
+                .collect();
         }
     }
 
